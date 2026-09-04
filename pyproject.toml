@@ -40,6 +40,10 @@ DJANGO_SETTINGS_MODULE = "config.settings"
 pythonpath = ["backend"]
 testpaths = ["backend/tests", "backend/apps"]
 addopts = "--strict-markers --cov=backend/apps --cov-report=term-missing --cov-fail-under=80"
+markers = [
+  "benchmark: opt-in representative spatial query benchmark",
+  "redis: opt-in integration test requiring a running Redis cache",
+]
 
 [tool.coverage.run]
 omit = ["*/__init__.py", "*/apps.py", "*/migrations/*"]

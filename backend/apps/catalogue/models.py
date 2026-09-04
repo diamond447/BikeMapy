@@ -11,7 +11,7 @@ from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
-from .fields import RouteGeometryField
+from .fields import RouteGeometryField, RoutePolygonField
 
 
 class ProcessingStatus(models.TextChoices):
@@ -317,8 +317,8 @@ class RouteVersion(models.Model):
     original_gpx_storage_key = models.CharField(max_length=1000, blank=True)
     payload_removed_at = models.DateTimeField(blank=True, null=True)
     payload_removal_reason = models.TextField(blank=True)
-    normalized_geometry = RouteGeometryField(srid=4326, blank=True, null=True)
-    simplified_geometry = RouteGeometryField(srid=4326, blank=True, null=True)
+    normalized_geometry = RouteGeometryField(srid=4326, spatial_index=True, blank=True, null=True)
+    simplified_geometry = RouteGeometryField(srid=4326, spatial_index=True, blank=True, null=True)
     distance_m = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     ascent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     descent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
@@ -437,6 +437,83 @@ class RouteVersion(models.Model):
 
     def delete(self, *args: object, **kwargs: object) -> tuple[int, dict[str, int]]:
         raise ProtectedError("Historical route versions cannot be deleted.", {self})
+
+
+class RouteBrowseGeometry(models.Model):
+    """A zoom-specific, lossy geometry used by map browsing.
+
+    Browse geometries are derived data.  The immutable route version remains
+    the source of truth and can always be regenerated if tolerances change.
+    """
+
+    version = models.ForeignKey(
+        RouteVersion, on_delete=models.CASCADE, related_name="browse_geometries"
+    )
+    zoom = models.PositiveSmallIntegerField()
+    geometry = RouteGeometryField(srid=4326, spatial_index=True)
+    tolerance_m = models.DecimalField(max_digits=10, decimal_places=3)
+    generated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["version_id", "zoom"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["version", "zoom"], name="catalogue_browse_geometry_version_zoom_unique"
+            ),
+            models.CheckConstraint(
+                condition=Q(zoom__gte=0), name="catalogue_browse_geometry_zoom_positive"
+            ),
+        ]
+        indexes = [models.Index(fields=["zoom", "version"], name="cat_browse_geom_zoom_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.version} @ z{self.zoom}"
+
+
+class RouteHeatmapCell(models.Model):
+    """A persisted grid cell and its current distinct public-route count."""
+
+    zoom = models.PositiveSmallIntegerField()
+    x = models.PositiveIntegerField()
+    y = models.PositiveIntegerField()
+    boundary = RoutePolygonField(srid=4326, spatial_index=True)
+    route_count = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["zoom", "y", "x"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["zoom", "x", "y"], name="catalogue_heatmap_cell_coordinates_unique"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["zoom", "route_count"], name="cat_heatmap_cell_count_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"z{self.zoom}/{self.x}/{self.y} ({self.route_count})"
+
+
+class RouteHeatmapMembership(models.Model):
+    """Materialized route/cell crossing relationship used for incremental updates."""
+
+    cell = models.ForeignKey(RouteHeatmapCell, on_delete=models.CASCADE, related_name="memberships")
+    route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name="heatmap_memberships")
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cell", "route"], name="catalogue_heatmap_membership_unique"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["route", "cell"], name="cat_heatmap_member_route_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.route_id} in cell {self.cell_id}"
 
 
 class PayloadDeletionRequest(models.Model):
