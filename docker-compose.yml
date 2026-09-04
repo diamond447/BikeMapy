@@ -35,9 +35,9 @@ services:
     env_file:
       - path: .env
         required: false
-    command: python backend/manage.py runserver 0.0.0.0:8000
+    command: uv run --locked --no-dev python backend/manage.py runserver 0.0.0.0:8000
     volumes:
-      - .:/app
+      - ./backend:/app/backend
       - gpx_data:/app/storage
     ports:
       - "${BACKEND_PORT:-8000}:8000"
@@ -45,7 +45,7 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live/', timeout=2)"]
+      test: ["CMD", "uv", "run", "--locked", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live/', timeout=2)"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -57,9 +57,9 @@ services:
     env_file:
       - path: .env
         required: false
-    command: celery -A config worker --loglevel=INFO
+    command: uv run --locked --no-dev celery -A config worker --loglevel=INFO
     volumes:
-      - .:/app
+      - ./backend:/app/backend
       - gpx_data:/app/storage
     depends_on:
       db: { condition: service_healthy }

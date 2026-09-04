@@ -7,7 +7,8 @@ PostgreSQL/PostGIS or Redis on their host.
 ## Requirements
 
 - Docker Desktop or Docker Engine with Compose v2
-- Python 3.13 (for editor tooling and optional host-side checks)
+- Python 3.13 and [uv](https://docs.astral.sh/uv/) (for editor tooling and
+  host-side backend checks)
 - Node.js 22 with Corepack (for optional host-side frontend checks)
 
 ## Start the stack
@@ -25,8 +26,8 @@ service dependencies; their data is retained in named Docker volumes.
 In another terminal, apply migrations and run the worker smoke test:
 
 ```sh
-docker compose exec backend python backend/manage.py migrate
-docker compose exec worker python -c 'from apps.ingestion.tasks import worker_smoke; print(worker_smoke.delay().get(timeout=10))'
+docker compose exec backend uv run --locked --no-dev python backend/manage.py migrate
+docker compose exec worker uv run --locked --no-dev python -c 'from apps.ingestion.tasks import worker_smoke; print(worker_smoke.delay().get(timeout=10))'
 ```
 
 The task should print `worker-ready`. Stop the stack with `docker compose down`;
@@ -45,7 +46,9 @@ inspection and are not exposed on the network.
 
 ## Host-side quality checks
 
-Install dependencies once with `make install`, then use the common targets:
+Install dependencies once with `make install`. This creates the repository
+`.venv` from the committed `uv.lock`; all backend commands in the Makefile run
+through that locked environment:
 
 ```sh
 make lint       # Ruff, ESLint, and Prettier checks

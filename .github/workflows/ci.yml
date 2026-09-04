@@ -38,12 +38,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.13', cache: pip }
-      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
-      - run: ruff check backend
-      - run: ruff format --check backend scripts
-      - run: mypy backend
-      - run: pytest
+        with: { python-version: '3.13' }
+      - uses: astral-sh/setup-uv@v6
+        with: { version: '0.9.26', enable-cache: true }
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked --extra dev ruff check backend
+      - run: uv run --locked --extra dev ruff format --check backend scripts
+      - run: uv run --locked --extra dev mypy backend
+      - run: uv run --locked --extra dev pytest
 
   integration:
     name: Infrastructure (PostGIS and Celery/Redis)
@@ -76,16 +78,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.13', cache: pip }
+        with: { python-version: '3.13' }
       - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y gdal-bin libgdal-dev libgeos-dev
-      - run: python -m pip install --upgrade pip && pip install -e '.[dev]'
-      - run: python backend/manage.py migrate --noinput
+      - uses: astral-sh/setup-uv@v6
+        with: { version: '0.9.26', enable-cache: true }
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked --extra dev python backend/manage.py migrate --noinput
       - name: Start Celery worker
         run: |
-          celery -A config worker --loglevel=WARNING --pool=solo > /tmp/celery-worker.log 2>&1 &
+          uv run --locked --extra dev celery -A config worker --loglevel=WARNING --pool=solo > /tmp/celery-worker.log 2>&1 &
           echo $! > /tmp/celery-worker.pid
       - name: Verify PostGIS and Celery through Redis
-        run: python scripts/check_integrations.py
+        run: uv run --locked --extra dev python scripts/check_integrations.py
       - name: Show worker log on failure
         if: failure()
         run: cat /tmp/celery-worker.log
@@ -114,6 +118,9 @@ jobs:
   security:
     name: Secret scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
