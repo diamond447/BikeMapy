@@ -37,6 +37,19 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+def _refresh_spatial_products(route: Route, version: RouteVersion | None = None) -> None:
+    """Update derived browse products inside the lifecycle transaction."""
+
+    # Import lazily: spatial imports the catalogue models and must remain an
+    # optional quality-suite dependency when GDAL is unavailable.
+    from .spatial import generate_browse_geometries, refresh_route_heatmap
+
+    selected = version or route.current_approved_version
+    if selected is not None:
+        generate_browse_geometries(selected)
+    refresh_route_heatmap(route)
+
+
 class SourceDeniedError(ValidationError):
     """Raised when an automatic import is blocked by an active denylist entry."""
 
@@ -291,6 +304,7 @@ def approve_version(version: RouteVersion, *, actor: Any = None) -> Route:
         reason="Technically valid route version approved for publication.",
         actor=actor,
     )
+    _refresh_spatial_products(route, version)
     return route
 
 
@@ -335,6 +349,7 @@ def quarantine_route(
         metadata=metadata or {},
         actor=actor,
     )
+    _refresh_spatial_products(route)
     return route
 
 
@@ -362,6 +377,7 @@ def soft_delete_route(route: Route, *, reason: str, actor: Any = None) -> Route:
     ModerationDecision.objects.create(
         route=route, action=ModerationDecision.Action.REMOVE, reason=reason, actor=actor
     )
+    _refresh_spatial_products(route)
     return route
 
 
@@ -416,6 +432,7 @@ def restore_route(route: Route, *, actor: Any = None) -> Route:
         reason="Route restored by administrator.",
         actor=actor,
     )
+    _refresh_spatial_products(route)
     return route
 
 

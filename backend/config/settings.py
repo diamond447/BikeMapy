@@ -110,6 +110,23 @@ SPECTACULAR_SETTINGS = {
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+DJANGO_CACHE_URL = os.getenv("DJANGO_CACHE_URL", "")
+if DJANGO_CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": DJANGO_CACHE_URL,
+        }
+    }
+else:
+    # Host-side checks intentionally remain self-contained. Compose and
+    # production should set DJANGO_CACHE_URL to the shared Redis database.
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "bikemapy",
+        }
+    }
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
@@ -165,3 +182,20 @@ ROUTE_DUPLICATE_MAX_LENGTH_DELTA = float(os.getenv("ROUTE_DUPLICATE_MAX_LENGTH_D
 ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M", "25"))
 ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M", "100"))
 ROUTE_VARIANT_MIN_SCORE = float(os.getenv("ROUTE_VARIANT_MIN_SCORE", "0.55"))
+
+# Spatial browse products.  The heatmap is deliberately limited to low zooms;
+# route lines take over at closer zooms.  Every public query has an explicit
+# bound so a large viewport cannot accidentally become a catalogue dump.
+SPATIAL_BROWSE_ZOOMS = os.getenv("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14,16,18")
+SPATIAL_HEATMAP_ZOOMS = os.getenv("SPATIAL_HEATMAP_ZOOMS", "3,4,5,6,7,8")
+SPATIAL_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_MAX_ROUTES_PER_QUERY", "500"))
+SPATIAL_MAX_CELLS_PER_QUERY = int(os.getenv("SPATIAL_MAX_CELLS_PER_QUERY", "10000"))
+SPATIAL_HARD_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_HARD_MAX_ROUTES_PER_QUERY", "500"))
+SPATIAL_HARD_MAX_CELLS_PER_QUERY = int(os.getenv("SPATIAL_HARD_MAX_CELLS_PER_QUERY", "10000"))
+SPATIAL_MAX_CANDIDATE_SCAN = int(os.getenv("SPATIAL_MAX_CANDIDATE_SCAN", "5000"))
+SPATIAL_MAX_HEATMAP_CANDIDATE_CELLS = int(
+    os.getenv("SPATIAL_MAX_HEATMAP_CANDIDATE_CELLS", "100000")
+)
+SPATIAL_MAX_VIEWPORT_WIDTH_DEGREES = float(os.getenv("SPATIAL_MAX_VIEWPORT_WIDTH_DEGREES", "90"))
+SPATIAL_MAX_VIEWPORT_HEIGHT_DEGREES = float(os.getenv("SPATIAL_MAX_VIEWPORT_HEIGHT_DEGREES", "90"))
+SPATIAL_QUERY_CACHE_TTL = int(os.getenv("SPATIAL_QUERY_CACHE_TTL", "60"))
