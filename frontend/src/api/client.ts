@@ -1,6 +1,9 @@
 import createClient from 'openapi-fetch'
 
+import type { paths } from './generated/schema'
+
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
-/** The typed schema client is enabled once the first public API contract lands. */
-export const apiClient = createClient({ baseUrl: `${apiBaseUrl}/api/v1` })
+// The generated paths include the version prefix, so the base URL is the
+// origin. Callers use paths such as `/api/v1/routes/` from the OpenAPI contract.
+export const apiClient = createClient<paths>({ baseUrl: apiBaseUrl })

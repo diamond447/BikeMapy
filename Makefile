@@ -34,6 +34,7 @@ format:
 
 api-schema:
 	$(UV) run --locked --extra dev python backend/manage.py spectacular --file openapi.yaml --validate
+	cd frontend && corepack pnpm api:generate
 
 worker-smoke:
 	$(UV) run --locked --extra dev python -c 'from apps.ingestion.tasks import worker_smoke; assert worker_smoke.apply().get() == "worker-ready"'
