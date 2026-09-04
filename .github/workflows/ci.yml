@@ -85,8 +85,8 @@ jobs:
         with: { version: '0.9.26', enable-cache: true }
       - run: uv sync --locked --extra dev
       - run: uv run --locked --extra dev python backend/manage.py migrate --noinput
-      - name: Run PostGIS catalogue tests
-        run: uv run --locked --extra dev pytest backend/apps/catalogue -q
+      - name: Run PostGIS backend tests
+        run: uv run --locked --extra dev pytest
       - name: Start Celery worker
         run: |
           uv run --locked --extra dev celery -A config worker --loglevel=WARNING --pool=solo > /tmp/celery-worker.log 2>&1 &
