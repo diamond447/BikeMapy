@@ -72,6 +72,7 @@ jobs:
       POSTGRES_DB: bikemapy
       POSTGRES_USER: bikemapy
       POSTGRES_PASSWORD: bikemapy
+      DJANGO_DATABASE_ENGINE: django.contrib.gis.db.backends.postgis
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/0
       PYTHONPATH: backend
@@ -84,6 +85,8 @@ jobs:
         with: { version: '0.9.26', enable-cache: true }
       - run: uv sync --locked --extra dev
       - run: uv run --locked --extra dev python backend/manage.py migrate --noinput
+      - name: Run PostGIS catalogue tests
+        run: uv run --locked --extra dev pytest backend/apps/catalogue -q
       - name: Start Celery worker
         run: |
           uv run --locked --extra dev celery -A config worker --loglevel=WARNING --pool=solo > /tmp/celery-worker.log 2>&1 &
