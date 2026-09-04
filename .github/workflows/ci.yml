@@ -9,6 +9,27 @@ permissions:
   contents: read
 
 jobs:
+  api-contract:
+    name: API contract and generated client
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_DATABASE_ENGINE: django.db.backends.sqlite3
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - uses: astral-sh/setup-uv@v6
+        with: { version: '0.9.26', enable-cache: true }
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.10.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml }
+      - run: uv sync --locked --extra dev
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - run: uv run --locked --extra dev python scripts/check_openapi_sync.py
+
   backend:
     name: Backend (lint, types, tests)
     runs-on: ubuntu-latest
