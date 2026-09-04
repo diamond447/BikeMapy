@@ -27,6 +27,7 @@ from django.core.files.storage import default_storage
 from django.db import transaction
 from django.utils import timezone
 
+from apps.catalogue.deduplication import classify_version, normalize_geometry
 from apps.catalogue.models import LoopStatus, ProcessingStatus, RouteLifecycle, RouteVersion
 from apps.catalogue.services import approve_version, record_route_version
 
@@ -667,8 +668,8 @@ def extract_gpx(source_id: int, *, adapter: object | None = None) -> dict[str, A
                 source=source,
                 checksum=checksum,
                 storage_key=storage_key,
-                normalized_geometry=parsed.geometry,
-                simplified_geometry=parsed.geometry,
+                normalized_geometry=normalize_geometry(parsed.geometry),
+                simplified_geometry=normalize_geometry(parsed.geometry),
                 distance_m=parsed.distance_m,
                 ascent_m=parsed.ascent_m,
                 descent_m=parsed.descent_m,
@@ -676,12 +677,54 @@ def extract_gpx(source_id: int, *, adapter: object | None = None) -> dict[str, A
             )
             route = source.route
             published = False
-            if route.lifecycle == RouteLifecycle.PUBLISHED:
+            duplicate = False
+            explicit_decision = False
+            similarity_id: int | None = None
+            similarity_evidence: dict[str, Any] = {}
+            # Only a new route identity is automatically classified.  A
+            # re-import of an existing source must never undo a prior human
+            # decision or quarantine a route merely because its history now
+            # has another similar version.
+            if created and route.current_approved_version_id is None:
+                relationship, similarity = classify_version(version)
+                if relationship is not None and similarity is not None:
+                    similarity_id = relationship.pk
+                    similarity_evidence = similarity.evidence
+                    duplicate = similarity.duplicate
+                    explicit_decision = route.moderation_decisions.filter(
+                        action__in=[
+                            "keep_both",
+                            "merge_sources",
+                            "quarantine",
+                            "restore",
+                            "remove",
+                        ]
+                    ).exists()
+                    if duplicate and not explicit_decision:
+                        from apps.catalogue.services import quarantine_route
+
+                        quarantine_route(
+                            route,
+                            reason="High-confidence spatial duplicate; awaiting moderation.",
+                            metadata={
+                                "relationship_id": relationship.pk,
+                                "similarity_evidence": similarity.evidence,
+                                "similarity_score": round(similarity.score, 4),
+                            },
+                        )
+            if route.lifecycle == RouteLifecycle.PUBLISHED and (not duplicate or explicit_decision):
                 approve_version(version)
                 published = True
             now = timezone.now()
             diagnostics.update(
-                {"version_id": version.pk, "created": created, "published": published}
+                {
+                    "version_id": version.pk,
+                    "created": created,
+                    "published": published,
+                    "duplicate": duplicate,
+                    "similarity_relationship_id": similarity_id,
+                    "similarity_evidence": similarity_evidence,
+                }
             )
             attempt.status = ExtractionStatus.SUCCEEDED
             attempt.finished_at = now
@@ -698,6 +741,8 @@ def extract_gpx(source_id: int, *, adapter: object | None = None) -> dict[str, A
             "version_id": version.pk,
             "created": created,
             "published": published,
+            "duplicate": diagnostics["duplicate"],
+            "similarity_relationship_id": diagnostics["similarity_relationship_id"],
             "checksum": checksum,
             "diagnostics": diagnostics,
         }

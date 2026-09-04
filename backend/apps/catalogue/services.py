@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -11,6 +12,7 @@ from typing import Any
 from django.core.exceptions import ValidationError
 from django.core.files.storage import default_storage
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .fields import _GIS_AVAILABLE
@@ -23,12 +25,16 @@ from .models import (
     Route,
     RouteLifecycle,
     RouteSource,
+    RouteSourceMerge,
     RouteSourcePost,
     RouteVersion,
+    SimilarityRelationship,
     SourceDenylistEntry,
     SourceStatus,
     TitleProvenance,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SourceDeniedError(ValidationError):
@@ -307,16 +313,27 @@ def review_route(route: Route, *, reason: str, actor: Any = None) -> Route:
 
 
 @transaction.atomic
-def quarantine_route(route: Route, *, reason: str, actor: Any = None) -> Route:
+def quarantine_route(
+    route: Route,
+    *,
+    reason: str,
+    actor: Any = None,
+    metadata: dict[str, Any] | None = None,
+) -> Route:
     if not reason.strip():
         raise ValidationError("A quarantine reason is required.")
     route = Route.objects.select_for_update().get(pk=route.pk)
     route.lifecycle = RouteLifecycle.QUARANTINED
     route.quarantine_reason = reason
     route.save(update_fields=["lifecycle", "quarantine_reason", "updated_at"])
-    _enqueue_payload_deletions(route, reason="Payload removed during quarantine.")
+    request_ids = _enqueue_payload_deletions(route, reason="Payload removed during quarantine.")
+    _schedule_payload_deletions(request_ids)
     ModerationDecision.objects.create(
-        route=route, action=ModerationDecision.Action.QUARANTINE, reason=reason, actor=actor
+        route=route,
+        action=ModerationDecision.Action.QUARANTINE,
+        reason=reason,
+        metadata=metadata or {},
+        actor=actor,
     )
     return route
 
@@ -330,7 +347,8 @@ def soft_delete_route(route: Route, *, reason: str, actor: Any = None) -> Route:
     route.lifecycle = RouteLifecycle.SOFT_DELETED
     route.deleted_at = now
     route.save(update_fields=["lifecycle", "deleted_at", "updated_at"])
-    _enqueue_payload_deletions(route, reason="Payload removed during route removal.")
+    request_ids = _enqueue_payload_deletions(route, reason="Payload removed during route removal.")
+    _schedule_payload_deletions(request_ids)
     for source in route.sources.select_for_update():
         SourceDenylistEntry.objects.update_or_create(
             source_url=source.mapy_url,
@@ -354,7 +372,20 @@ def restore_route(route: Route, *, actor: Any = None) -> Route:
         raise ValidationError("Only soft-deleted or quarantined routes can be restored.")
     was_soft_deleted = route.lifecycle == RouteLifecycle.SOFT_DELETED
     if not route.current_approved_version_id:
-        raise ValidationError("A route requires an approved version before it can be restored.")
+        # Automatic duplicate quarantine happens before publication, so an
+        # explicit restore must be able to approve its valid retained version
+        # without a second non-transactional import round trip.
+        candidate = (
+            RouteVersion.objects.select_for_update()
+            .filter(source__route=route, technical_status=ProcessingStatus.VALID)
+            .order_by("-created_at", "-pk")
+            .first()
+        )
+        if candidate is None:
+            raise ValidationError("A route requires an approved version before it can be restored.")
+        candidate.approved_at = candidate.approved_at or timezone.now()
+        candidate.save(update_fields=["approved_at"])
+        route.current_approved_version = candidate
     route.lifecycle = (
         RouteLifecycle.PUBLISHED
         if route.current_approved_version_id
@@ -365,7 +396,15 @@ def restore_route(route: Route, *, actor: Any = None) -> Route:
         route.quarantine_reason = ""
     else:
         route.quarantine_reason = "Awaiting an approved route version."
-    route.save(update_fields=["lifecycle", "deleted_at", "quarantine_reason", "updated_at"])
+    route.save(
+        update_fields=[
+            "current_approved_version",
+            "lifecycle",
+            "deleted_at",
+            "quarantine_reason",
+            "updated_at",
+        ]
+    )
     now = timezone.now()
     if was_soft_deleted:
         SourceDenylistEntry.objects.filter(route_source__route=route, active=True).update(
@@ -378,6 +417,195 @@ def restore_route(route: Route, *, actor: Any = None) -> Route:
         actor=actor,
     )
     return route
+
+
+@transaction.atomic
+def keep_both_routes(
+    route_a: Route,
+    route_b: Route,
+    *,
+    reason: str,
+    actor: Any = None,
+    evidence: dict[str, Any] | None = None,
+) -> SimilarityRelationship:
+    """Record an explicit keep-both decision for a similar route pair."""
+
+    if not reason.strip():
+        raise ValidationError("A keep-both reason is required.")
+    if route_a.pk == route_b.pk:
+        raise ValidationError("A route cannot be kept alongside itself.")
+    first, second = sorted([route_a.pk, route_b.pk], key=str)
+    first_route = Route.objects.select_for_update().get(pk=first)
+    second_route = Route.objects.select_for_update().get(pk=second)
+    for selected in (first_route, second_route):
+        if selected.lifecycle == RouteLifecycle.QUARANTINED:
+            restore_route(selected, actor=actor)
+    alias_ids = list(
+        RouteSourceMerge.objects.filter(active=True)
+        .filter(
+            Q(canonical_route_id=first, source__route_id=second)
+            | Q(canonical_route_id=second, source__route_id=first)
+        )
+        .values_list("pk", flat=True)
+    )
+    if alias_ids:
+        RouteSourceMerge.objects.filter(pk__in=alias_ids).update(
+            active=False,
+            deactivated_at=timezone.now(),
+            deactivated_reason=reason,
+        )
+    relationship, _ = SimilarityRelationship.objects.get_or_create(
+        route_a_id=first,
+        route_b_id=second,
+        defaults={
+            "relationship_type": SimilarityRelationship.RelationshipType.VARIANT,
+            "evidence": evidence or {},
+        },
+    )
+    relationship.relationship_type = SimilarityRelationship.RelationshipType.VARIANT
+    relationship.decision_reason = reason
+    relationship.decided_at = timezone.now()
+    if evidence:
+        relationship.evidence = evidence
+    relationship.save(
+        update_fields=["relationship_type", "decision_reason", "decided_at", "evidence"]
+    )
+    for route in (first, second):
+        ModerationDecision.objects.create(
+            route_id=route,
+            action=ModerationDecision.Action.KEEP_BOTH,
+            reason=reason,
+            metadata={
+                "related_route_id": str(second if route == first else first),
+                **(evidence or {}),
+            },
+            actor=actor,
+        )
+    return relationship
+
+
+@transaction.atomic
+def merge_route_sources(
+    canonical_route: Route,
+    duplicate_route: Route,
+    *,
+    reason: str,
+    actor: Any = None,
+) -> list[RouteSourceMerge]:
+    """Merge provenance sources under a canonical route without rewriting history."""
+
+    if not reason.strip():
+        raise ValidationError("A source-merge reason is required.")
+    if canonical_route.pk == duplicate_route.pk:
+        raise ValidationError("A route cannot merge sources with itself.")
+    first, second = sorted([canonical_route.pk, duplicate_route.pk], key=str)
+    Route.objects.select_for_update().get(pk=first)
+    Route.objects.select_for_update().get(pk=second)
+    links: list[RouteSourceMerge] = []
+    for source in RouteSource.objects.filter(route_id=duplicate_route.pk).order_by("pk"):
+        existing = RouteSourceMerge.objects.filter(
+            canonical_route_id=canonical_route.pk, source_id=source.pk
+        ).first()
+        if existing is not None:
+            if (
+                RouteSourceMerge.objects.filter(source_id=source.pk, active=True)
+                .exclude(pk=existing.pk)
+                .exists()
+            ):
+                raise ValidationError("A source is already merged into another canonical route.")
+            existing.active = True
+            existing.deactivated_at = None
+            existing.deactivated_reason = ""
+            existing.reason = reason
+            existing.actor = actor
+            existing.save(
+                update_fields=[
+                    "active",
+                    "deactivated_at",
+                    "deactivated_reason",
+                    "reason",
+                    "actor",
+                ]
+            )
+            links.append(existing)
+            continue
+        if RouteSourceMerge.objects.filter(source_id=source.pk, active=True).exists():
+            raise ValidationError("A source is already merged into another canonical route.")
+        links.append(
+            RouteSourceMerge.objects.create(
+                canonical_route_id=canonical_route.pk,
+                source_id=source.pk,
+                reason=reason,
+                actor=actor,
+            )
+        )
+    duplicate_route = Route.objects.get(pk=duplicate_route.pk)
+    if duplicate_route.lifecycle == RouteLifecycle.PUBLISHED:
+        quarantine_route(
+            duplicate_route,
+            reason="Route identity merged into another canonical route.",
+            actor=actor,
+            metadata={"canonical_route_id": str(canonical_route.pk)},
+        )
+    relationship, _ = SimilarityRelationship.objects.get_or_create(
+        route_a_id=first,
+        route_b_id=second,
+        defaults={"relationship_type": SimilarityRelationship.RelationshipType.SUSPECTED_DUPLICATE},
+    )
+    relationship.relationship_type = SimilarityRelationship.RelationshipType.SUSPECTED_DUPLICATE
+    relationship.decision_reason = reason
+    relationship.decided_at = timezone.now()
+    relationship.save(update_fields=["relationship_type", "decision_reason", "decided_at"])
+    metadata = {
+        "canonical_route_id": str(canonical_route.pk),
+        "merged_source_ids": [link.source_id for link in links],
+    }
+    ModerationDecision.objects.create(
+        route=canonical_route,
+        action=ModerationDecision.Action.MERGE_SOURCES,
+        reason=reason,
+        metadata=metadata,
+        actor=actor,
+    )
+    ModerationDecision.objects.create(
+        route=duplicate_route,
+        action=ModerationDecision.Action.MERGE_SOURCES,
+        reason=reason,
+        metadata=metadata,
+        actor=actor,
+    )
+    return links
+
+
+@transaction.atomic
+def quarantine_suspected_duplicate(
+    route: Route,
+    *,
+    reason: str,
+    relationship: SimilarityRelationship | None = None,
+    actor: Any = None,
+) -> Route:
+    """Quarantine a suspected duplicate and retain its similarity evidence."""
+
+    if relationship is not None:
+        if route.pk not in {relationship.route_a_id, relationship.route_b_id}:
+            raise ValidationError("The similarity relationship does not contain this route.")
+        metadata = {
+            "relationship_id": relationship.pk,
+            "similarity_evidence": relationship.evidence,
+            "similarity_score": str(relationship.similarity_score)
+            if relationship.similarity_score is not None
+            else None,
+        }
+    else:
+        metadata = {}
+    return quarantine_route(route, reason=reason, actor=actor, metadata=metadata)
+
+
+# Short aliases used by task dispatchers and moderation adapters.
+merge_sources = merge_route_sources
+keep_both = keep_both_routes
+quarantine_duplicate = quarantine_suspected_duplicate
 
 
 @transaction.atomic
@@ -410,9 +638,10 @@ def mark_source_available(source: RouteSource, *, error: str = "") -> RouteSourc
     return source
 
 
-def _enqueue_payload_deletions(route: Route, *, reason: str) -> None:
+def _enqueue_payload_deletions(route: Route, *, reason: str) -> list[int]:
     """Create durable deletion work without performing external I/O in a transaction."""
 
+    request_ids: list[int] = []
     versions = route.versions.select_for_update().filter(original_gpx_storage_key__gt="")
     for version in versions:
         request, created = PayloadDeletionRequest.objects.get_or_create(
@@ -426,6 +655,26 @@ def _enqueue_payload_deletions(route: Route, *, reason: str) -> None:
             raise RuntimeError("A payload deletion request has an inconsistent storage key.")
         if not created and request.status == PayloadDeletionRequest.Status.COMPLETED:
             raise RuntimeError("A completed payload deletion request still has a storage key.")
+        request_ids.append(request.pk)
+    return request_ids
+
+
+def _schedule_payload_deletions(request_ids: list[int]) -> None:
+    """Dispatch deletion work only after the lifecycle transaction commits."""
+
+    if not request_ids:
+        return
+
+    def dispatch() -> None:
+        from apps.ingestion.tasks import process_payload_deletion_task
+
+        for request_id in request_ids:
+            try:
+                process_payload_deletion_task.delay(request_id)
+            except Exception:
+                logger.warning("Could not dispatch payload deletion %s", request_id, exc_info=True)
+
+    transaction.on_commit(dispatch)
 
 
 def _mark_payload_deletion_failed(request_id: int, error: str) -> PayloadDeletionRequest:

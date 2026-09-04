@@ -7,6 +7,8 @@ from typing import Any, cast
 from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
 
+from apps.catalogue.services import process_payload_deletion, retry_payload_deletions
+
 from .crawler import run_crawl
 from .gpx import GpxExtractionTaskFailure, cleanup_orphan_payload
 from .gpx import extract_gpx as run_gpx_extraction
@@ -95,6 +97,25 @@ def cleanup_orphan_gpx(orphan_id: int) -> dict[str, Any]:
     """Retry a durable payload cleanup item after storage outages."""
 
     return cleanup_orphan_payload(orphan_id)
+
+
+@shared_task(name="bikemapy.ingestion.process_payload_deletion")  # type: ignore[untyped-decorator]
+def process_payload_deletion_task(request_id: int) -> dict[str, Any]:
+    """Remove one quarantined payload and finalize its audit metadata."""
+
+    request = process_payload_deletion(request_id)
+    return {"request_id": request.pk, "status": request.status, "attempts": request.attempts}
+
+
+@shared_task(name="bikemapy.ingestion.retry_payload_deletions")  # type: ignore[untyped-decorator]
+def retry_payload_deletions_task(limit: int = 100) -> dict[str, Any]:
+    """Retry pending and failed deletion work after broker or storage outages."""
+
+    requests = retry_payload_deletions(limit=max(1, limit))
+    return {
+        "processed": len(requests),
+        "completed": sum(request.status == "completed" for request in requests),
+    }
 
 
 # A concise entry point is useful to dispatch from admin/management commands.

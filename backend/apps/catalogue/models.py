@@ -219,6 +219,21 @@ class Route(models.Model):
     def versions(self) -> models.QuerySet[RouteVersion]:
         return RouteVersion.objects.filter(source__route=self)
 
+    @property
+    def provenance_sources(self) -> models.QuerySet[RouteSource]:
+        """All direct and explicitly merged sources exposed by this route."""
+
+        return (
+            RouteSource.objects.filter(
+                Q(route=self)
+                | Q(canonical_route_links__canonical_route=self, canonical_route_links__active=True)
+            )
+            .distinct()
+            .order_by("pk")
+        )
+
+    all_sources = provenance_sources
+
 
 class ImmutableSourceQuerySet(models.QuerySet["RouteSource"]):
     def update(self, **kwargs: object) -> int:
@@ -503,7 +518,7 @@ class RouteCategory(models.Model):
 
 
 class SimilarityRelationship(models.Model):
-    """Evidence-backed relation between two routes; scoring is not implemented here."""
+    """Evidence-backed relation between two routes and its moderation state."""
 
     class RelationshipType(models.TextChoices):
         SUSPECTED_DUPLICATE = "suspected_duplicate", "Suspected duplicate"
@@ -535,6 +550,66 @@ class SimilarityRelationship(models.Model):
 
     def __str__(self) -> str:
         return f"{self.route_a} ↔ {self.route_b}"
+
+
+class RouteSourceMerge(models.Model):
+    """A durable provenance alias created when two route identities are merged.
+
+    ``RouteSource.route`` remains immutable: it is the route identity under
+    which the URL was first discovered.  This explicit alias lets a
+    moderation action expose that source under the surviving canonical route
+    without rewriting historical provenance or violating source identity
+    guards.
+    """
+
+    canonical_route = models.ForeignKey(
+        Route, on_delete=models.PROTECT, related_name="merged_source_links"
+    )
+    source = models.ForeignKey(
+        RouteSource, on_delete=models.PROTECT, related_name="canonical_route_links"
+    )
+    reason = models.TextField()
+    active = models.BooleanField(default=True)
+    deactivated_at = models.DateTimeField(blank=True, null=True)
+    deactivated_reason = models.TextField(blank=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="catalogue_source_merges",
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["canonical_route", "source"], name="catalogue_source_merge_unique"
+            ),
+            models.UniqueConstraint(
+                fields=["source"],
+                condition=Q(active=True),
+                name="catalogue_active_source_merge_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source} → {self.canonical_route}"
+
+    def clean(self) -> None:
+        super().clean()
+        if self.active and self.deactivated_at is not None:
+            raise ValidationError("An active source merge cannot have a deactivation timestamp.")
+        if not self.active and self.deactivated_at is None:
+            raise ValidationError("An inactive source merge requires a deactivation timestamp.")
+        if self.canonical_route_id and self.source_id:
+            source_route_id = (
+                RouteSource.objects.filter(pk=self.source_id)
+                .values_list("route_id", flat=True)
+                .first()
+            )
+            if source_route_id == self.canonical_route_id:
+                raise ValidationError("A route cannot merge one of its own sources.")
 
 
 class SourceDenylistEntry(models.Model):
