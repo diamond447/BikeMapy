@@ -117,7 +117,11 @@ CELERY_BEAT_SCHEDULE = {
     "bikeforum-incremental-daily": {
         "task": "bikemapy.ingestion.incremental_bikeforum_crawl",
         "schedule": 86400,
-    }
+    },
+    "retry-route-payload-deletions": {
+        "task": "bikemapy.ingestion.retry_payload_deletions",
+        "schedule": 900,
+    },
 }
 
 # Crawl defaults are intentionally conservative.  A deployment can tune them
@@ -151,3 +155,13 @@ GPX_BACKOFF = float(os.getenv("GPX_BACKOFF", "0.5"))
 GPX_MAX_BYTES = int(os.getenv("GPX_MAX_BYTES", str(10 * 1024 * 1024)))
 GPX_MAX_POINTS = int(os.getenv("GPX_MAX_POINTS", "200000"))
 GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)
+
+# Spatial duplicate detection is intentionally precision-oriented.  Keep the
+# values configurable so benchmark results can tune policy without a schema
+# change or code deployment.
+ROUTE_SIMILARITY_SAMPLE_POINTS = int(os.getenv("ROUTE_SIMILARITY_SAMPLE_POINTS", "64"))
+ROUTE_SIMILARITY_GPS_TOLERANCE_M = float(os.getenv("ROUTE_SIMILARITY_GPS_TOLERANCE_M", "30"))
+ROUTE_DUPLICATE_MAX_LENGTH_DELTA = float(os.getenv("ROUTE_DUPLICATE_MAX_LENGTH_DELTA", "0.10"))
+ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M", "25"))
+ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M", "100"))
+ROUTE_VARIANT_MIN_SCORE = float(os.getenv("ROUTE_VARIANT_MIN_SCORE", "0.55"))

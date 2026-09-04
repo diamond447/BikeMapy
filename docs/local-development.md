@@ -56,6 +56,11 @@ docker compose exec backend uv run --locked --no-dev python -c \
   'from apps.ingestion.tasks import crawl_bikeforum; print(crawl_bikeforum.delay().get(timeout=120))'
 ```
 
+Compose runs a dedicated `beat` service alongside the worker. It dispatches
+the scheduled crawl and retries durable quarantined-payload deletions every
+15 minutes; the post-commit dispatch from moderation is therefore safe to
+retry after a broker or storage outage.
+
 Historical work must always have an explicit page bound:
 
 ```sh

@@ -65,6 +65,20 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
 
+  beat:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    command: uv run --locked --no-dev celery -A config beat --loglevel=INFO
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
   frontend:
     build:
       context: frontend
