@@ -8,7 +8,9 @@ from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
 
 from .crawler import run_crawl
-from .models import CrawlTask
+from .gpx import GpxExtractionTaskFailure, cleanup_orphan_payload
+from .gpx import extract_gpx as run_gpx_extraction
+from .models import CrawlTask, ExtractionStatus
 
 
 @shared_task(name="bikemapy.ingestion.worker_smoke")  # type: ignore[untyped-decorator]
@@ -66,3 +68,34 @@ def backfill_bikeforum(start_url: str, max_pages: int = 10) -> dict[str, Any]:
             stream=f"backfill:{start_url}",
         ),
     )
+
+
+@shared_task(name="bikemapy.ingestion.extract_gpx")  # type: ignore[untyped-decorator]
+def extract_gpx(source_id: int) -> dict[str, Any]:
+    """Extract one source in isolation; terminal failures are persisted then raised."""
+
+    result = run_gpx_extraction(source_id)
+    if result.get("status") == ExtractionStatus.FAILED:
+        raise GpxExtractionTaskFailure(result.get("error", "GPX extraction failed"))
+    return result
+
+
+@shared_task(name="bikemapy.ingestion.extract_gpx_route")  # type: ignore[untyped-decorator]
+def extract_gpx_route(source_id: int) -> dict[str, Any]:
+    """Compatibility task name for dispatchers using the route terminology."""
+
+    result = run_gpx_extraction(source_id)
+    if result.get("status") == ExtractionStatus.FAILED:
+        raise GpxExtractionTaskFailure(result.get("error", "GPX extraction failed"))
+    return result
+
+
+@shared_task(name="bikemapy.ingestion.cleanup_orphan_gpx")  # type: ignore[untyped-decorator]
+def cleanup_orphan_gpx(orphan_id: int) -> dict[str, Any]:
+    """Retry a durable payload cleanup item after storage outages."""
+
+    return cleanup_orphan_payload(orphan_id)
+
+
+# A concise entry point is useful to dispatch from admin/management commands.
+extract_route = extract_gpx_route
