@@ -159,16 +159,15 @@ def _version(
     source = RouteSource.objects.create(
         route=route, mapy_url=f"https://mapy.com/s/{route.pk}-{number}"
     )
-    return RouteVersion.objects.create(
+    return record_route_version(
         source=source,
-        version_number=1,
         checksum=f"checksum-{route.pk}-{number}",
         normalized_geometry=geometry,
         simplified_geometry=geometry,
         distance_m=Decimal("1"),
         loop_status=LoopStatus.LOOP if loop else LoopStatus.POINT_TO_POINT,
         technical_status=status,
-    )
+    )[0]
 
 
 def test_similarity_is_persisted_idempotently() -> None:
