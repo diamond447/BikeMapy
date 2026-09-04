@@ -113,3 +113,32 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
+CELERY_BEAT_SCHEDULE = {
+    "bikeforum-incremental-daily": {
+        "task": "bikemapy.ingestion.incremental_bikeforum_crawl",
+        "schedule": 86400,
+    }
+}
+
+# Crawl defaults are intentionally conservative.  A deployment can tune them
+# without changing code, while the identifiable UA remains explicit.
+BIKEFORUM_USER_AGENT = os.getenv(
+    "BIKEFORUM_USER_AGENT", "BikeMapyBot/1.0 (+https://github.com/diamond447/BikeMapy)"
+)
+BIKEFORUM_TIMEOUT = float(os.getenv("BIKEFORUM_TIMEOUT", "15"))
+BIKEFORUM_RATE_LIMIT = float(os.getenv("BIKEFORUM_RATE_LIMIT", "2"))
+BIKEFORUM_RETRIES = int(os.getenv("BIKEFORUM_RETRIES", "2"))
+BIKEFORUM_BACKOFF = float(os.getenv("BIKEFORUM_BACKOFF", "1"))
+BIKEFORUM_CACHE_TTL = float(os.getenv("BIKEFORUM_CACHE_TTL", "3600"))
+BIKEFORUM_MAX_PAGES = int(os.getenv("BIKEFORUM_MAX_PAGES", "100"))
+BIKEFORUM_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")
+    if origin.strip()
+]
+BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)
+BIKEFORUM_LEASE_SECONDS = int(os.getenv("BIKEFORUM_LEASE_SECONDS", "600"))
+BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))
+BIKEFORUM_INCREMENTAL_URL = os.getenv(
+    "BIKEFORUM_INCREMENTAL_URL", "https://www.bike-forum.cz/forum/"
+)

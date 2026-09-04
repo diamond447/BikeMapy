@@ -34,6 +34,43 @@ The task should print `worker-ready`. Stop the stack with `docker compose down`;
 use `docker compose down -v` only when intentionally removing local database,
 Redis, and GPX volumes.
 
+## BikeForum crawler
+
+The crawler targets the public Bike-Forum origin `https://www.bike-forum.cz`;
+the default incremental cursor is `https://www.bike-forum.cz/forum/`.
+The crawler is deliberately bounded and resumable. It fetches only public
+server-rendered HTML, identifies itself with `BIKEFORUM_USER_AGENT`, reads
+`robots.txt`, waits between requests, caches responses, and uses bounded
+retries. Requests and discovered links are restricted to the explicitly
+configured `BIKEFORUM_ALLOWED_ORIGINS`; DNS resolution is checked for private
+or link-local addresses immediately before each network request. This reduces
+DNS rebinding risk, although a transport that cannot pin the resolved address
+still has the normal DNS TOCTOU limitation. Keep the default two-second
+request interval unless the forum owner has explicitly granted a different
+limit.
+
+Run an incremental crawl through Celery:
+
+```sh
+docker compose exec backend uv run --locked --no-dev python -c \
+  'from apps.ingestion.tasks import crawl_bikeforum; print(crawl_bikeforum.delay().get(timeout=120))'
+```
+
+Historical work must always have an explicit page bound:
+
+```sh
+docker compose exec backend uv run --locked --no-dev python -c \
+  'from apps.ingestion.tasks import backfill_bikeforum; print(backfill_bikeforum.delay("https://www.bike-forum.cz/forum/", max_pages=20).get(timeout=120))'
+```
+
+`CrawlCheckpoint`, `CrawlTask`, and its leased `CrawlPageWork` frontier are the
+source of truth for progress, so a worker interruption leaves queued or
+expired work available for a later run. Listing pages enqueue thread pages;
+each failed page is retained with its error while other frontier items
+continue. The HTML parser, HTTP fetcher, and source availability checker are
+explicit interfaces, with representative index/thread fixtures under
+`backend/apps/ingestion/tests/fixtures/`.
+
 To verify the real infrastructure path (PostGIS plus a task delivered through
 Redis to a Celery worker), run:
 

@@ -391,6 +391,23 @@ def mark_source_unavailable(source: RouteSource, *, error: str = "") -> RouteSou
     return source
 
 
+@transaction.atomic
+def mark_source_available(source: RouteSource, *, error: str = "") -> RouteSource:
+    """Record a successful source check without changing route visibility."""
+
+    Route.objects.select_for_update().get(pk=source.route_id)
+    source = RouteSource.objects.select_for_update().get(pk=source.pk)
+    now = timezone.now()
+    source.source_status = SourceStatus.AVAILABLE
+    source.last_checked_at = now
+    source.last_successful_check_at = now
+    source.last_error = error
+    source.save(
+        update_fields=["source_status", "last_checked_at", "last_successful_check_at", "last_error"]
+    )
+    return source
+
+
 def _enqueue_payload_deletions(route: Route, *, reason: str) -> None:
     """Create durable deletion work without performing external I/O in a transaction."""
 
