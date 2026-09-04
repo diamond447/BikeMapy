@@ -28,6 +28,12 @@ terms and data rights.
 See the [product specification](docs/product-spec.md) for the approved product
 requirements, architecture direction, operational model, and launch gates.
 
+## Local development
+
+The production-oriented application skeleton runs with Docker Compose. Follow
+the [local development guide](docs/local-development.md) to start the Django,
+React, Celery, PostGIS, and Redis services and run the quality suite.
+
 ## Project status
 
 No production setup or public launch is being claimed yet. Implementation will

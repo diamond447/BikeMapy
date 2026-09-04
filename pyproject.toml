@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bikemapy"
+version = "0.1.0"
+description = "A map-first catalogue of cycling routes shared in BikeForum discussions."
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "Django>=5.2,<5.3",
+  "djangorestframework>=3.16,<3.17",
+  "django-cors-headers>=4.7,<5",
+  "celery[redis]>=5.5,<6",
+  "httpx>=0.28,<0.29",
+  "beautifulsoup4>=4.13,<5",
+  "lxml>=5.4,<6",
+  "psycopg[binary]>=3.2,<4",
+  "drf-spectacular>=0.28,<0.29",
+]
+
+[project.optional-dependencies]
+dev = [
+  "django-stubs[compatible-mypy]>=5.2,<6",
+  "mypy>=1.15,<2",
+  "pre-commit>=4.2,<5",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+  "pytest-django>=4.11,<5",
+  "ruff>=0.11,<0.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+pythonpath = ["backend"]
+testpaths = ["backend/tests", "backend/apps"]
+addopts = "--strict-markers --cov=backend/apps --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+omit = ["*/__init__.py", "*/apps.py", "*/migrations/*"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["backend"]
+extend-exclude = ["*/migrations/*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "DJ"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "backend"
+plugins = ["mypy_django_plugin.main"]
+strict = true
+warn_unreachable = true
+exclude = "backend/.*/migrations/"
+
+[tool.django-stubs]
+django_settings_module = "config.settings"

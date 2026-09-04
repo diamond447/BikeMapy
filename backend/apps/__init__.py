@@ -1,0 +1,1 @@
+"""BikeMapy domain applications."""

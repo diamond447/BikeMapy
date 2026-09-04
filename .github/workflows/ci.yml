@@ -1,0 +1,129 @@
+name: Quality checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (lint, types, tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: bikemapy
+          POSTGRES_USER: bikemapy
+          POSTGRES_PASSWORD: bikemapy
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U bikemapy -d bikemapy"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: [6379:6379]
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: bikemapy
+      POSTGRES_USER: bikemapy
+      POSTGRES_PASSWORD: bikemapy
+      DJANGO_DATABASE_ENGINE: django.db.backends.sqlite3
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/0
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - uses: astral-sh/setup-uv@v6
+        with: { version: '0.9.26', enable-cache: true }
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked --extra dev ruff check backend
+      - run: uv run --locked --extra dev ruff format --check backend scripts
+      - run: uv run --locked --extra dev mypy backend
+      - run: uv run --locked --extra dev pytest
+
+  integration:
+    name: Infrastructure (PostGIS and Celery/Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: bikemapy
+          POSTGRES_USER: bikemapy
+          POSTGRES_PASSWORD: bikemapy
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U bikemapy -d bikemapy"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: bikemapy
+      POSTGRES_USER: bikemapy
+      POSTGRES_PASSWORD: bikemapy
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/0
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
+      - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y gdal-bin libgdal-dev libgeos-dev
+      - uses: astral-sh/setup-uv@v6
+        with: { version: '0.9.26', enable-cache: true }
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked --extra dev python backend/manage.py migrate --noinput
+      - name: Start Celery worker
+        run: |
+          uv run --locked --extra dev celery -A config worker --loglevel=WARNING --pool=solo > /tmp/celery-worker.log 2>&1 &
+          echo $! > /tmp/celery-worker.pid
+      - name: Verify PostGIS and Celery through Redis
+        run: uv run --locked --extra dev python scripts/check_integrations.py
+      - name: Show worker log on failure
+        if: failure()
+        run: cat /tmp/celery-worker.log
+      - name: Stop Celery worker
+        if: always()
+        run: kill "$(cat /tmp/celery-worker.pid)" || true
+
+  frontend:
+    name: Frontend (lint, types, tests, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: frontend }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.10.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: frontend/pnpm-lock.yaml }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format
+      - run: pnpm exec tsc -b --pretty false
+      - run: pnpm test
+      - run: pnpm build
+
+  security:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
