@@ -142,3 +142,12 @@ BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))
 BIKEFORUM_INCREMENTAL_URL = os.getenv(
     "BIKEFORUM_INCREMENTAL_URL", "https://www.bike-forum.cz/forum/"
 )
+
+# GPX imports are bounded independently of the forum crawler.  The exporter
+# follows only same-origin Mapy redirects; DNS validation adds SSRF defence.
+GPX_TIMEOUT = float(os.getenv("GPX_TIMEOUT", "30"))
+GPX_RETRIES = int(os.getenv("GPX_RETRIES", "3"))
+GPX_BACKOFF = float(os.getenv("GPX_BACKOFF", "0.5"))
+GPX_MAX_BYTES = int(os.getenv("GPX_MAX_BYTES", str(10 * 1024 * 1024)))
+GPX_MAX_POINTS = int(os.getenv("GPX_MAX_POINTS", "200000"))
+GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)

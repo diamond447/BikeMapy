@@ -185,8 +185,10 @@ def record_route_version(
         raise ValidationError("A route version checksum is required.")
     source_ref = RouteSource.objects.get(pk=source.pk)
     route = Route.objects.select_for_update().get(pk=source_ref.route_id)
-    if route.lifecycle != RouteLifecycle.PUBLISHED:
-        raise ValidationError("Versions cannot be recorded for a quarantined or removed route.")
+    if route.lifecycle == RouteLifecycle.SOFT_DELETED:
+        raise ValidationError("Versions cannot be recorded for a removed route.")
+    if route.lifecycle == RouteLifecycle.QUARANTINED and storage_key:
+        raise ValidationError("Quarantined route versions cannot retain original payloads.")
     source = RouteSource.objects.select_for_update().get(pk=source_ref.pk)
     if SourceDenylistEntry.objects.filter(source_url=source.mapy_url, active=True).exists():
         raise SourceDeniedError("This source URL is on the active denylist.")

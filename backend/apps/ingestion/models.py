@@ -22,6 +22,16 @@ class CrawlPageStatus(models.TextChoices):
     EXHAUSTED = "exhausted", "Retry limit exhausted"
 
 
+class ExtractionStatus(models.TextChoices):
+    """Lifecycle of one isolated GPX extraction attempt."""
+
+    QUEUED = "queued", "Queued"
+    PROCESSING = "processing", "Processing"
+    SUCCEEDED = "succeeded", "Succeeded"
+    FAILED = "failed", "Failed"
+    SUPERSEDED = "superseded", "Superseded"
+
+
 class CrawlTask(models.Model):
     """A bounded crawl execution whose progress is safe to resume."""
 
@@ -122,3 +132,85 @@ class CrawlPageWork(models.Model):
 
     def __str__(self) -> str:
         return f"{self.status}: {self.url}"
+
+
+class ExtractionAttempt(models.Model):
+    """Durable GPX work item and diagnostics for retries and review.
+
+    The source URL is copied at creation time so that an audit record remains
+    useful even when the source is subsequently unavailable.  Route sources
+    themselves are protected from deletion, but this model deliberately owns
+    only the processing history, not route content.
+    """
+
+    source = models.ForeignKey(
+        "catalogue.RouteSource", on_delete=models.PROTECT, related_name="extraction_attempts"
+    )
+    version = models.ForeignKey(
+        "catalogue.RouteVersion",
+        on_delete=models.PROTECT,
+        related_name="extraction_attempts",
+        blank=True,
+        null=True,
+    )
+    source_url = models.URLField(max_length=1000)
+    status = models.CharField(
+        max_length=20, choices=ExtractionStatus.choices, default=ExtractionStatus.QUEUED
+    )
+    attempt_number = models.PositiveIntegerField(default=1)
+    diagnostics = models.JSONField(default=dict, blank=True)
+    error = models.TextField(blank=True)
+    checksum = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(blank=True, null=True)
+    finished_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source", "attempt_number"], name="ing_extract_source_attempt_unique"
+            )
+        ]
+        indexes = [
+            models.Index(fields=["source", "status"], name="ing_extract_source_status_idx"),
+            models.Index(fields=["status", "created_at"], name="ing_extract_status_created_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.status}: {self.source_url} (attempt {self.attempt_number})"
+
+
+class OrphanPayloadStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    FAILED = "failed", "Failed"
+    COMPLETED = "completed", "Completed"
+
+
+class OrphanPayloadCleanup(models.Model):
+    """Durable cleanup work for a payload saved before a failed DB commit."""
+
+    source = models.ForeignKey(
+        "catalogue.RouteSource", on_delete=models.PROTECT, related_name="orphan_payloads"
+    )
+    attempt = models.ForeignKey(
+        ExtractionAttempt, on_delete=models.PROTECT, related_name="orphan_payloads"
+    )
+    storage_key = models.CharField(max_length=1000)
+    status = models.CharField(
+        max_length=20, choices=OrphanPayloadStatus.choices, default=OrphanPayloadStatus.PENDING
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    last_attempt_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["created_at", "pk"]
+        indexes = [
+            models.Index(fields=["status", "created_at"], name="ing_orphan_status_created_idx")
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.status}: {self.storage_key}"
