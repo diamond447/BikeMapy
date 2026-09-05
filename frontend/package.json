@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.74.4",
-    "maplibre-gl": "^5.6.1",
+    "maplibre-gl": "^6.6.0",
     "openapi-fetch": "^0.14.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
