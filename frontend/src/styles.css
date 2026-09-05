@@ -656,11 +656,27 @@ h1 {
   font-weight: 500;
   margin: 0 0 17px;
 }
+.report-description {
+  color: #527a66;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  margin: -7px 0 17px;
+}
 .report-dialog label {
   display: block;
   font-family: 'DM Mono', monospace;
   font-size: 0.61rem;
   margin-bottom: 7px;
+}
+.report-dialog select,
+.report-dialog input[type='email'] {
+  background: #edf3ea;
+  border: 1px solid #87a396;
+  color: #162d28;
+  display: block;
+  margin-bottom: 13px;
+  padding: 9px;
+  width: 100%;
 }
 .report-dialog textarea {
   border: 1px solid #87a396;
@@ -672,6 +688,33 @@ h1 {
   padding: 9px;
   resize: vertical;
   width: 100%;
+}
+.report-dialog small,
+.report-security-hint {
+  color: #527a66;
+  display: block;
+  font-size: 0.62rem;
+  line-height: 1.4;
+  margin: -7px 0 13px;
+}
+.turnstile-widget {
+  min-height: 0;
+}
+.report-security-hint {
+  margin: 8px 0 0;
+}
+.report-honeypot {
+  height: 1px;
+  left: -10000px;
+  overflow: hidden;
+  position: absolute;
+  top: auto;
+  width: 1px;
+}
+.report-error {
+  color: #a63b2a;
+  font-size: 0.7rem;
+  line-height: 1.4;
 }
 .report-actions {
   display: flex;
@@ -685,6 +728,10 @@ h1 {
   cursor: pointer;
   font-size: 0.68rem;
   padding: 8px 11px;
+}
+.report-dialog button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 .report-dialog button[type='button'] {
   background: transparent;

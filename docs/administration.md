@@ -35,3 +35,30 @@ latest review decision explicitly records all three boolean checks:
 - obvious content suitability.
 
 It does not claim safety, current passability, or legal access.
+
+## Anonymous reports
+
+Reports are available at the route detail endpoint
+`POST /api/v1/routes/<route-id>/reports/`. The form accepts incorrect-route,
+source/attribution, author-removal, rights-holder, and other reasons, with an
+optional contact email. Turnstile and a server-side honeypot are required;
+reports are queued for explicit owner review and never change route visibility
+or content automatically.
+
+The owner can open **Reports** in Django Admin and record start-review,
+accept, reject, duplicate, or close-without-action decisions. Every submission
+and decision has an audit event. `REPORT_RATE_LIMIT_HOURLY` and
+`REPORT_RATE_LIMIT_DAILY` default to 3 and 10. Rate identifiers are HMACs held
+only in Redis, with 24-hour maximum retention; raw client addresses are never
+stored in the database.
+
+By default, rate limiting uses the direct `REMOTE_ADDR`. For a Cloudflare
+Tunnel, set `REPORT_CLIENT_IP_MODE=cloudflare` and list only the tunnel or
+proxy peer networks in `REPORT_TRUSTED_PROXY_CIDRS`. Only a single valid
+`CF-Connecting-IP` value from those peers is accepted; untrusted peers and
+malformed or comma-separated values are safely ignored/rejected.
+
+Set `REPORT_TURNSTILE_SECRET_KEY` and `REPORT_RATE_LIMIT_HMAC_SECRET` in the
+runtime environment. The daily Celery beat task removes closed-report email
+after 90 days and replaces personal report details after 12 months. Both
+transitions are idempotent and audited.

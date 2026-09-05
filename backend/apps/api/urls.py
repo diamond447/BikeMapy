@@ -1,5 +1,7 @@
 from django.urls import path
 
+from apps.reports.api import RouteReportView
+
 from .views import api_root
 from .views_routes import (
     RouteDetailView,
@@ -15,6 +17,7 @@ urlpatterns = [
     path("routes/viewport/", ViewportRouteView.as_view(), name="public-route-viewport"),
     path("routes/<uuid:route_id>/", RouteDetailView.as_view(), name="public-route-detail"),
     path("routes/<uuid:route_id>/gpx/", RouteGpxDownloadView.as_view(), name="public-route-gpx"),
+    path("routes/<uuid:route_id>/reports/", RouteReportView.as_view(), name="public-route-report"),
     path("routes/by-slug/<slug:slug>/", RouteDetailView.as_view(), name="public-route-by-slug"),
     # This explicit name documents that geometry is only returned for a
     # selected route, never as a bulk payload.
