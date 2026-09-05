@@ -95,7 +95,6 @@ export function parseState(): DiscoveryState {
     min_ascent_m: 'emin',
     max_ascent_m: 'emax',
   }
-  const savedBounds = hasExplicitUrlState ? undefined : saved.view?.bounds
   const hasUrlBounds = ['w', 's', 'e', 'n'].every((key) => params.has(key))
   const bounds = hasUrlBounds
     ? ([number('w', -180), number('s', -85), number('e', 180), number('n', 85)] as [
@@ -104,7 +103,7 @@ export function parseState(): DiscoveryState {
         number,
         number,
       ])
-    : savedBounds
+    : undefined
   return {
     filters: (Object.keys(DEFAULT_FILTERS) as (keyof Filters)[]).reduce(
       (result, key) => ({
@@ -115,22 +114,9 @@ export function parseState(): DiscoveryState {
       { ...DEFAULT_FILTERS },
     ),
     view: {
-      longitude: number(
-        'lng',
-        hasExplicitUrlState
-          ? DEFAULT_VIEW.longitude
-          : (saved.view?.longitude ?? DEFAULT_VIEW.longitude),
-      ),
-      latitude: number(
-        'lat',
-        hasExplicitUrlState
-          ? DEFAULT_VIEW.latitude
-          : (saved.view?.latitude ?? DEFAULT_VIEW.latitude),
-      ),
-      zoom: number(
-        'z',
-        hasExplicitUrlState ? DEFAULT_VIEW.zoom : (saved.view?.zoom ?? DEFAULT_VIEW.zoom),
-      ),
+      longitude: number('lng', DEFAULT_VIEW.longitude),
+      latitude: number('lat', DEFAULT_VIEW.latitude),
+      zoom: number('z', DEFAULT_VIEW.zoom),
       bounds,
     },
     routeId: params.get('route') ?? (hasExplicitUrlState ? null : (saved.routeId ?? null)),
@@ -424,7 +410,7 @@ function App() {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ filters, view, routeId: selectedId, viewportOnly }),
+        JSON.stringify({ filters, routeId: selectedId, viewportOnly }),
       )
     } catch {
       /* private browsing */
