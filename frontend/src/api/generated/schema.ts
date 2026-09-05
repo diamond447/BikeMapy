@@ -53,6 +53,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/routes/{route_id}/gpx/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Serve a GPX payload only after the deployment's legal gate is enabled. */
+    get: operations['v1_routes_gpx_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/routes/by-slug/{slug}/': {
     parameters: {
       query?: never
@@ -95,6 +112,12 @@ export interface components {
       slug: string
       name: string
       description?: string
+    }
+    ElevationProfilePoint: {
+      /** Format: double */
+      distance_m: number
+      /** Format: double */
+      elevation_m: number
     }
     ForumPostAttribution: {
       /** Format: uri */
@@ -148,6 +171,10 @@ export interface components {
         type: 'Point' | 'LineString' | 'MultiLineString' | 'Polygon' | 'MultiPolygon'
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
+      readonly reviewed: boolean
+      readonly elevation_profile: components['schemas']['ElevationProfilePoint'][] | null
+      /** Format: uri */
+      readonly gpx_download_url: string | null
       /** Format: date-time */
       readonly created_at: string
       /** Format: date-time */
@@ -158,6 +185,10 @@ export interface components {
       mapy_url: string
       readonly title: string
       readonly status: string
+      /** Format: date-time */
+      readonly last_checked_at: string | null
+      /** Format: date-time */
+      readonly last_successful_check_at: string | null
       readonly posts: components['schemas']['ForumPostAttribution'][]
     }
     SpatialRoute: {
@@ -283,6 +314,35 @@ export interface operations {
         content: {
           'application/json': components['schemas']['SpatialRoute']
         }
+      }
+    }
+  }
+  v1_routes_gpx_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The approved GPX file. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/gpx+xml': string
+        }
+      }
+      /** @description GPX redistribution is unavailable. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }

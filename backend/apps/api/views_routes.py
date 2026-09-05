@@ -8,13 +8,15 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
+from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.core.exceptions import ValidationError
+from django.core.files.storage import default_storage
 from django.db import connection
 from django.db.models import Exists, F, OuterRef, Prefetch, Q, QuerySet
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import ParseError
 from rest_framework.generics import ListAPIView
@@ -25,6 +27,7 @@ from rest_framework.views import APIView
 from apps.catalogue.models import (
     ForumAuthor,
     ForumThread,
+    ModerationDecision,
     Route,
     RouteCategory,
     RouteLifecycle,
@@ -131,6 +134,13 @@ def public_route_queryset() -> QuerySet[Route]:
                 "similarity_b",
                 queryset=public_variant,
                 to_attr="public_variant_relationships_b",
+            ),
+            Prefetch(
+                "moderation_decisions",
+                queryset=ModerationDecision.objects.filter(
+                    action=ModerationDecision.Action.REVIEW
+                ).order_by("-created_at", "-pk"),
+                to_attr="public_review_decisions",
             ),
         )
         .distinct()
@@ -318,13 +328,51 @@ class RouteDetailView(APIView):
     def get(
         self, request: Request, route_id: UUID | None = None, slug: str | None = None
     ) -> Response:
-        del request
         queryset = public_route_queryset()
         if route_id is not None:
             route = get_object_or_404(queryset, pk=route_id)
         else:
             route = get_object_or_404(queryset, slug=slug)
-        return Response(RouteSerializer(route, context={"include_geometry": True}).data)
+        return Response(
+            RouteSerializer(
+                route,
+                context={"include_geometry": True, "request": request},
+            ).data
+        )
+
+
+@extend_schema(
+    responses={
+        (200, "application/gpx+xml"): OpenApiResponse(
+            response=OpenApiTypes.BINARY,
+            description="The approved GPX file.",
+        ),
+        404: OpenApiResponse(description="GPX redistribution is unavailable."),
+    }
+)
+class RouteGpxDownloadView(APIView):
+    """Serve a GPX payload only after the deployment's legal gate is enabled."""
+
+    def get(self, request: Request, route_id: UUID) -> Response:
+        del request
+        if not getattr(settings, "GPX_REDISTRIBUTION_APPROVED", False):
+            return Response({"detail": "GPX redistribution is not approved."}, status=404)
+        route = get_object_or_404(public_route_queryset(), pk=route_id)
+        version = route.current_approved_version
+        if version is None or not version.original_gpx_storage_key:
+            return Response({"detail": "GPX download is unavailable."}, status=404)
+        try:
+            payload = default_storage.open(version.original_gpx_storage_key, "rb")
+        except (FileNotFoundError, OSError):
+            return Response({"detail": "GPX download is unavailable."}, status=404)
+        from django.http import FileResponse
+
+        return FileResponse(
+            payload,
+            as_attachment=True,
+            filename=f"{route.slug}.gpx",
+            content_type="application/gpx+xml",
+        )
 
 
 @extend_schema(responses=SpatialRouteSerializer)

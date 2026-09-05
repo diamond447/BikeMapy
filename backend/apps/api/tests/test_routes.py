@@ -1,14 +1,19 @@
 # mypy: disable-error-code="import-untyped"
 
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
+from typing import cast
 from uuid import uuid4
 
 import pytest
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.db import connection
-from django.test import Client
+from django.http import StreamingHttpResponse
+from django.test import Client, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.request import Request
@@ -32,6 +37,7 @@ from apps.catalogue.services import (
     merge_route_sources,
     record_route_version,
     register_source,
+    review_route,
 )
 
 pytestmark = pytest.mark.django_db
@@ -60,6 +66,7 @@ def public_route() -> Route:
     version, _ = record_route_version(
         source=source,
         checksum="public-api-route",
+        storage_key="gpx/public-api-route.gpx",
         normalized_geometry={
             "type": "LineString",
             "coordinates": [[16.6, 49.2], [16.7, 49.25]],
@@ -70,6 +77,10 @@ def public_route() -> Route:
         },
         distance_m=Decimal("12000.00"),
         ascent_m=Decimal("250.00"),
+        elevation_profile=[
+            {"distance_m": 0.0, "elevation_m": 210.0},
+            {"distance_m": 12000.0, "elevation_m": 460.0},
+        ],
         technical_status=ProcessingStatus.VALID,
     )
     approve_version(version)
@@ -98,6 +109,48 @@ def test_route_detail_resolves_stable_id_and_slug(public_route: Route) -> None:
     by_slug = client.get(f"/api/v1/routes/by-slug/{public_route.slug}/")
     assert by_slug.status_code == 200
     assert by_slug.json()["id"] == str(public_route.pk)
+
+
+def test_detail_exposes_profile_and_keeps_review_badge_narrow(public_route: Route) -> None:
+    payload = Client().get(f"/api/v1/routes/{public_route.pk}/").json()
+    assert payload["elevation_profile"][-1]["elevation_m"] == 460.0
+    assert payload["reviewed"] is False
+    review_route(
+        public_route,
+        reason="Checked technical validity, source context, and suitability",
+        technical_validity=True,
+        source_context=True,
+        content_suitability=True,
+    )
+    payload = Client().get(f"/api/v1/routes/{public_route.pk}/").json()
+    assert payload["reviewed"] is True
+
+
+def test_gpx_download_contract_is_closed_before_legal_approval(public_route: Route) -> None:
+    with override_settings(GPX_REDISTRIBUTION_APPROVED=False):
+        response = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
+    assert response.status_code == 404
+    assert Client().get(f"/api/v1/routes/{public_route.pk}/").json()["gpx_download_url"] is None
+
+
+def test_gpx_download_uses_backend_origin_and_serves_only_existing_payload(
+    public_route: Route, tmp_path: Path
+) -> None:
+    with override_settings(GPX_REDISTRIBUTION_APPROVED=True, MEDIA_ROOT=tmp_path):
+        payload = Client().get(f"/api/v1/routes/{public_route.pk}/").json()
+        assert payload["gpx_download_url"] == (
+            f"http://testserver/api/v1/routes/{public_route.pk}/gpx/"
+        )
+        missing = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
+        assert missing.status_code == 404
+        default_storage.save("gpx/public-api-route.gpx", ContentFile(b"<gpx />"))
+        response = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
+    assert response.status_code == 200
+    assert response["Content-Type"] == "application/gpx+xml"
+    assert "attachment" in response["Content-Disposition"]
+    streamed_response = cast(StreamingHttpResponse, response)
+    content = cast(Iterable[bytes], streamed_response.streaming_content)
+    assert b"<gpx />" in b"".join(content)
 
 
 def test_stable_uuid_survives_readable_slug_change(public_route: Route) -> None:

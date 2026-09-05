@@ -78,6 +78,12 @@ const route: components['schemas']['Route'] = {
   sources: [],
   variants: [],
   geometry: null,
+  reviewed: false,
+  elevation_profile: [
+    { distance_m: 0, elevation_m: 220 },
+    { distance_m: 42000, elevation_m: 360 },
+  ],
+  gpx_download_url: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 }
@@ -496,5 +502,45 @@ describe('BikeMapy route discovery', () => {
       [16.8, 49.4],
     ])
     expect(geometryBounds(null)).toBeNull()
+  })
+
+  it('switches and persists Czech copy while updating route metadata', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await screen.findByRole('heading', { name: /south ridge loop/i })
+    expect(document.title).toContain('South ridge loop')
+    await user.click(screen.getByRole('button', { name: /change language/i }))
+    expect(document.documentElement.lang).toBe('cs')
+    expect(screen.getByRole('heading', { name: /najděte trasu/i })).toBeInTheDocument()
+    expect(localStorage.getItem('bikemapy:language')).toBe('cs')
+  })
+
+  it('offers a permanent link and an accessible report dialog', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await user.click(await screen.findByRole('button', { name: /copy permanent link/i }))
+    expect(await screen.findByText(/link copied|copy unavailable/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /report a problem/i }))
+    expect(
+      screen.getByRole('dialog', { name: /report a problem with this route/i }),
+    ).toBeInTheDocument()
+    expect(document.activeElement).toBe(
+      screen.getByRole('textbox', { name: /what should we check/i }),
+    )
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /report a problem/i }))
+    await user.type(
+      screen.getByRole('textbox', { name: /what should we check/i }),
+      'Wrong geometry',
+    )
+    await user.click(screen.getByRole('button', { name: /report unavailable/i }))
+    expect(screen.getByText(/no report was submitted/i)).toBeInTheDocument()
   })
 })
