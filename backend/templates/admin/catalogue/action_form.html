@@ -1,0 +1,16 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>{{ title|capfirst }}</h1>
+<p>{{ object }}</p>
+<form method="post">
+  {% csrf_token %}
+  {% if action == "metadata" %}
+  <p><label for="admin_title_override">Curated title</label><br>
+  <input id="admin_title_override" name="admin_title_override" value="{{ object.admin_title_override }}" maxlength="500" size="80"></p>
+  {% endif %}
+  <label for="reason">Reason</label><br>
+  <textarea id="reason" name="reason" rows="5" cols="80" required></textarea><br><br>
+  <button type="submit">Confirm {{ title }}</button>
+  <a href="../change/">Cancel</a>
+</form>
+{% endblock %}

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -25,10 +26,15 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "django.contrib.sessions",
     "django.contrib.messages",
+    "django.contrib.sites",
     "django.contrib.staticfiles",
     "corsheaders",
     "rest_framework",
     "drf_spectacular",
+    "allauth",
+    "allauth.account",
+    "allauth.socialaccount",
+    "allauth.socialaccount.providers.github",
     "apps.catalogue",
     "apps.ingestion",
     "apps.moderation",
@@ -48,11 +54,40 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "allauth.account.middleware.AccountMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
+SITE_ID = 1
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "allauth.account.auth_backends.AuthenticationBackend",
+]
+LOGIN_REDIRECT_URL = "/admin/"
+SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
+ACCOUNT_EMAIL_VERIFICATION = "none"
+SOCIALACCOUNT_PROVIDERS: dict[str, dict[str, Any]] = {
+    "github": {
+        "SCOPE": ["read:user"],
+    }
+}
+GITHUB_OAUTH_CLIENT_ID = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
+GITHUB_OAUTH_CLIENT_SECRET = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
+if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
+    SOCIALACCOUNT_PROVIDERS["github"]["APP"] = {
+        "client_id": GITHUB_OAUTH_CLIENT_ID,
+        "secret": GITHUB_OAUTH_CLIENT_SECRET,
+    }
+
+# Authorization uses GitHub's immutable numeric account ID.  Keep this empty
+# by default so a deployment must explicitly opt in to owner administration.
+GITHUB_OWNER_IDS = frozenset(
+    value.strip()
+    for value in os.getenv("GITHUB_OWNER_IDS", "").split(",")
+    if value.strip().isdigit()
+)
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
