@@ -213,16 +213,20 @@ export interface operations {
         author?: string
         /** @description Category slug. */
         category?: string
+        east?: number
         loop_status?: string
         max_ascent_m?: number
         max_distance_m?: number
         min_ascent_m?: number
         min_distance_m?: number
+        north?: number
         page?: number
         page_size?: number
         /** @description Full-text route, place, or author search. */
         search?: string
         source_status?: string
+        south?: number
+        west?: number
       }
       header?: never
       path?: never
@@ -306,10 +310,18 @@ export interface operations {
   v1_routes_viewport_retrieve: {
     parameters: {
       query: {
+        author?: string
+        /** @description Category slug. */
+        category?: string
         cell_limit?: number
         east: number
         limit?: number
+        max_ascent_m?: number
+        max_distance_m?: number
+        min_ascent_m?: number
+        min_distance_m?: number
         north: number
+        search?: string
         south: number
         west: number
         zoom: number

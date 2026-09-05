@@ -16,6 +16,7 @@ from rest_framework.test import APIRequestFactory
 
 from apps.api.pagination import RoutePagination
 from apps.api.views_routes import filter_routes, public_route_queryset
+from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.catalogue.models import (
     Category,
     ForumAuthor,
@@ -267,3 +268,29 @@ def test_viewport_endpoint_requires_bounds_and_returns_bounded_data(public_route
     assert truncated.status_code == 200
     assert truncated.json()["routes"] == []
     assert truncated.json()["truncated"] is True
+
+
+def test_viewport_endpoint_applies_catalogue_filters(public_route: Route) -> None:
+    client = Client()
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12"
+
+    matching = client.get(f"/api/v1/routes/viewport/?{base}&search=gravel")
+    assert matching.status_code == 200
+    assert [item["id"] for item in matching.json()["routes"]] == [str(public_route.pk)]
+
+    omitted = client.get(f"/api/v1/routes/viewport/?{base}&search=forest")
+    assert omitted.status_code == 200
+    assert omitted.json()["routes"] == []
+
+
+@pytest.mark.skipif(not _GIS_AVAILABLE, reason="requires the PostGIS geometry backend")
+def test_route_list_bbox_filter_runs_before_pagination(public_route: Route) -> None:
+    client = Client()
+    included = client.get("/api/v1/routes/?page_size=100&west=16.5&south=49.1&east=16.8&north=49.3")
+    assert included.status_code == 200
+    assert included.json()["count"] == 1
+    assert included.json()["results"][0]["id"] == str(public_route.pk)
+
+    excluded = client.get("/api/v1/routes/?page_size=100&west=17&south=49.1&east=17.2&north=49.3")
+    assert excluded.status_code == 200
+    assert excluded.json()["count"] == 0
