@@ -209,7 +209,32 @@ describe('BikeMapy route discovery', () => {
       expect.objectContaining({ longitude: 16.6, latitude: 49.2, zoom: 7.5 }),
     )
     window.history.replaceState({}, '', '/')
-    expect(parseState().filters.search).toBe('private')
+    const restored = parseState()
+    expect(restored.filters.search).toBe('private')
+    expect(restored.view).toEqual(
+      expect.objectContaining({ longitude: 16.6, latitude: 49.2, zoom: 7.5 }),
+    )
+  })
+
+  it('persists non-geographic preferences while keeping the viewport in the URL', async () => {
+    render(<App />)
+
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem('bikemapy:discovery-state') ?? '{}') as Record<
+        string,
+        unknown
+      >
+      expect(saved).toEqual(
+        expect.objectContaining({
+          filters: expect.any(Object),
+          routeId: null,
+          viewportOnly: false,
+        }),
+      )
+      expect(saved).not.toHaveProperty('view')
+    })
+    expect(window.location.search).toContain('lng=16.6000')
+    expect(window.location.search).toContain('lat=49.2000')
   })
 
   it('resolves a selected route outside the current result page', async () => {
