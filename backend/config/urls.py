@@ -1,11 +1,12 @@
-from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from apps.accounts.admin import owner_admin_site
 from apps.api.views import health_live, health_ready
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
+    path("admin/", owner_admin_site.urls),
+    path("accounts/", include("allauth.urls")),
     path("health/live/", health_live, name="health-live"),
     path("health/ready/", health_ready, name="health-ready"),
     path("api/v1/", include("apps.api.urls")),

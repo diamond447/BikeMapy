@@ -27,6 +27,8 @@ terms and data rights.
 
 See the [product specification](docs/product-spec.md) for the approved product
 requirements, architecture direction, operational model, and launch gates.
+Owner OAuth administration and moderation workflows are documented in
+the [administration guide](docs/administration.md).
 
 ## Local development
 
