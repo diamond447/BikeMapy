@@ -101,6 +101,17 @@ CORS_ALLOWED_ORIGINS = [
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    # The catalogue is intentionally public and read-only, but an unbounded
+    # client must not be able to consume all API capacity.  Deployments can
+    # tune these values without changing the application.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.getenv("API_ANON_RATE", "120/minute"),
+        "user": os.getenv("API_USER_RATE", "600/minute"),
+    },
 }
 SPECTACULAR_SETTINGS = {
     "TITLE": "BikeMapy API",
@@ -153,6 +164,8 @@ BIKEFORUM_RETRIES = int(os.getenv("BIKEFORUM_RETRIES", "2"))
 BIKEFORUM_BACKOFF = float(os.getenv("BIKEFORUM_BACKOFF", "1"))
 BIKEFORUM_CACHE_TTL = float(os.getenv("BIKEFORUM_CACHE_TTL", "3600"))
 BIKEFORUM_MAX_PAGES = int(os.getenv("BIKEFORUM_MAX_PAGES", "100"))
+# Do not let an origin serve an arbitrarily large HTML document to the parser.
+BIKEFORUM_MAX_BYTES = int(os.getenv("BIKEFORUM_MAX_BYTES", str(5 * 1024 * 1024)))
 BIKEFORUM_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")

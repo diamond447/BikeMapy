@@ -333,6 +333,34 @@ class LxmlBikeForumParser(BeautifulSoupBikeForumParser):
         return super().parse(body, url)
 
 
+def _bounded_http_response(
+    client: httpx.Client, url: str, *, headers: dict[str, str], max_bytes: int
+) -> httpx.Response:
+    """Read an origin response without buffering beyond the parser budget."""
+
+    with client.stream("GET", url, headers=headers) as streamed:
+        content_length = streamed.headers.get("content-length")
+        try:
+            declared_length = int(content_length) if content_length else None
+        except ValueError:
+            declared_length = None
+        if declared_length is not None and declared_length > max_bytes:
+            raise CrawlError(f"BikeForum page exceeds the {max_bytes}-byte limit")
+        chunks: list[bytes] = []
+        size = 0
+        for chunk in streamed.iter_bytes():
+            size += len(chunk)
+            if size > max_bytes:
+                raise CrawlError(f"BikeForum page exceeds the {max_bytes}-byte limit")
+            chunks.append(chunk)
+        return httpx.Response(
+            streamed.status_code,
+            headers=streamed.headers,
+            content=b"".join(chunks),
+            request=streamed.request,
+        )
+
+
 class PageFetcher(ABC):
     def close(self) -> None:  # noqa: B027
         """Release network resources; injectable test fetchers need no-op cleanup."""
@@ -355,6 +383,7 @@ class HttpxPageFetcher(PageFetcher):
         retries: int | None = None,
         backoff: float | None = None,
         cache_ttl: float | None = None,
+        max_bytes: int | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         self.user_agent = user_agent or getattr(
@@ -380,6 +409,14 @@ class HttpxPageFetcher(PageFetcher):
             cache_ttl
             if cache_ttl is not None
             else float(getattr(settings, "BIKEFORUM_CACHE_TTL", 3600))
+        )
+        self.max_bytes = max(
+            1,
+            int(
+                max_bytes
+                if max_bytes is not None
+                else getattr(settings, "BIKEFORUM_MAX_BYTES", 5 * 1024 * 1024)
+            ),
         )
         self._last_request = 0.0
         self._robots: dict[str, RobotFileParser | None] = {}
@@ -410,7 +447,12 @@ class HttpxPageFetcher(PageFetcher):
         robots_url = f"{origin}/robots.txt"
         try:
             self._wait()
-            response = self._client.get(robots_url, headers={"User-Agent": str(self.user_agent)})
+            response = _bounded_http_response(
+                self._client,
+                robots_url,
+                headers={"User-Agent": str(self.user_agent)},
+                max_bytes=self.max_bytes,
+            )
             if response.status_code == 404:
                 parser: RobotFileParser | None = None
             elif 300 <= response.status_code < 400:
@@ -481,6 +523,8 @@ class HttpxPageFetcher(PageFetcher):
             and cached.body
             and (timezone.now() - cached.fetched_at).total_seconds() < self.cache_ttl
         ):
+            if len(cached.body.encode("utf-8")) > self.max_bytes:
+                raise CrawlError(f"Cached BikeForum page exceeds the {self.max_bytes}-byte limit")
             return FetchedPage(
                 url=cached.final_url or url,
                 body=cached.body,
@@ -502,8 +546,17 @@ class HttpxPageFetcher(PageFetcher):
                     # DNS answer can change while a retry is pending.
                     self._validate_url(current)
                     self._wait()
-                    response = self._client.get(current, headers=headers)
+                    response = _bounded_http_response(
+                        self._client,
+                        current,
+                        headers=headers,
+                        max_bytes=self.max_bytes,
+                    )
                     if response.status_code == 304 and cached and cached.body:
+                        if len(cached.body.encode("utf-8")) > self.max_bytes:
+                            raise CrawlError(
+                                f"Cached BikeForum page exceeds the {self.max_bytes}-byte limit"
+                            )
                         cached.fetched_at = timezone.now()
                         cached.save(update_fields=["fetched_at"])
                         return FetchedPage(
@@ -530,7 +583,7 @@ class HttpxPageFetcher(PageFetcher):
                         self._allowed(target)
                         current = target
                         break
-                    body = response.text
+                    body = response.content.decode(response.encoding or "utf-8", errors="replace")
                     CrawlResponseCache.objects.update_or_create(
                         url=url,
                         defaults={
