@@ -237,7 +237,7 @@ a {
   margin: 0 0 25px;
 }
 .eyebrow {
-  color: #d34d32;
+  color: #a63b2a;
 }
 h1 {
   font-size: clamp(2rem, 3.2vw, 3rem);
@@ -269,7 +269,7 @@ h1 {
   width: 100%;
 }
 .search-field input::placeholder {
-  color: #7c9589;
+  color: #527a66;
 }
 .filter-grid {
   display: grid;
@@ -278,7 +278,7 @@ h1 {
   margin-top: 17px;
 }
 .filter-grid label {
-  color: #628075;
+  color: #41675a;
   font-family: 'DM Mono', monospace;
   font-size: 0.57rem;
 }
@@ -319,7 +319,7 @@ h1 {
   font-size: 0.59rem;
 }
 .results-heading button:disabled {
-  color: #a5b5aa;
+  color: #668276;
   cursor: default;
 }
 .viewport-filter {
@@ -338,7 +338,7 @@ h1 {
   width: 15px;
 }
 .viewport-filter small {
-  color: #8ca297;
+  color: #527a66;
   font-size: 0.53rem;
   margin-left: auto;
 }
@@ -352,7 +352,7 @@ h1 {
   padding: 13px;
 }
 .notice span {
-  color: #628075;
+  color: #41675a;
   font-size: 0.68rem;
 }
 .notice button {
@@ -392,7 +392,7 @@ h1 {
   line-height: 1.25;
 }
 .route-card-meta {
-  color: #628075;
+  color: #41675a;
   display: flex;
   font-family: 'DM Mono', monospace;
   font-size: 0.57rem;
@@ -447,6 +447,53 @@ h1 {
   font-size: 0.9rem;
   font-weight: 500;
   margin: 0;
+}
+.elevation-profile {
+  border-bottom: 1px solid rgba(232, 242, 222, 0.2);
+  margin: 14px 0 0;
+  padding-bottom: 12px;
+}
+.elevation-profile figcaption {
+  color: #d5e2d4;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.62rem;
+  margin-bottom: 8px;
+}
+.elevation-profile svg {
+  background: rgba(247, 250, 242, 0.08);
+  display: block;
+  height: 62px;
+  overflow: visible;
+  width: 100%;
+}
+.elevation-profile polyline {
+  fill: none;
+  stroke: #e7f24e;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+.elevation-profile ol {
+  display: grid;
+  gap: 4px 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  list-style: none;
+  margin: 9px 0 0;
+  max-height: 74px;
+  overflow: auto;
+  padding: 0;
+}
+.elevation-profile li {
+  color: #b0c6b5;
+  display: flex;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.5rem;
+  justify-content: space-between;
+  gap: 4px;
+}
+.elevation-profile li span:last-child {
+  color: #f7faf2;
 }
 .reviewed-badge {
   background: #e7f24e;
@@ -526,6 +573,17 @@ h1 {
   padding: 3px 0;
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+.detail-link:disabled {
+  color: #81988b;
+  cursor: not-allowed;
+  text-decoration: none;
+}
+.gpx-notice {
+  color: #91aa9c;
+  font-size: 0.57rem;
+  line-height: 1.4;
+  margin: 8px 0 0;
 }
 .source-section {
   border-top: 1px solid rgba(232, 242, 222, 0.2);
@@ -720,6 +778,8 @@ h1 {
     bottom: calc(var(--mobile-sheet-height) + 9px);
     left: 12px;
     max-width: none;
+    max-height: calc(100vh - var(--mobile-sheet-height) - 18px);
+    overflow: auto;
     padding: 14px 17px;
     right: 12px;
     width: auto;

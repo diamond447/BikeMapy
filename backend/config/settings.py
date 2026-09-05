@@ -186,6 +186,9 @@ GPX_BACKOFF = float(os.getenv("GPX_BACKOFF", "0.5"))
 GPX_MAX_BYTES = int(os.getenv("GPX_MAX_BYTES", str(10 * 1024 * 1024)))
 GPX_MAX_POINTS = int(os.getenv("GPX_MAX_POINTS", "200000"))
 GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)
+# Legal/terms review is an explicit deployment gate. Keep downloads off by
+# default even when an imported payload remains in local storage.
+GPX_REDISTRIBUTION_APPROVED = env_bool("GPX_REDISTRIBUTION_APPROVED", False)
 
 # Spatial duplicate detection is intentionally precision-oriented.  Keep the
 # values configurable so benchmark results can tune policy without a schema

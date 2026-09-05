@@ -138,6 +138,8 @@ jobs:
       - run: pnpm exec tsc -b --pretty false
       - run: pnpm test
       - run: pnpm build
+        env:
+          VITE_PUBLIC_SITE_URL: http://localhost:5173
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Run browser interaction and evidence tests

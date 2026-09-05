@@ -89,6 +89,7 @@ services:
       dockerfile: Dockerfile
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_PUBLIC_SITE_URL: ${VITE_PUBLIC_SITE_URL:-http://localhost:5173}
     command: pnpm dev --host 0.0.0.0
     volumes:
       - ./frontend:/app

@@ -322,6 +322,10 @@ class RouteVersion(models.Model):
     distance_m = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     ascent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     descent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+    # A compact, derived profile is safe to publish alongside the route shape.
+    # Keep it separate from the original GPX payload so payload removal still
+    # removes the source file while preserving useful public metrics.
+    elevation_profile = models.JSONField(default=list, blank=True)
     loop_status = models.CharField(
         max_length=20, choices=LoopStatus.choices, default=LoopStatus.UNKNOWN
     )
@@ -394,6 +398,7 @@ class RouteVersion(models.Model):
                 "distance_m",
                 "ascent_m",
                 "descent_m",
+                "elevation_profile",
                 "loop_status",
                 "technical_status",
                 "validation_error",

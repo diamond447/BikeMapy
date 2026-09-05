@@ -194,6 +194,7 @@ def record_route_version(
     distance_m: Any = None,
     ascent_m: Any = None,
     descent_m: Any = None,
+    elevation_profile: list[dict[str, float]] | None = None,
     loop_status: str = LoopStatus.UNKNOWN,
     technical_status: str = ProcessingStatus.VALID,
     validation_error: str = "",
@@ -232,6 +233,7 @@ def record_route_version(
         distance_m=distance_m,
         ascent_m=ascent_m,
         descent_m=descent_m,
+        elevation_profile=elevation_profile or [],
         loop_status=loop_status,
         technical_status=technical_status,
         validation_error=validation_error,
@@ -309,8 +311,21 @@ def approve_version(version: RouteVersion, *, actor: Any = None) -> Route:
 
 
 @transaction.atomic
-def review_route(route: Route, *, reason: str, actor: Any = None) -> Route:
-    """Record a human suitability/technical review independently of publication."""
+def review_route(
+    route: Route,
+    *,
+    reason: str,
+    actor: Any = None,
+    technical_validity: bool = False,
+    source_context: bool = False,
+    content_suitability: bool = False,
+) -> Route:
+    """Record review evidence independently of publication.
+
+    The public badge requires all three explicit checks. A timestamp alone is
+    intentionally not enough, preserving the distinction between review and a
+    safety, passability, or legal-access claim.
+    """
 
     if not reason.strip():
         raise ValidationError("A review reason is required.")
@@ -321,6 +336,11 @@ def review_route(route: Route, *, reason: str, actor: Any = None) -> Route:
         route=route,
         action=ModerationDecision.Action.REVIEW,
         reason=reason,
+        metadata={
+            "technical_validity": technical_validity,
+            "source_context": source_context,
+            "content_suitability": content_suitability,
+        },
         actor=actor,
     )
     return route

@@ -6,6 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import type { components } from './api/generated/schema'
 import { apiClient } from './api/client'
 import { DEFAULT_VIEW, MAP_PROVIDER } from './mapProvider'
+import { normalizePublicSiteUrl, routeUrl } from './siteMetadata'
 
 type Route = components['schemas']['Route']
 type SpatialRoute = components['schemas']['SpatialRoute']
@@ -36,6 +37,7 @@ type DiscoveryState = {
 type Language = 'en' | 'cs'
 
 const LANGUAGE_KEY = 'bikemapy:language'
+const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_URL)
 
 const translations = {
   en: {
@@ -99,6 +101,7 @@ const translations = {
     ascent: 'Ascent',
     descent: 'Descent',
     elevation: 'Elevation',
+    elevationProfile: 'Elevation profile',
     loop: 'Loop',
     pointToPoint: 'Point to point',
     routeType: 'Route type',
@@ -117,6 +120,8 @@ const translations = {
     sourceLink: (title: string) => `Open source ${title}`,
     mapyLink: 'Open Mapy.com route',
     noSources: 'No public forum sources are available.',
+    sourceChecked: (date: string) => `Last checked ${date}`,
+    sourceLastSuccessfulCheck: (date: string) => `Last successful check ${date}`,
     posted: (date: string) => `Posted ${date}`,
     reviewed: 'Reviewed',
     reviewedDisclaimer:
@@ -129,9 +134,11 @@ const translations = {
     reportTitle: 'Report a problem with this route',
     reportLabel: 'What should we check?',
     reportPlaceholder: 'Describe an issue with the route or its attribution…',
-    sendReport: 'Send report',
-    reportThanks: 'Thanks. Your report is ready for review.',
+    sendReport: 'Report unavailable',
+    reportThanks: 'Secure reporting is not available yet. No report was submitted.',
     cancel: 'Cancel',
+    gpxDownload: 'Download GPX',
+    gpxUnavailable: 'GPX download is unavailable until redistribution is legally approved.',
   },
   cs: {
     siteTitle: 'BikeMapy — trasy se zdrojem',
@@ -193,6 +200,7 @@ const translations = {
     ascent: 'Stoupání',
     descent: 'Klesání',
     elevation: 'Výškové údaje',
+    elevationProfile: 'Výškový profil',
     loop: 'Okruh',
     pointToPoint: 'Z bodu do bodu',
     routeType: 'Typ trasy',
@@ -211,6 +219,8 @@ const translations = {
     sourceLink: (title: string) => `Otevřít zdroj ${title}`,
     mapyLink: 'Otevřít trasu na Mapy.com',
     noSources: 'Veřejné zdroje z fóra nejsou k dispozici.',
+    sourceChecked: (date: string) => `Naposledy ověřeno ${date}`,
+    sourceLastSuccessfulCheck: (date: string) => `Poslední úspěšná kontrola ${date}`,
     posted: (date: string) => `Publikováno ${date}`,
     reviewed: 'Prověřeno',
     reviewedDisclaimer:
@@ -223,9 +233,11 @@ const translations = {
     reportTitle: 'Nahlásit problém s trasou',
     reportLabel: 'Co máme prověřit?',
     reportPlaceholder: 'Popište problém s trasou nebo uvedením zdroje…',
-    sendReport: 'Odeslat hlášení',
-    reportThanks: 'Děkujeme. Hlášení je připraveno ke kontrole.',
+    sendReport: 'Hlášení není dostupné',
+    reportThanks: 'Bezpečné hlášení zatím není dostupné. Hlášení nebylo odesláno.',
     cancel: 'Zrušit',
+    gpxDownload: 'Stáhnout GPX',
+    gpxUnavailable: 'Stažení GPX není dostupné, dokud nebude právně schváleno další šíření.',
   },
 } as const
 type Copy = (typeof translations)[Language]
@@ -393,6 +405,45 @@ function formatMetric(value: string | null | undefined, suffix: string): string 
   const number = Number(value)
   if (!Number.isFinite(number)) return '—'
   return `${Math.round(number)} ${suffix}`
+}
+
+function hasMetric(value: string | null | undefined): value is string {
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+}
+
+type ElevationPoint = { distance_m: number; elevation_m: number }
+
+function ElevationProfile({ points, copy }: { points: ElevationPoint[]; copy: Copy }) {
+  if (!points.length) return null
+  const minimum = Math.min(...points.map((point) => point.elevation_m))
+  const maximum = Math.max(...points.map((point) => point.elevation_m))
+  const distance = Math.max(points.at(-1)?.distance_m ?? 0, 1)
+  const range = Math.max(maximum - minimum, 1)
+  const coordinates = points
+    .map((point) => {
+      const x = (point.distance_m / distance) * 100
+      const y = 96 - ((point.elevation_m - minimum) / range) * 86
+      return `${x.toFixed(2)},${y.toFixed(2)}`
+    })
+    .join(' ')
+  const formatDistance = (value: number) => `${(value / 1000).toFixed(1)} km`
+  const formatElevation = (value: number) => `${Math.round(value)} m`
+  return (
+    <figure className="elevation-profile" aria-labelledby="elevation-profile-title">
+      <figcaption id="elevation-profile-title">{copy.elevationProfile}</figcaption>
+      <svg viewBox="0 0 100 100" role="img" aria-labelledby="elevation-profile-title">
+        <polyline points={coordinates} />
+      </svg>
+      <ol aria-label={copy.elevationProfile}>
+        {points.map((point, index) => (
+          <li key={`${point.distance_m}-${point.elevation_m}-${index}`}>
+            <span>{formatDistance(point.distance_m)}</span>
+            <span>{formatElevation(point.elevation_m)}</span>
+          </li>
+        ))}
+      </ol>
+    </figure>
+  )
 }
 
 function routeStatus(status: string, copy: Copy): string {
@@ -573,6 +624,9 @@ function App() {
   const mapNode = useRef<HTMLDivElement>(null)
   const panelNode = useRef<HTMLElement>(null)
   const detailNode = useRef<HTMLElement>(null)
+  const reportMessageNode = useRef<HTMLTextAreaElement>(null)
+  const reportTriggerNode = useRef<HTMLButtonElement>(null)
+  const reportDialogNode = useRef<HTMLElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const { routes, count, loading, error } = useRouteList(
     filters,
@@ -596,8 +650,50 @@ function App() {
   const displayRoutes = routes
   const mapData = viewport.data
   const permanentRouteUrl = selectedRoute
-    ? `${window.location.origin}/?route=${encodeURIComponent(selectedRoute.id)}&slug=${encodeURIComponent(selectedRoute.slug)}`
+    ? routeUrl(PUBLIC_SITE_URL, selectedRoute.id, selectedRoute.slug)
     : ''
+
+  useEffect(() => {
+    if (!reportOpen) return
+    const previous = document.activeElement as HTMLElement | null
+    const trigger = reportTriggerNode.current
+    const focusReport = () => reportMessageNode.current?.focus()
+    focusReport()
+    const shell = document.querySelector('.app-shell')
+    const background = shell
+      ? Array.from(shell.children).filter((node) => !node.classList.contains('report-backdrop'))
+      : []
+    background.forEach((node) => node.setAttribute('inert', ''))
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setReportOpen(false)
+    }
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !reportDialogNode.current) return
+      const focusable = Array.from(
+        reportDialogNode.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), textarea, a[href], input:not([disabled]), select:not([disabled])',
+        ),
+      )
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    document.addEventListener('keydown', trapFocus)
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape)
+      document.removeEventListener('keydown', trapFocus)
+      background.forEach((node) => node.removeAttribute('inert'))
+      ;(previous ?? trigger)?.focus()
+    }
+  }, [reportOpen])
 
   useEffect(() => {
     try {
@@ -615,9 +711,10 @@ function App() {
     setMeta('og:title', title, true)
     setMeta('og:description', description, true)
     setMeta('og:type', selectedRoute ? 'article' : 'website', true)
+    setMeta('og:site_name', 'BikeMapy', true)
     setMeta('og:locale', language === 'cs' ? 'cs_CZ' : 'en_US', true)
-    setMeta('og:url', permanentRouteUrl || window.location.href, true)
-    setCanonical(permanentRouteUrl || `${window.location.origin}/`)
+    setMeta('og:url', permanentRouteUrl || `${PUBLIC_SITE_URL}/`, true)
+    setCanonical(permanentRouteUrl || `${PUBLIC_SITE_URL}/`)
   }, [copy.intro, copy.siteDescription, copy.siteTitle, language, permanentRouteUrl, selectedRoute])
   const selectRoute = useCallback(
     (id: string | null, push = true) => {
@@ -984,6 +1081,8 @@ function App() {
       const bounds = geometryBounds(selected.geometry)
       if (bounds) {
         const mobile = window.innerWidth <= 700
+        const reducedMotion =
+          window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
         const mobileSheetHeight = mobilePanelHeight ?? (panelOpen ? window.innerHeight * 0.67 : 42)
         const mobileDetailOffset = mobileDetailHeight ?? 150
         map.fitBounds(bounds, {
@@ -996,7 +1095,7 @@ function App() {
               }
             : { top: 120, right: panelOpen ? 430 : 90, bottom: 100, left: 90 },
           maxZoom: 13,
-          duration: 600,
+          duration: reducedMotion ? 0 : 600,
         })
       }
     }
@@ -1243,14 +1342,14 @@ function App() {
                 onClick={() => selectRoute(route.id)}
               >
                 <span className="route-card-title">{route.title}</span>
-                <span className="route-card-meta">
-                  <span>{route.categories[0]?.name ?? copy.uncategorised}</span>
-                  <span>
-                    {route.distance_m
-                      ? `${(Number(route.distance_m) / 1000).toFixed(1)} km`
-                      : copy.distanceUnknown}
+                {(route.categories[0] || hasMetric(route.distance_m)) && (
+                  <span className="route-card-meta">
+                    {route.categories[0] && <span>{route.categories[0].name}</span>}
+                    {hasMetric(route.distance_m) && (
+                      <span>{(Number(route.distance_m) / 1000).toFixed(1)} km</span>
+                    )}
                   </span>
-                </span>
+                )}
               </button>
             ))}
           </nav>
@@ -1284,35 +1383,49 @@ function App() {
           </h2>
           {selectedRoute && (
             <>
-              {selectedRoute.reviewed_at && (
+              {selectedRoute.reviewed && (
                 <div className="reviewed-badge" title={copy.reviewedDisclaimer}>
                   {copy.reviewed}
                 </div>
               )}
-              <dl className="detail-stats">
-                <div>
-                  <dt>{copy.distance}</dt>
-                  <dd>{formatMetric(selectedRoute.distance_m, 'm')}</dd>
-                </div>
-                <div>
-                  <dt>{copy.ascent}</dt>
-                  <dd>{formatMetric(selectedRoute.ascent_m, 'm')}</dd>
-                </div>
-                <div>
-                  <dt>{copy.descent}</dt>
-                  <dd>{formatMetric(selectedRoute.descent_m, 'm')}</dd>
-                </div>
-                <div>
-                  <dt>{copy.routeType}</dt>
-                  <dd>
-                    {selectedRoute.loop_status === 'loop'
-                      ? copy.loop
-                      : selectedRoute.loop_status === 'point_to_point'
-                        ? copy.pointToPoint
-                        : '—'}
-                  </dd>
-                </div>
-              </dl>
+              {(hasMetric(selectedRoute.distance_m) ||
+                hasMetric(selectedRoute.ascent_m) ||
+                hasMetric(selectedRoute.descent_m) ||
+                selectedRoute.loop_status === 'loop' ||
+                selectedRoute.loop_status === 'point_to_point') && (
+                <dl className="detail-stats">
+                  {hasMetric(selectedRoute.distance_m) && (
+                    <div>
+                      <dt>{copy.distance}</dt>
+                      <dd>{formatMetric(selectedRoute.distance_m, 'm')}</dd>
+                    </div>
+                  )}
+                  {hasMetric(selectedRoute.ascent_m) && (
+                    <div>
+                      <dt>{copy.ascent}</dt>
+                      <dd>{formatMetric(selectedRoute.ascent_m, 'm')}</dd>
+                    </div>
+                  )}
+                  {hasMetric(selectedRoute.descent_m) && (
+                    <div>
+                      <dt>{copy.descent}</dt>
+                      <dd>{formatMetric(selectedRoute.descent_m, 'm')}</dd>
+                    </div>
+                  )}
+                  {(selectedRoute.loop_status === 'loop' ||
+                    selectedRoute.loop_status === 'point_to_point') && (
+                    <div>
+                      <dt>{copy.routeType}</dt>
+                      <dd>
+                        {selectedRoute.loop_status === 'loop' ? copy.loop : copy.pointToPoint}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+              {selectedRoute.elevation_profile && (
+                <ElevationProfile points={selectedRoute.elevation_profile} copy={copy} />
+              )}
               {selectedRoute.categories.length > 0 && (
                 <ul className="detail-categories" aria-label={copy.category}>
                   {selectedRoute.categories.map((category) => (
@@ -1320,7 +1433,9 @@ function App() {
                   ))}
                 </ul>
               )}
-              <p className="reviewed-disclaimer">{copy.reviewedDisclaimer}</p>
+              {selectedRoute.reviewed && (
+                <p className="reviewed-disclaimer">{copy.reviewedDisclaimer}</p>
+              )}
             </>
           )}
           <p className="detail-source">
@@ -1365,6 +1480,7 @@ function App() {
                 <button
                   type="button"
                   className="detail-link detail-report"
+                  ref={reportTriggerNode}
                   onClick={() => {
                     setReportSent(false)
                     setReportOpen(true)
@@ -1372,7 +1488,24 @@ function App() {
                 >
                   {copy.report}
                 </button>
+                {selectedRoute.gpx_download_url ? (
+                  <a className="detail-link" href={selectedRoute.gpx_download_url} download>
+                    {copy.gpxDownload}
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    className="detail-link"
+                    disabled
+                    title={copy.gpxUnavailable}
+                  >
+                    {copy.gpxDownload}
+                  </button>
+                )}
               </div>
+              {!selectedRoute.gpx_download_url && (
+                <p className="gpx-notice">{copy.gpxUnavailable}</p>
+              )}
               <div className="source-section">
                 <h3>{copy.sources}</h3>
                 {selectedRoute.sources.length ? (
@@ -1388,6 +1521,25 @@ function App() {
                           {source.title || copy.mapyLink}
                         </a>
                         <span>{routeStatus(source.status, copy)}</span>
+                        {source.last_successful_check_at ? (
+                          <time dateTime={source.last_successful_check_at}>
+                            {copy.sourceLastSuccessfulCheck(
+                              new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
+                                dateStyle: 'medium',
+                              }).format(new Date(source.last_successful_check_at)),
+                            )}
+                          </time>
+                        ) : null}
+                        {source.last_checked_at &&
+                        source.last_checked_at !== source.last_successful_check_at ? (
+                          <time dateTime={source.last_checked_at}>
+                            {copy.sourceChecked(
+                              new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
+                                dateStyle: 'medium',
+                              }).format(new Date(source.last_checked_at)),
+                            )}
+                          </time>
+                        ) : null}
                         {source.posts.map((post) => (
                           <span key={post.url} className="source-post">
                             <a
@@ -1433,6 +1585,7 @@ function App() {
       {reportOpen && selectedRoute && (
         <div className="report-backdrop" role="presentation">
           <section
+            ref={reportDialogNode}
             className="report-dialog"
             role="dialog"
             aria-modal="true"
@@ -1451,6 +1604,7 @@ function App() {
                 <label htmlFor="report-message">{copy.reportLabel}</label>
                 <textarea
                   id="report-message"
+                  ref={reportMessageNode}
                   required
                   placeholder={copy.reportPlaceholder}
                   rows={5}

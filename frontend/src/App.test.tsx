@@ -78,6 +78,12 @@ const route: components['schemas']['Route'] = {
   sources: [],
   variants: [],
   geometry: null,
+  reviewed: false,
+  elevation_profile: [
+    { distance_m: 0, elevation_m: 220 },
+    { distance_m: 42000, elevation_m: 360 },
+  ],
+  gpx_download_url: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 }
@@ -499,11 +505,17 @@ describe('BikeMapy route discovery', () => {
     expect(
       screen.getByRole('dialog', { name: /report a problem with this route/i }),
     ).toBeInTheDocument()
+    expect(document.activeElement).toBe(
+      screen.getByRole('textbox', { name: /what should we check/i }),
+    )
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /report a problem/i }))
     await user.type(
       screen.getByRole('textbox', { name: /what should we check/i }),
       'Wrong geometry',
     )
-    await user.click(screen.getByRole('button', { name: /send report/i }))
-    expect(screen.getByText(/thanks/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /report unavailable/i }))
+    expect(screen.getByText(/no report was submitted/i)).toBeInTheDocument()
   })
 })
