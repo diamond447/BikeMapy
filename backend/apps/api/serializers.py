@@ -154,6 +154,7 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
     sources = serializers.SerializerMethodField()
     variants = serializers.SerializerMethodField()
     geometry = serializers.SerializerMethodField()
+    reviewed_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
     class Meta:
         model = Route
@@ -170,6 +171,7 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
             "sources",
             "variants",
             "geometry",
+            "reviewed_at",
             "created_at",
             "updated_at",
         )

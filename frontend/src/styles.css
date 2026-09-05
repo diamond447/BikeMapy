@@ -12,6 +12,9 @@ body {
   margin: 0;
   min-width: 320px;
 }
+body:has(.report-backdrop) {
+  overflow: hidden;
+}
 button,
 input {
   font: inherit;
@@ -24,6 +27,18 @@ a {
   min-height: 100vh;
   overflow: hidden;
   position: relative;
+}
+.skip-link {
+  background: #e7f24e;
+  color: #162d28;
+  left: 12px;
+  padding: 9px 12px;
+  position: absolute;
+  top: -100px;
+  z-index: 10;
+}
+.skip-link:focus {
+  top: 12px;
 }
 .topbar {
   align-items: center;
@@ -417,18 +432,53 @@ h1 {
   gap: 21px;
   padding: 11px 0;
 }
-.detail-stats span {
+.detail-stats div {
   color: #b0c6b5;
   font-family: 'DM Mono', monospace;
   font-size: 0.55rem;
 }
-.detail-stats b {
+.detail-stats dt {
+  margin-bottom: 2px;
+}
+.detail-stats dd {
   color: #f7faf2;
   display: block;
   font-family: Manrope, sans-serif;
   font-size: 0.9rem;
   font-weight: 500;
-  margin-bottom: 2px;
+  margin: 0;
+}
+.reviewed-badge {
+  background: #e7f24e;
+  color: #162d28;
+  display: inline-block;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.57rem;
+  letter-spacing: 0.04em;
+  margin: 0 0 11px;
+  padding: 5px 8px;
+  text-transform: uppercase;
+}
+.reviewed-disclaimer {
+  color: #b0c6b5;
+  font-size: 0.6rem;
+  line-height: 1.4;
+  margin: 10px 0 0;
+}
+.detail-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.detail-categories li {
+  border: 1px solid rgba(232, 242, 222, 0.35);
+  color: #d5e2d4;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.56rem;
+  padding: 4px 6px;
 }
 .detail-source {
   color: #b0c6b5;
@@ -456,6 +506,132 @@ h1 {
   position: absolute;
   right: 13px;
   top: 12px;
+}
+.detail-actions {
+  align-items: center;
+  border-top: 1px solid rgba(232, 242, 222, 0.2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 13px;
+  margin-top: 14px;
+  padding-top: 12px;
+}
+.detail-link {
+  background: transparent;
+  border: 0;
+  color: #e7f24e;
+  cursor: pointer;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.58rem;
+  padding: 3px 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.source-section {
+  border-top: 1px solid rgba(232, 242, 222, 0.2);
+  margin-top: 13px;
+  padding-top: 11px;
+}
+.source-section h3 {
+  color: #d5e2d4;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.62rem;
+  font-weight: 500;
+  margin: 0 0 8px;
+}
+.source-list {
+  display: grid;
+  gap: 9px;
+  list-style: none;
+  margin: 0;
+  max-height: 145px;
+  overflow: auto;
+  padding: 0;
+}
+.source-list li {
+  display: grid;
+  gap: 3px;
+}
+.source-list a {
+  color: #f7faf2;
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+.source-list li > span {
+  color: #b0c6b5;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.53rem;
+}
+.source-list .source-post {
+  font-family: Manrope, sans-serif;
+  font-size: 0.59rem;
+}
+.source-post a {
+  font-size: 0.59rem;
+  font-weight: 400;
+}
+.no-sources {
+  color: #b0c6b5;
+  font-size: 0.61rem;
+  margin: 0;
+}
+.report-backdrop {
+  align-items: center;
+  background: rgba(13, 31, 26, 0.72);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 8;
+}
+.report-dialog {
+  background: #f7faf2;
+  box-shadow: 0 10px 40px rgba(13, 31, 26, 0.25);
+  color: #162d28;
+  max-width: 430px;
+  padding: 24px;
+  width: 100%;
+}
+.report-dialog h2 {
+  font-size: 1.2rem;
+  font-weight: 500;
+  margin: 0 0 17px;
+}
+.report-dialog label {
+  display: block;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.61rem;
+  margin-bottom: 7px;
+}
+.report-dialog textarea {
+  border: 1px solid #87a396;
+  color: #162d28;
+  display: block;
+  font:
+    0.75rem/1.45 Manrope,
+    sans-serif;
+  padding: 9px;
+  resize: vertical;
+  width: 100%;
+}
+.report-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 13px;
+}
+.report-dialog button {
+  background: #162d28;
+  border: 0;
+  color: #f7faf2;
+  cursor: pointer;
+  font-size: 0.68rem;
+  padding: 8px 11px;
+}
+.report-dialog button[type='button'] {
+  background: transparent;
+  color: #162d28;
+  text-decoration: underline;
 }
 .overlap-picker {
   align-items: center;

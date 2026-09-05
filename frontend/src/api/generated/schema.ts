@@ -149,6 +149,8 @@ export interface components {
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
       /** Format: date-time */
+      readonly reviewed_at?: string | null
+      /** Format: date-time */
       readonly created_at: string
       /** Format: date-time */
       readonly updated_at: string

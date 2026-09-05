@@ -472,4 +472,38 @@ describe('BikeMapy route discovery', () => {
     ])
     expect(geometryBounds(null)).toBeNull()
   })
+
+  it('switches and persists Czech copy while updating route metadata', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await screen.findByRole('heading', { name: /south ridge loop/i })
+    expect(document.title).toContain('South ridge loop')
+    await user.click(screen.getByRole('button', { name: /change language/i }))
+    expect(document.documentElement.lang).toBe('cs')
+    expect(screen.getByRole('heading', { name: /najděte trasu/i })).toBeInTheDocument()
+    expect(localStorage.getItem('bikemapy:language')).toBe('cs')
+  })
+
+  it('offers a permanent link and an accessible report dialog', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await user.click(await screen.findByRole('button', { name: /copy permanent link/i }))
+    expect(await screen.findByText(/link copied|copy unavailable/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /report a problem/i }))
+    expect(
+      screen.getByRole('dialog', { name: /report a problem with this route/i }),
+    ).toBeInTheDocument()
+    await user.type(
+      screen.getByRole('textbox', { name: /what should we check/i }),
+      'Wrong geometry',
+    )
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(screen.getByText(/thanks/i)).toBeInTheDocument()
+  })
 })

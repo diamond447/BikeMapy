@@ -33,6 +33,203 @@ type DiscoveryState = {
   viewportOnly: boolean
 }
 
+type Language = 'en' | 'cs'
+
+const LANGUAGE_KEY = 'bikemapy:language'
+
+const translations = {
+  en: {
+    siteTitle: 'BikeMapy — routes with a source',
+    siteDescription: 'Discover cycling routes shared in BikeForum discussions.',
+    home: 'BikeMapy home',
+    indexed: (count: number) => (count ? `${count} rides indexed` : 'Open ride archive'),
+    changeLanguage: 'Change language',
+    map: 'Route map',
+    interactiveMap: 'Interactive route map',
+    mapLoading: 'Updating this view…',
+    mapUnavailable: 'The map data could not be loaded',
+    mapStartError: 'The interactive map could not start.',
+    mapTilesError: 'Map tiles are unavailable. You can retry the map.',
+    mapPaused: 'Map data paused',
+    retryMap: 'Retry map',
+    tryAgain: 'Try again',
+    filteredDensity: 'Filtered route density',
+    density: 'Route density',
+    routesInView: (count: number) => `${count} routes in view`,
+    selected: 'selected',
+    nearby: 'nearby',
+    hideRoutes: 'Hide routes',
+    showRoutes: 'Show routes',
+    searchRoutes: 'Search routes',
+    eyebrow: 'A map with a memory',
+    heading: 'Find the ride',
+    headingSecond: 'worth repeating.',
+    intro:
+      'Explore the roads people return to. Search the archive, then let the map take the lead.',
+    searchPlaceholder: 'Search places, authors, routes',
+    author: 'Author',
+    authorPlaceholder: 'e.g. Jana',
+    category: 'Category',
+    categoryPlaceholder: 'e.g. gravel',
+    distanceFrom: 'Distance from (m)',
+    distanceTo: 'Distance to (m)',
+    climbFrom: 'Climb from (m)',
+    climbTo: 'Climb to (m)',
+    reading: 'Reading the archive…',
+    unavailable: 'Archive unavailable',
+    ridesFound: (count: number) => `${count} rides found`,
+    clearFilters: 'Clear filters',
+    currentViewport: 'Current viewport',
+    viewportHint: 'List follows the current map bounds',
+    lostConnection: 'We lost the archive connection.',
+    checkApi: 'Check the API and try again.',
+    retry: 'Retry',
+    noMatches: 'No rides match yet.',
+    widerSearch: 'Try a wider search or clear the filters.',
+    routes: 'Routes',
+    uncategorised: 'Uncategorised',
+    distanceUnknown: 'Distance unknown',
+    selectedRoute: 'Selected route',
+    previousOverlap: 'Previous overlapping route',
+    nextOverlap: 'Next overlapping route',
+    loadingRoute: 'Loading route…',
+    detailsUnavailable: 'Route details are unavailable',
+    geometryUnavailable: 'Full route geometry is unavailable right now.',
+    distance: 'Distance',
+    ascent: 'Ascent',
+    descent: 'Descent',
+    elevation: 'Elevation',
+    loop: 'Loop',
+    pointToPoint: 'Point to point',
+    routeType: 'Route type',
+    sourceStatus: 'Source status',
+    verifiedSource: 'Verified source',
+    communitySource: 'Community source',
+    unavailableSource: 'Unavailable source',
+    unknownSource: 'Source status unknown',
+    fullGeometryLoading: 'Loading full geometry…',
+    geometryFramed: 'Full geometry framed on map',
+    detailsStillLoading: 'Route details are still loading…',
+    retryDetails: 'Retry route details',
+    retryGeometry: 'Retry geometry',
+    closeDetails: 'Close route details',
+    sources: 'BikeForum sources',
+    sourceLink: (title: string) => `Open source ${title}`,
+    mapyLink: 'Open Mapy.com route',
+    noSources: 'No public forum sources are available.',
+    posted: (date: string) => `Posted ${date}`,
+    reviewed: 'Reviewed',
+    reviewedDisclaimer:
+      'Review covers catalogue criteria only. It does not indicate safety, passability, or legal access.',
+    share: 'Share route',
+    copyLink: 'Copy permanent link',
+    copied: 'Link copied',
+    copyFailed: 'Copy unavailable — use the address bar.',
+    report: 'Report a problem',
+    reportTitle: 'Report a problem with this route',
+    reportLabel: 'What should we check?',
+    reportPlaceholder: 'Describe an issue with the route or its attribution…',
+    sendReport: 'Send report',
+    reportThanks: 'Thanks. Your report is ready for review.',
+    cancel: 'Cancel',
+  },
+  cs: {
+    siteTitle: 'BikeMapy — trasy se zdrojem',
+    siteDescription: 'Objevujte cyklistické trasy sdílené v diskusích BikeFora.',
+    home: 'Domů BikeMapy',
+    indexed: (count: number) => (count ? `${count} tras v archivu` : 'Otevřený archiv tras'),
+    changeLanguage: 'Změnit jazyk',
+    map: 'Mapa tras',
+    interactiveMap: 'Interaktivní mapa tras',
+    mapLoading: 'Aktualizuji toto zobrazení…',
+    mapUnavailable: 'Data mapy se nepodařilo načíst',
+    mapStartError: 'Interaktivní mapu se nepodařilo spustit.',
+    mapTilesError: 'Dlaždice mapy nejsou dostupné. Zkuste mapu načíst znovu.',
+    mapPaused: 'Data mapy pozastavena',
+    retryMap: 'Načíst mapu znovu',
+    tryAgain: 'Zkusit znovu',
+    filteredDensity: 'Hustota filtrovaných tras',
+    density: 'Hustota tras',
+    routesInView: (count: number) => `${count} tras v zobrazení`,
+    selected: 'vybraná',
+    nearby: 'okolní',
+    hideRoutes: 'Skrýt trasy',
+    showRoutes: 'Zobrazit trasy',
+    searchRoutes: 'Hledat trasy',
+    eyebrow: 'Mapa s pamětí',
+    heading: 'Najděte trasu',
+    headingSecond: 'ke které se vrátíte.',
+    intro: 'Prozkoumejte cesty, na které se lidé vracejí. Prohledejte archiv a nechte vést mapu.',
+    searchPlaceholder: 'Místa, autoři, trasy',
+    author: 'Autor',
+    authorPlaceholder: 'např. Jana',
+    category: 'Kategorie',
+    categoryPlaceholder: 'např. gravel',
+    distanceFrom: 'Vzdálenost od (m)',
+    distanceTo: 'Vzdálenost do (m)',
+    climbFrom: 'Stoupání od (m)',
+    climbTo: 'Stoupání do (m)',
+    reading: 'Procházím archiv…',
+    unavailable: 'Archiv není dostupný',
+    ridesFound: (count: number) => `${count} tras nalezeno`,
+    clearFilters: 'Zrušit filtry',
+    currentViewport: 'Aktuální výřez',
+    viewportHint: 'Seznam sleduje hranice mapy',
+    lostConnection: 'Spojení s archivem se přerušilo.',
+    checkApi: 'Zkontrolujte API a zkuste to znovu.',
+    retry: 'Zkusit znovu',
+    noMatches: 'Žádná trasa neodpovídá.',
+    widerSearch: 'Zkuste širší hledání nebo zrušte filtry.',
+    routes: 'Trasy',
+    uncategorised: 'Bez kategorie',
+    distanceUnknown: 'Vzdálenost neznámá',
+    selectedRoute: 'Vybraná trasa',
+    previousOverlap: 'Předchozí překrývající se trasa',
+    nextOverlap: 'Další překrývající se trasa',
+    loadingRoute: 'Načítám trasu…',
+    detailsUnavailable: 'Podrobnosti trasy nejsou dostupné',
+    geometryUnavailable: 'Celá geometrie trasy není nyní dostupná.',
+    distance: 'Vzdálenost',
+    ascent: 'Stoupání',
+    descent: 'Klesání',
+    elevation: 'Výškové údaje',
+    loop: 'Okruh',
+    pointToPoint: 'Z bodu do bodu',
+    routeType: 'Typ trasy',
+    sourceStatus: 'Stav zdroje',
+    verifiedSource: 'Ověřený zdroj',
+    communitySource: 'Komunitní zdroj',
+    unavailableSource: 'Nedostupný zdroj',
+    unknownSource: 'Stav zdroje neznámý',
+    fullGeometryLoading: 'Načítám celou geometrii…',
+    geometryFramed: 'Celá geometrie zobrazena na mapě',
+    detailsStillLoading: 'Podrobnosti trasy se stále načítají…',
+    retryDetails: 'Načíst podrobnosti znovu',
+    retryGeometry: 'Načíst geometrii znovu',
+    closeDetails: 'Zavřít podrobnosti trasy',
+    sources: 'Zdroje z BikeFora',
+    sourceLink: (title: string) => `Otevřít zdroj ${title}`,
+    mapyLink: 'Otevřít trasu na Mapy.com',
+    noSources: 'Veřejné zdroje z fóra nejsou k dispozici.',
+    posted: (date: string) => `Publikováno ${date}`,
+    reviewed: 'Prověřeno',
+    reviewedDisclaimer:
+      'Prověření se týká pouze katalogových kritérií. Neoznačuje bezpečnost, průchodnost ani právní přístup.',
+    share: 'Sdílet trasu',
+    copyLink: 'Kopírovat trvalý odkaz',
+    copied: 'Odkaz zkopírován',
+    copyFailed: 'Kopírování není dostupné — použijte adresní řádek.',
+    report: 'Nahlásit problém',
+    reportTitle: 'Nahlásit problém s trasou',
+    reportLabel: 'Co máme prověřit?',
+    reportPlaceholder: 'Popište problém s trasou nebo uvedením zdroje…',
+    sendReport: 'Odeslat hlášení',
+    reportThanks: 'Děkujeme. Hlášení je připraveno ke kontrole.',
+    cancel: 'Zrušit',
+  },
+} as const
+type Copy = (typeof translations)[Language]
+
 const DEFAULT_FILTERS: Filters = {
   search: '',
   author: '',
@@ -145,6 +342,7 @@ export function writeUrl(
   routeId: string | null,
   mode: 'push' | 'replace',
   viewportOnly = false,
+  routeSlug?: string | null,
 ) {
   const params = new URLSearchParams()
   const aliases: Record<keyof Filters, string> = {
@@ -169,6 +367,7 @@ export function writeUrl(
     params.set('n', view.bounds[3].toFixed(4))
   }
   if (routeId) params.set('route', routeId)
+  if (routeId && routeSlug) params.set('slug', routeSlug)
   if (viewportOnly) params.set('inview', '1')
   const query = params.toString()
   const url = `${window.location.pathname}${query ? `?${query}` : ''}`
@@ -179,11 +378,57 @@ export function writeUrl(
   )
 }
 
+function initialLanguage(): Language {
+  try {
+    const saved = localStorage.getItem(LANGUAGE_KEY)
+    if (saved === 'en' || saved === 'cs') return saved
+  } catch {
+    /* private browsing */
+  }
+  return navigator.language.toLowerCase().startsWith('cs') ? 'cs' : 'en'
+}
+
+function formatMetric(value: string | null | undefined, suffix: string): string {
+  if (!value) return '—'
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '—'
+  return `${Math.round(number)} ${suffix}`
+}
+
+function routeStatus(status: string, copy: Copy): string {
+  if (status === 'verified') return copy.verifiedSource
+  if (status === 'available' || status === 'community') return copy.communitySource
+  if (status === 'unavailable') return copy.unavailableSource
+  return copy.unknownSource
+}
+
+function setMeta(name: string, content: string, property = false) {
+  const attribute = property ? 'property' : 'name'
+  let element = document.head.querySelector<HTMLMetaElement>(`meta[${attribute}="${name}"]`)
+  if (!element) {
+    element = document.createElement('meta')
+    element.setAttribute(attribute, name)
+    document.head.appendChild(element)
+  }
+  element.content = content
+}
+
+function setCanonical(href: string) {
+  let link = document.head.querySelector<HTMLLinkElement>('link[rel="canonical"]')
+  if (!link) {
+    link = document.createElement('link')
+    link.rel = 'canonical'
+    document.head.appendChild(link)
+  }
+  link.href = href
+}
+
 function useRouteList(
   filters: Filters,
   view: ViewState,
   viewportOnly: boolean,
   retryToken: number,
+  copy: Copy,
 ) {
   const [state, setState] = useState<{
     routes: Route[]
@@ -213,7 +458,7 @@ function useRouteList(
       })
       .then(({ data, error }) => {
         if (!active) return
-        if (error || !data) throw new Error('Route catalogue is unavailable')
+        if (error || !data) throw new Error(copy.unavailable)
         setState({ routes: data.results, count: data.count, loading: false, error: null })
       })
       .catch((error: unknown) => {
@@ -221,17 +466,23 @@ function useRouteList(
           setState((current) => ({
             ...current,
             loading: false,
-            error: error instanceof Error ? error.message : 'Route catalogue is unavailable',
+            error: error instanceof Error ? error.message : copy.unavailable,
           }))
       })
     return () => {
       active = false
     }
-  }, [query, retryToken])
+  }, [copy.unavailable, query, retryToken])
   return state
 }
 
-function useViewport(view: ViewState, filters: Filters, ready: boolean, retryToken: number) {
+function useViewport(
+  view: ViewState,
+  filters: Filters,
+  ready: boolean,
+  retryToken: number,
+  copy: Copy,
+) {
   const [state, setState] = useState<{
     data: ViewportResponse | null
     loading: boolean
@@ -262,7 +513,7 @@ function useViewport(view: ViewState, filters: Filters, ready: boolean, retryTok
       .GET('/api/v1/routes/viewport/', { params: { query } as never })
       .then(({ data, error }) => {
         if (!active) return
-        if (error || !data) throw new Error('The map data could not be loaded')
+        if (error || !data) throw new Error(copy.mapUnavailable)
         setState({ data, loading: false, error: null })
       })
       .catch((error: unknown) => {
@@ -270,18 +521,31 @@ function useViewport(view: ViewState, filters: Filters, ready: boolean, retryTok
           setState((current) => ({
             ...current,
             loading: false,
-            error: error instanceof Error ? error.message : 'The map data could not be loaded',
+            error: error instanceof Error ? error.message : copy.mapUnavailable,
           }))
       })
     return () => {
       active = false
     }
-  }, [filters, ready, retryToken, view.bounds, view.latitude, view.longitude, view.zoom])
+  }, [
+    copy.mapUnavailable,
+    filters,
+    ready,
+    retryToken,
+    view.bounds,
+    view.latitude,
+    view.longitude,
+    view.zoom,
+  ])
   return state
 }
 
 function App() {
   const initial = useMemo(parseState, [])
+  const [language, setLanguage] = useState<Language>(initialLanguage)
+  const copy = translations[language]
+  const copyRef = useRef(copy)
+  copyRef.current = copy
   const [filters, setFilters] = useState<Filters>(initial.filters)
   const [view, setView] = useState<ViewState>(initial.view)
   const [selectedId, setSelectedId] = useState<string | null>(initial.routeId)
@@ -300,6 +564,9 @@ function App() {
   const [retryToken, setRetryToken] = useState(0)
   const [mapRetry, setMapRetry] = useState(0)
   const [mapError, setMapError] = useState<string | null>(null)
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportSent, setReportSent] = useState(false)
+  const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [mobilePanelHeight, setMobilePanelHeight] = useState<number | null>(null)
   const [mobileDetailHeight, setMobileDetailHeight] = useState<number | null>(null)
   const cameraSyncRef = useRef(false)
@@ -307,8 +574,14 @@ function App() {
   const panelNode = useRef<HTMLElement>(null)
   const detailNode = useRef<HTMLElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const { routes, count, loading, error } = useRouteList(filters, view, viewportOnly, retryToken)
-  const viewport = useViewport(view, filters, mapReady, retryToken)
+  const { routes, count, loading, error } = useRouteList(
+    filters,
+    view,
+    viewportOnly,
+    retryToken,
+    copy,
+  )
+  const viewport = useViewport(view, filters, mapReady, retryToken, copy)
   const selectedRoute = routes.find((route) => route.id === selectedId) ?? selectedRecord
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
   const selectionVisible = Boolean(
@@ -322,6 +595,30 @@ function App() {
   const selectedIndex = overlap.indexOf(selectedId ?? '')
   const displayRoutes = routes
   const mapData = viewport.data
+  const permanentRouteUrl = selectedRoute
+    ? `${window.location.origin}/?route=${encodeURIComponent(selectedRoute.id)}&slug=${encodeURIComponent(selectedRoute.slug)}`
+    : ''
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LANGUAGE_KEY, language)
+    } catch {
+      /* private browsing */
+    }
+    document.documentElement.lang = language
+    const title = selectedRoute ? `${selectedRoute.title} · BikeMapy` : copy.siteTitle
+    const description = selectedRoute
+      ? `${selectedRoute.title}. ${copy.intro}`
+      : copy.siteDescription
+    document.title = title
+    setMeta('description', description)
+    setMeta('og:title', title, true)
+    setMeta('og:description', description, true)
+    setMeta('og:type', selectedRoute ? 'article' : 'website', true)
+    setMeta('og:locale', language === 'cs' ? 'cs_CZ' : 'en_US', true)
+    setMeta('og:url', permanentRouteUrl || window.location.href, true)
+    setCanonical(permanentRouteUrl || `${window.location.origin}/`)
+  }, [copy.intro, copy.siteDescription, copy.siteTitle, language, permanentRouteUrl, selectedRoute])
   const selectRoute = useCallback(
     (id: string | null, push = true) => {
       setSelectedId(id)
@@ -373,7 +670,7 @@ function App() {
       .then(({ data, error }) => {
         if (!active) return
         if (error || !data) {
-          setSelectedMetadataError('Route details are unavailable right now.')
+          setSelectedMetadataError(copy.detailsUnavailable)
         } else {
           setSelectedRecord(data)
           setSelectedMetadataError(null)
@@ -382,14 +679,14 @@ function App() {
       })
       .catch(() => {
         if (active) {
-          setSelectedMetadataError('Route details are unavailable right now.')
+          setSelectedMetadataError(copy.detailsUnavailable)
           setSelectedMetadataLoading(false)
         }
       })
     return () => {
       active = false
     }
-  }, [metadataRetryToken, retryToken, selectedId])
+  }, [copy.detailsUnavailable, metadataRetryToken, retryToken, selectedId])
   useEffect(() => {
     if (!selectedId) return
     let active = true
@@ -401,7 +698,7 @@ function App() {
         if (active) {
           if (error || !data) {
             setSelected(null)
-            setSelectedGeometryError('Full route geometry is unavailable right now.')
+            setSelectedGeometryError(copy.geometryUnavailable)
           } else {
             setSelected(data)
             setSelectedGeometryError(null)
@@ -412,14 +709,14 @@ function App() {
       .catch(() => {
         if (active) {
           setSelected(null)
-          setSelectedGeometryError('Full route geometry is unavailable right now.')
+          setSelectedGeometryError(copy.geometryUnavailable)
           setSelectedGeometryLoading(false)
         }
       })
     return () => {
       active = false
     }
-  }, [geometryRetryToken, retryToken, selectedId])
+  }, [copy.geometryUnavailable, geometryRetryToken, retryToken, selectedId])
   useEffect(() => {
     try {
       localStorage.setItem(
@@ -429,8 +726,8 @@ function App() {
     } catch {
       /* private browsing */
     }
-    writeUrl(filters, view, selectedId, 'replace', viewportOnly)
-  }, [filters, view, selectedId, viewportOnly])
+    writeUrl(filters, view, selectedId, 'replace', viewportOnly, selectedRoute?.slug)
+  }, [filters, selectedRoute?.slug, selectedId, view, viewportOnly])
   useEffect(() => {
     const handlePopState = () => {
       const next = parseState()
@@ -475,7 +772,7 @@ function App() {
             keyboard: true,
           })
         } catch {
-          setMapError('The interactive map could not start.')
+          setMapError(copyRef.current.mapStartError)
           return
         }
         map = mapInstance
@@ -546,7 +843,7 @@ function App() {
           setMapReady(true)
         })
         mapInstance.on('error', (event) => {
-          if (event.error) setMapError('Map tiles are unavailable. You can retry the map.')
+          if (event.error) setMapError(copyRef.current.mapTilesError)
         })
         const syncView = () => {
           if (cameraSyncRef.current) {
@@ -588,7 +885,7 @@ function App() {
           }
         })
       })
-      .catch(() => setMapError('The interactive map could not start.'))
+      .catch(() => setMapError(copyRef.current.mapStartError))
     return () => {
       disposed = true
       setMapReady(false)
@@ -709,6 +1006,16 @@ function App() {
     setFilters((current) => ({ ...current, [key]: value }))
   const resetFilters = () => setFilters(DEFAULT_FILTERS)
   const retry = () => setRetryToken((current) => current + 1)
+  const copyPermanentLink = async () => {
+    if (!permanentRouteUrl) return
+    try {
+      await navigator.clipboard.writeText(permanentRouteUrl)
+      setShareState('copied')
+    } catch {
+      setShareState('failed')
+    }
+  }
+  const toggleLanguage = () => setLanguage((current) => (current === 'en' ? 'cs' : 'en'))
   const nextOverlap = (direction: number) => {
     if (overlap.length < 2) return
     const nextIndex = (Math.max(0, selectedIndex) + direction + overlap.length) % overlap.length
@@ -725,8 +1032,11 @@ function App() {
         } as CSSProperties
       }
     >
+      <a className="skip-link" href="#route-browser">
+        {copy.routes}
+      </a>
       <header className="topbar">
-        <a className="wordmark" href="/" aria-label="BikeMapy home">
+        <a className="wordmark" href="/" aria-label={copy.home}>
           <span className="wordmark-mark" aria-hidden="true">
             ↗
           </span>
@@ -734,48 +1044,60 @@ function App() {
         </a>
         <div className="topbar-meta">
           <span className="live-indicator">
-            <i /> {count ? `${count} rides indexed` : 'Open ride archive'}
+            <i aria-hidden="true" /> {copy.indexed(count)}
           </span>
-          <button type="button" className="language-switcher" aria-label="Change language">
-            EN / CZ
+          <button
+            type="button"
+            className="language-switcher"
+            aria-label={copy.changeLanguage}
+            aria-pressed={language === 'cs'}
+            onClick={toggleLanguage}
+          >
+            {language === 'en' ? 'EN / CZ' : 'CZ / EN'}
           </button>
         </div>
       </header>
-      <section className="map-stage" aria-label="Route map">
-        <div ref={mapNode} className="map-canvas" aria-label="Interactive route map" />
+      <section className="map-stage" aria-label={copy.map}>
+        <div
+          ref={mapNode}
+          className="map-canvas"
+          role="application"
+          aria-label={copy.interactiveMap}
+        />
         <div className="map-vignette" aria-hidden="true" />
         <div className="map-status" role="status">
           {viewport.loading
-            ? 'Updating this view…'
+            ? copy.mapLoading
             : viewport.error
               ? viewport.error
               : Object.values(filters).some(Boolean) && viewport.data?.mode === 'heatmap'
-                ? 'Filtered route density'
+                ? copy.filteredDensity
                 : viewport.data?.mode === 'heatmap'
-                  ? 'Route density'
-                  : `${viewport.data?.routes.length ?? 0} routes in view`}
+                  ? copy.density
+                  : copy.routesInView(viewport.data?.routes.length ?? 0)}
         </div>
         <div className="map-empty">
           {(mapError || viewport.error) && (
             <>
-              <strong>{mapError ?? 'Map data paused'}</strong>
+              <strong>{mapError ?? copy.mapPaused}</strong>
               <button
                 type="button"
                 onClick={mapError ? () => setMapRetry((current) => current + 1) : retry}
               >
-                {mapError ? 'Retry map' : 'Try again'}
+                {mapError ? copy.retryMap : copy.tryAgain}
               </button>
             </>
           )}
         </div>
         <div className="map-legend">
-          <span className="legend-line" /> selected <span className="legend-muted" /> nearby
+          <span className="legend-line" /> {copy.selected} <span className="legend-muted" />{' '}
+          {copy.nearby}
         </div>
       </section>
       <aside
         ref={panelNode}
         className={`route-panel ${panelOpen ? 'is-open' : 'is-collapsed'}`}
-        aria-label="Route search"
+        aria-label={copy.searchRoutes}
       >
         <button
           type="button"
@@ -789,73 +1111,78 @@ function App() {
           aria-expanded={panelOpen}
           aria-controls="route-browser"
         >
-          {panelOpen ? 'Hide routes' : 'Show routes'}{' '}
+          {panelOpen ? copy.hideRoutes : copy.showRoutes}{' '}
           <span aria-hidden="true">{panelOpen ? '−' : '+'}</span>
         </button>
         <div id="route-browser" className="panel-content">
-          <p className="eyebrow">A map with a memory</p>
+          <p className="eyebrow">{copy.eyebrow}</p>
           <h1>
-            Find the ride
+            {copy.heading}
             <br />
-            worth repeating.
+            {copy.headingSecond}
           </h1>
-          <p className="intro">
-            Explore the roads people return to. Search the archive, then let the map take the lead.
-          </p>
+          <p className="intro">{copy.intro}</p>
           <label className="search-field">
             <span aria-hidden="true">⌕</span>
-            <span className="sr-only">Search routes</span>
+            <span className="sr-only">{copy.searchRoutes}</span>
             <input
               type="search"
+              aria-label={copy.searchRoutes}
               value={filters.search}
               onChange={(event) => updateFilter('search', event.target.value)}
-              placeholder="Search places, authors, routes"
+              placeholder={copy.searchPlaceholder}
             />
           </label>
           <div className="filter-grid">
             <label>
-              Author
+              {copy.author}
               <input
+                aria-label={copy.author}
                 value={filters.author}
                 onChange={(event) => updateFilter('author', event.target.value)}
-                placeholder="e.g. Jana"
+                placeholder={copy.authorPlaceholder}
               />
             </label>
             <label>
-              Category
+              {copy.category}
               <input
+                aria-label={copy.category}
                 value={filters.category}
                 onChange={(event) => updateFilter('category', event.target.value)}
-                placeholder="e.g. gravel"
+                placeholder={copy.categoryPlaceholder}
               />
             </label>
             <label>
-              Distance from (m)
+              {copy.distanceFrom}
               <input
+                aria-label={copy.distanceFrom}
                 inputMode="numeric"
                 value={filters.min_distance_m}
                 onChange={(event) => updateFilter('min_distance_m', event.target.value)}
               />
             </label>
             <label>
-              Distance to (m)
+              {copy.distanceTo}
               <input
+                aria-label={copy.distanceTo}
                 inputMode="numeric"
                 value={filters.max_distance_m}
                 onChange={(event) => updateFilter('max_distance_m', event.target.value)}
               />
             </label>
             <label>
-              Climb from (m)
+              {copy.climbFrom}
               <input
+                aria-label={copy.climbFrom}
                 inputMode="numeric"
                 value={filters.min_ascent_m}
                 onChange={(event) => updateFilter('min_ascent_m', event.target.value)}
               />
             </label>
             <label>
-              Climb to (m)
+              {copy.climbTo}
               <input
+                aria-label={copy.climbTo}
                 inputMode="numeric"
                 value={filters.max_ascent_m}
                 onChange={(event) => updateFilter('max_ascent_m', event.target.value)}
@@ -865,17 +1192,17 @@ function App() {
           <div className="results-heading">
             <span>
               {loading
-                ? 'Reading the archive…'
+                ? copy.reading
                 : error
-                  ? 'Archive unavailable'
-                  : `${displayRoutes.length} rides found`}
+                  ? copy.unavailable
+                  : copy.ridesFound(displayRoutes.length)}
             </span>
             <button
               type="button"
               onClick={resetFilters}
               disabled={!Object.values(filters).some(Boolean)}
             >
-              Clear filters
+              {copy.clearFilters}
             </button>
           </div>
           <label className="viewport-filter">
@@ -884,30 +1211,30 @@ function App() {
               checked={viewportOnly}
               onChange={(event) => setViewportOnly(event.target.checked)}
             />
-            <span>Current viewport</span>
+            <span>{copy.currentViewport}</span>
             {viewportOnly && viewport.data?.mode === 'heatmap' && (
-              <small>List follows the current map bounds</small>
+              <small>{copy.viewportHint}</small>
             )}
           </label>
           {error && (
             <div className="notice error-notice">
-              <strong>We lost the archive connection.</strong>
-              <span>Check the API and try again.</span>
+              <strong>{copy.lostConnection}</strong>
+              <span>{copy.checkApi}</span>
               <button type="button" onClick={retry}>
-                Retry
+                {copy.retry}
               </button>
             </div>
           )}
           {!loading && !error && displayRoutes.length === 0 && (
             <div className="notice">
-              <strong>No rides match yet.</strong>
-              <span>Try a wider search or clear the filters.</span>
+              <strong>{copy.noMatches}</strong>
+              <span>{copy.widerSearch}</span>
               <button type="button" onClick={resetFilters}>
-                Clear filters
+                {copy.clearFilters}
               </button>
             </div>
           )}
-          <div className="route-list" aria-label="Routes">
+          <nav className="route-list" aria-label={copy.routes}>
             {displayRoutes.map((route) => (
               <button
                 key={route.id}
@@ -917,71 +1244,92 @@ function App() {
               >
                 <span className="route-card-title">{route.title}</span>
                 <span className="route-card-meta">
-                  <span>{route.categories[0]?.name ?? 'Uncategorised'}</span>
+                  <span>{route.categories[0]?.name ?? copy.uncategorised}</span>
                   <span>
                     {route.distance_m
                       ? `${(Number(route.distance_m) / 1000).toFixed(1)} km`
-                      : 'Distance unknown'}
+                      : copy.distanceUnknown}
                   </span>
                 </span>
               </button>
             ))}
-          </div>
+          </nav>
         </div>
       </aside>
       {selectionVisible && (
-        <section ref={detailNode} className="route-detail" aria-label="Selected route details">
+        <section ref={detailNode} className="route-detail" aria-labelledby="route-detail-title">
           <div className="detail-kicker">
-            Selected route{' '}
+            {copy.selectedRoute}{' '}
             {overlap.length > 1 && (
               <span className="overlap-picker">
                 <button
                   type="button"
                   onClick={() => nextOverlap(-1)}
-                  aria-label="Previous overlapping route"
+                  aria-label={copy.previousOverlap}
                 >
                   ‹
                 </button>
                 <span>
                   {Math.max(1, selectedIndex + 1)} / {overlap.length}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => nextOverlap(1)}
-                  aria-label="Next overlapping route"
-                >
+                <button type="button" onClick={() => nextOverlap(1)} aria-label={copy.nextOverlap}>
                   ›
                 </button>
               </span>
             )}
           </div>
-          <h2>
+          <h2 id="route-detail-title">
             {selectedRoute?.title ??
-              (selectedMetadataLoading ? 'Loading route…' : 'Route details unavailable')}
+              (selectedMetadataLoading ? copy.loadingRoute : copy.detailsUnavailable)}
           </h2>
-          <div className="detail-stats">
-            <span>
-              <b>
-                {selectedRoute?.distance_m
-                  ? `${(Number(selectedRoute.distance_m) / 1000).toFixed(1)}`
-                  : '—'}
-              </b>{' '}
-              km
-            </span>
-            <span>
-              <b>{selectedRoute?.ascent_m ? Math.round(Number(selectedRoute.ascent_m)) : '—'}</b> m
-              climb
-            </span>
-            <span>
-              <b>{selectedRoute?.categories[0]?.name ?? 'Route'}</b> category
-            </span>
-          </div>
+          {selectedRoute && (
+            <>
+              {selectedRoute.reviewed_at && (
+                <div className="reviewed-badge" title={copy.reviewedDisclaimer}>
+                  {copy.reviewed}
+                </div>
+              )}
+              <dl className="detail-stats">
+                <div>
+                  <dt>{copy.distance}</dt>
+                  <dd>{formatMetric(selectedRoute.distance_m, 'm')}</dd>
+                </div>
+                <div>
+                  <dt>{copy.ascent}</dt>
+                  <dd>{formatMetric(selectedRoute.ascent_m, 'm')}</dd>
+                </div>
+                <div>
+                  <dt>{copy.descent}</dt>
+                  <dd>{formatMetric(selectedRoute.descent_m, 'm')}</dd>
+                </div>
+                <div>
+                  <dt>{copy.routeType}</dt>
+                  <dd>
+                    {selectedRoute.loop_status === 'loop'
+                      ? copy.loop
+                      : selectedRoute.loop_status === 'point_to_point'
+                        ? copy.pointToPoint
+                        : '—'}
+                  </dd>
+                </div>
+              </dl>
+              {selectedRoute.categories.length > 0 && (
+                <ul className="detail-categories" aria-label={copy.category}>
+                  {selectedRoute.categories.map((category) => (
+                    <li key={category.slug}>{category.name}</li>
+                  ))}
+                </ul>
+              )}
+              <p className="reviewed-disclaimer">{copy.reviewedDisclaimer}</p>
+            </>
+          )}
           <p className="detail-source">
-            {selectedMetadataError ??
-              selectedGeometryError ??
-              (selectedRoute
-                ? `${selectedRoute.source_status === 'verified' ? 'Verified source' : 'Community source'} · ${selectedGeometryLoading ? 'Loading full geometry…' : 'Full geometry framed on map'}`
-                : 'Route details are still loading…')}
+            {selectedMetadataError
+              ? null
+              : (selectedGeometryError ??
+                (selectedRoute
+                  ? `${routeStatus(selectedRoute.source_status, copy)} · ${selectedGeometryLoading ? copy.fullGeometryLoading : copy.geometryFramed}`
+                  : copy.detailsStillLoading))}
           </p>
           {selectedMetadataError && (
             <button
@@ -989,7 +1337,7 @@ function App() {
               className="detail-retry"
               onClick={() => setMetadataRetryToken((current) => current + 1)}
             >
-              Retry route details
+              {copy.retryDetails}
             </button>
           )}
           {selectedGeometryError && (
@@ -998,18 +1346,130 @@ function App() {
               className="detail-retry"
               onClick={() => setGeometryRetryToken((current) => current + 1)}
             >
-              Retry geometry
+              {copy.retryGeometry}
             </button>
+          )}
+          {selectedRoute && (
+            <>
+              <div className="detail-actions" aria-label={copy.share}>
+                <a className="detail-link" href={permanentRouteUrl}>
+                  {copy.share}
+                </a>
+                <button type="button" className="detail-link" onClick={copyPermanentLink}>
+                  {shareState === 'copied'
+                    ? copy.copied
+                    : shareState === 'failed'
+                      ? copy.copyFailed
+                      : copy.copyLink}
+                </button>
+                <button
+                  type="button"
+                  className="detail-link detail-report"
+                  onClick={() => {
+                    setReportSent(false)
+                    setReportOpen(true)
+                  }}
+                >
+                  {copy.report}
+                </button>
+              </div>
+              <div className="source-section">
+                <h3>{copy.sources}</h3>
+                {selectedRoute.sources.length ? (
+                  <ul className="source-list">
+                    {selectedRoute.sources.map((source) => (
+                      <li key={source.mapy_url}>
+                        <a
+                          href={source.mapy_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label={copy.mapyLink}
+                        >
+                          {source.title || copy.mapyLink}
+                        </a>
+                        <span>{routeStatus(source.status, copy)}</span>
+                        {source.posts.map((post) => (
+                          <span key={post.url} className="source-post">
+                            <a
+                              href={post.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              aria-label={copy.sourceLink(post.thread_title)}
+                            >
+                              {post.thread_title || post.url}
+                            </a>
+                            {post.author && <span> · {post.author}</span>}
+                            {post.posted_at && (
+                              <time dateTime={post.posted_at}>
+                                {' · '}
+                                {copy.posted(
+                                  new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
+                                    dateStyle: 'medium',
+                                  }).format(new Date(post.posted_at)),
+                                )}
+                              </time>
+                            )}
+                          </span>
+                        ))}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="no-sources">{copy.noSources}</p>
+                )}
+              </div>
+            </>
           )}
           <button
             type="button"
             className="close-detail"
             onClick={() => selectRoute(null)}
-            aria-label="Close route details"
+            aria-label={copy.closeDetails}
           >
             ×
           </button>
         </section>
+      )}
+      {reportOpen && selectedRoute && (
+        <div className="report-backdrop" role="presentation">
+          <section
+            className="report-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="report-title"
+          >
+            <h2 id="report-title">{copy.reportTitle}</h2>
+            {reportSent ? (
+              <p role="status">{copy.reportThanks}</p>
+            ) : (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  setReportSent(true)
+                }}
+              >
+                <label htmlFor="report-message">{copy.reportLabel}</label>
+                <textarea
+                  id="report-message"
+                  required
+                  placeholder={copy.reportPlaceholder}
+                  rows={5}
+                />
+                <div className="report-actions">
+                  <button type="submit">{copy.sendReport}</button>
+                  <button type="button" onClick={() => setReportOpen(false)}>
+                    {copy.cancel}
+                  </button>
+                </div>
+              </form>
+            )}
+            {reportSent && (
+              <button type="button" onClick={() => setReportOpen(false)}>
+                {copy.cancel}
+              </button>
+            )}
+          </section>
+        </div>
       )}
     </main>
   )
