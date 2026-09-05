@@ -24,7 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "django-stubs[compatible-mypy]>=5.2,<6",
-  "mypy>=1.15,<2",
+  "mypy>=1.15,<3",
   "pre-commit>=4.2,<5",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
