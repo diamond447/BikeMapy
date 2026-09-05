@@ -17,7 +17,6 @@ jobs:
     permissions:
       actions: read
       contents: read
-      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +37,7 @@ jobs:
           # The local gate below is authoritative; repository code scanning is
           # intentionally not required for this project.
           upload: never
+          upload-database: false
       - name: Fail on actionable CodeQL findings
         run: python scripts/check_codeql_sarif.py /tmp/codeql-results
 
