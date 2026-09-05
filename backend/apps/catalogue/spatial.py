@@ -18,6 +18,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import connection, transaction
+from django.db.models import Count
 from django.utils import timezone
 
 from .fields import _GIS_AVAILABLE
@@ -419,6 +420,7 @@ def query_viewport(
     north: float,
     zoom: int,
     limits: SpatialQueryLimits | None = None,
+    route_ids: set[Any] | None = None,
 ) -> dict[str, Any]:
     """Return heatmap cells or simplified lines for a bounded viewport."""
 
@@ -430,7 +432,13 @@ def query_viewport(
         max_cells=int(_setting("SPATIAL_MAX_CELLS_PER_QUERY", 10_000)),
     )
     epoch = int(cache.get(_CACHE_EPOCH_KEY, 0))
-    raw_key = f"{west}:{south}:{east}:{north}:{zoom}:{limits.max_routes}:{limits.max_cells}:{epoch}"
+    route_key = (
+        ",".join(sorted(str(route_id) for route_id in route_ids)) if route_ids is not None else "*"
+    )
+    raw_key = (
+        f"{west}:{south}:{east}:{north}:{zoom}:{limits.max_routes}:"
+        f"{limits.max_cells}:{route_key}:{epoch}"
+    )
     cache_key = "bikemapy:spatial:viewport:" + hashlib.sha256(raw_key.encode()).hexdigest()
     cached = cache.get(cache_key)
     if cached is not None:
@@ -440,13 +448,24 @@ def query_viewport(
         selected_heatmap_zoom = heatmap_max_zoom()
     if selected_heatmap_zoom is not None and zoom <= heatmap_max_zoom():
         cell_query = RouteHeatmapCell.objects.filter(zoom=selected_heatmap_zoom, route_count__gt=0)
+        cell_order = ("-route_count", "y", "x")
+        if route_ids is not None:
+            cell_query = (
+                RouteHeatmapCell.objects.filter(
+                    zoom=selected_heatmap_zoom,
+                    memberships__route_id__in=route_ids,
+                )
+                .annotate(_filtered_route_count=Count("memberships__route_id", distinct=True))
+                .filter(_filtered_route_count__gt=0)
+            )
+            cell_order = ("-_filtered_route_count", "y", "x")
         if _GIS_AVAILABLE and connection.vendor == "postgresql":
             from django.contrib.gis.geos import Polygon
 
             cell_query = cell_query.filter(
                 boundary__intersects=Polygon.from_bbox((west, south, east, north))
             )
-        cells = list(cell_query.order_by("-route_count", "y", "x")[: limits.max_cells + 1])
+        cells = list(cell_query.order_by(*cell_order)[: limits.max_cells + 1])
         items = []
         for cell in cells[: limits.max_cells]:
             bounds = _tile_bounds(cell.x, cell.y, cell.zoom)
@@ -461,7 +480,7 @@ def query_viewport(
                         "zoom": cell.zoom,
                         "x": cell.x,
                         "y": cell.y,
-                        "count": cell.route_count,
+                        "count": getattr(cell, "_filtered_route_count", cell.route_count),
                         "geometry": _geojson(cell.boundary),
                     }
                 )
@@ -477,6 +496,8 @@ def query_viewport(
         candidates = Route.objects.filter(
             lifecycle=RouteLifecycle.PUBLISHED, current_approved_version__isnull=False
         )
+        if route_ids is not None:
+            candidates = candidates.filter(pk__in=route_ids)
         if _GIS_AVAILABLE and connection.vendor == "postgresql":
             from django.contrib.gis.geos import Polygon
 

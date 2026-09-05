@@ -34,6 +34,7 @@ from apps.catalogue.spatial import (
     SpatialQueryLimits,
     _cell_geometry,
     _line_simplify,
+    _tile_xy,
     generate_browse_geometries,
     query_selected_route,
     query_viewport,
@@ -92,6 +93,55 @@ def test_heatmap_counts_distinct_routes_crossing_cells(published_route: Route) -
     result = query_viewport(west=15.9, south=48.9, east=16.3, north=49.1, zoom=6)
     assert result["mode"] == "heatmap"
     assert any(item["count"] == 1 for item in result["cells"])
+
+
+@override_settings(SPATIAL_HEATMAP_ZOOMS="5")
+def test_filtered_heatmap_limits_after_filtered_count_ordering(published_route: Route) -> None:
+    """A filtered low-zoom map must retain the strongest matching cells."""
+
+    other_route = Route.objects.create()
+    another_other_route = Route.objects.create()
+    matching_route = Route.objects.create()
+    RouteHeatmapCell.objects.filter(zoom=5).delete()
+    x, y = _tile_xy(16.0, 49.0, 5)
+    stronger_unfiltered = RouteHeatmapCell.objects.create(
+        zoom=5,
+        x=x,
+        y=y,
+        boundary=_cell_geometry(x, y, 5),
+        route_count=3,
+    )
+    weaker_filtered = RouteHeatmapCell.objects.create(
+        zoom=5,
+        x=x + 1,
+        y=y,
+        boundary=_cell_geometry(x + 1, y, 5),
+        route_count=2,
+    )
+    RouteHeatmapMembership.objects.create(cell=stronger_unfiltered, route=published_route)
+    RouteHeatmapMembership.objects.create(cell=stronger_unfiltered, route=other_route)
+    RouteHeatmapMembership.objects.create(cell=stronger_unfiltered, route=another_other_route)
+    RouteHeatmapMembership.objects.create(cell=weaker_filtered, route=published_route)
+    RouteHeatmapMembership.objects.create(cell=weaker_filtered, route=matching_route)
+
+    cache.clear()
+    result = query_viewport(
+        west=0,
+        south=30,
+        east=40,
+        north=60,
+        zoom=2,
+        limits=SpatialQueryLimits(max_cells=1),
+        route_ids={published_route.pk, matching_route.pk},
+    )
+
+    assert result["mode"] == "heatmap"
+    assert len(result["cells"]) == 1
+    assert result["cells"][0]["zoom"] == 5
+    assert result["cells"][0]["x"] == weaker_filtered.x
+    assert result["cells"][0]["y"] == weaker_filtered.y
+    assert result["cells"][0]["count"] == 2
+    assert result["truncated"] is True
 
 
 def test_viewport_and_selected_queries_are_bounded(published_route: Route) -> None:

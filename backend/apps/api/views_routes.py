@@ -53,6 +53,10 @@ ROUTE_FILTER_PARAMETERS = [
     OpenApiParameter("max_distance_m", OpenApiTypes.NUMBER),
     OpenApiParameter("min_ascent_m", OpenApiTypes.NUMBER),
     OpenApiParameter("max_ascent_m", OpenApiTypes.NUMBER),
+    OpenApiParameter("west", OpenApiTypes.NUMBER),
+    OpenApiParameter("south", OpenApiTypes.NUMBER),
+    OpenApiParameter("east", OpenApiTypes.NUMBER),
+    OpenApiParameter("north", OpenApiTypes.NUMBER),
     OpenApiParameter("page", OpenApiTypes.INT),
     OpenApiParameter("page_size", OpenApiTypes.INT),
 ]
@@ -64,6 +68,13 @@ VIEWPORT_PARAMETERS = [
     OpenApiParameter("zoom", OpenApiTypes.INT, required=True),
     OpenApiParameter("limit", OpenApiTypes.INT),
     OpenApiParameter("cell_limit", OpenApiTypes.INT),
+    OpenApiParameter("search", OpenApiTypes.STR),
+    OpenApiParameter("author", OpenApiTypes.STR),
+    OpenApiParameter("category", OpenApiTypes.STR, description="Category slug."),
+    OpenApiParameter("min_distance_m", OpenApiTypes.NUMBER),
+    OpenApiParameter("max_distance_m", OpenApiTypes.NUMBER),
+    OpenApiParameter("min_ascent_m", OpenApiTypes.NUMBER),
+    OpenApiParameter("max_ascent_m", OpenApiTypes.NUMBER),
 ]
 
 
@@ -260,6 +271,25 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
     source_status = params.get("source_status", "").strip()
     if source_status:
         queryset = queryset.filter(current_approved_version__source__source_status=source_status)
+    bbox_values = {name: params.get(name) for name in ("west", "south", "east", "north")}
+    if (
+        all(value not in (None, "") for value in bbox_values.values())
+        and connection.vendor == "postgresql"
+    ):
+        west = float(_decimal(bbox_values["west"], "west"))
+        south = float(_decimal(bbox_values["south"], "south"))
+        east = float(_decimal(bbox_values["east"], "east"))
+        north = float(_decimal(bbox_values["north"], "north"))
+        from django.contrib.gis.geos import Polygon
+
+        viewport = Polygon.from_bbox((west, south, east, north))
+        queryset = queryset.filter(
+            Q(current_approved_version__normalized_geometry__intersects=viewport)
+            | Q(
+                current_approved_version__normalized_geometry__isnull=True,
+                current_approved_version__simplified_geometry__intersects=viewport,
+            )
+        )
     return queryset.distinct()
 
 
@@ -326,6 +356,25 @@ class ViewportRouteView(APIView):
         max_routes = _int(request.query_params.get("limit", "500"), "limit")
         max_cells = _int(request.query_params.get("cell_limit", "10000"), "cell_limit")
         try:
+            filter_names = (
+                "search",
+                "author",
+                "category",
+                "min_distance_m",
+                "max_distance_m",
+                "min_ascent_m",
+                "max_ascent_m",
+            )
+            has_filters = any(request.query_params.get(name, "").strip() for name in filter_names)
+            route_ids = (
+                set(
+                    filter_routes(public_route_queryset(), request.query_params).values_list(
+                        "id", flat=True
+                    )
+                )
+                if has_filters
+                else None
+            )
             result = query_viewport(
                 west=values["west"],
                 south=values["south"],
@@ -333,6 +382,7 @@ class ViewportRouteView(APIView):
                 north=values["north"],
                 zoom=zoom,
                 limits=SpatialQueryLimits(max_routes=max_routes, max_cells=max_cells),
+                route_ids=route_ids,
             )
         except ValidationError as exc:
             raise ParseError(str(exc)) from exc
