@@ -19,10 +19,6 @@ or starting locations from the report. If a private report cannot be opened,
 contact the repository owner through a trusted GitHub channel and request a
 private reporting route; do not send secrets in a public comment.
 
-We will acknowledge a report within 5 business days, reproduce and classify
-it, and coordinate a fix and disclosure date with the reporter. Reports that
-contain a live credential should say where it was exposed (without repeating
-the value); maintainers will revoke it before investigating further.
 
 ## Security boundaries and threat model
 
