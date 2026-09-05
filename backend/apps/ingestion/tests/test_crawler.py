@@ -436,6 +436,78 @@ def test_http_fetcher_retries_transient_response_with_backoff_and_ua() -> None:
 
 
 @override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"], BIKEFORUM_DNS_CHECK=False
+)
+def test_http_fetcher_stops_consuming_an_oversized_page() -> None:
+    consumed: list[bytes] = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            for chunk in (b"12", b"34", b"567"):
+                consumed.append(chunk)
+                yield chunk
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, headers={"content-type": "text/html"}, stream=Chunks())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, max_bytes=3)
+    with pytest.raises(CrawlError, match="byte limit"):
+        fetcher.fetch(THREAD_URL)
+    assert consumed == [b"12", b"34"]
+    client.close()
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"], BIKEFORUM_DNS_CHECK=False
+)
+def test_http_fetcher_caps_robots_response_before_parsing() -> None:
+    consumed: list[bytes] = []
+
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            for chunk in (b"12", b"34", b"567"):
+                consumed.append(chunk)
+                yield chunk
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/plain"}, stream=Chunks())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, max_bytes=3)
+    with pytest.raises(CrawlError, match="byte limit"):
+        fetcher.fetch(THREAD_URL)
+    assert consumed == [b"12", b"34"]
+    client.close()
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"], BIKEFORUM_DNS_CHECK=False
+)
+def test_http_fetcher_does_not_return_an_oversized_cached_304() -> None:
+    CrawlResponseCache.objects.create(
+        url=THREAD_URL,
+        final_url=THREAD_URL,
+        status_code=200,
+        body="oversized",
+        fetched_at=timezone.now() - timedelta(hours=2),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(304)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, cache_ttl=1, max_bytes=3)
+    with pytest.raises(CrawlError, match="byte limit"):
+        fetcher.fetch(THREAD_URL)
+    client.close()
+
+
+@override_settings(
     BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"], BIKEFORUM_DNS_CHECK=True
 )
 def test_http_fetcher_rechecks_dns_and_pacing_for_each_attempt() -> None:
