@@ -138,6 +138,17 @@ jobs:
       - run: pnpm exec tsc -b --pretty false
       - run: pnpm test
       - run: pnpm build
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run browser interaction and evidence tests
+        run: pnpm exec playwright test
+      - name: Upload issue 10 screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-10-screenshots
+          path: frontend/test-results/issue-10-screenshots
+          if-no-files-found: warn
 
   security:
     name: Secret scan
