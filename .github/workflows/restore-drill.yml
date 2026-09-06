@@ -25,10 +25,20 @@ jobs:
             -e POSTGRES_DB=bikemapy -e POSTGRES_USER=bikemapy -e POSTGRES_PASSWORD=drill-only \
             postgis/postgis:17-3.5 >/dev/null
           trap 'docker rm -f bikemapy-drill-source >/dev/null 2>&1 || true' EXIT
+          database_ready=0
           for attempt in {1..60}; do
-            docker exec bikemapy-drill-source psql -U bikemapy -d bikemapy -c 'SELECT 1' >/dev/null 2>&1 && break
+            if docker exec bikemapy-drill-source psql -h 127.0.0.1 -U bikemapy -d bikemapy \
+              -c 'SELECT 1' >/dev/null 2>&1; then
+              database_ready=1
+              break
+            fi
             sleep 2
           done
+          if [ "$database_ready" -ne 1 ]; then
+            echo "Source PostGIS database did not become queryable over TCP" >&2
+            docker logs bikemapy-drill-source >&2 || true
+            exit 1
+          fi
           docker exec bikemapy-drill-source psql -U bikemapy -d bikemapy -v ON_ERROR_STOP=1 \
             -c 'CREATE TABLE catalogue_route (id bigint PRIMARY KEY); INSERT INTO catalogue_route VALUES (1), (2);'
           docker exec bikemapy-drill-source pg_dump -U bikemapy -Fc bikemapy > "backup/db-${BACKUP_ID}.dump"

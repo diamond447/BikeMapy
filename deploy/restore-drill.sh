@@ -19,10 +19,20 @@ cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 docker run -d --name "$CONTAINER" -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD=drill-only "$PG_IMAGE" >/dev/null
+database_ready=0
 for _ in {1..60}; do
-  docker exec "$CONTAINER" pg_isready -U "$POSTGRES_USER" -d bikemapy >/dev/null 2>&1 && break
+  if docker exec "$CONTAINER" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d bikemapy \
+    -c "SELECT 1" >/dev/null 2>&1; then
+    database_ready=1
+    break
+  fi
   sleep 2
 done
+if (( ! database_ready )); then
+  echo "Disposable PostGIS database did not become queryable over TCP" >&2
+  docker logs "$CONTAINER" >&2 || true
+  exit 1
+fi
 docker exec -i "$CONTAINER" pg_restore --username="$POSTGRES_USER" --clean --if-exists \
   --no-owner --dbname=bikemapy < "$db_file"
 route_count="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
