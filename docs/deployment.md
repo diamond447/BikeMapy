@@ -4,6 +4,10 @@ This project deliberately separates build artifacts, runtime configuration, and
 production deployment. No workflow in this repository deploys the production
 backend or merges a pull request.
 
+Operational health checks, daily snapshots, encrypted laptop pulls, restore
+drills, Sentry privacy controls, and their honest recovery limitations are
+documented in [operations.md](operations.md).
+
 ## Backend image
 
 The `Backend image` workflow builds the tested `docker/backend.Dockerfile` on
@@ -72,8 +76,9 @@ the backend. The GPX endpoint remains authorized by Django and uses an
 volume; `/storage/` and `/media/` never map directly to a public location.
 The listener is explicitly HTTP because Cloudflare Tunnel terminates HTTPS at
 the edge; `proxy_params` passes the public HTTPS scheme to Django without a
-redirect loop. Access logs are JSON; configure host log rotation for the
-documented 14-day retention.
+redirect loop. Access logs are privacy-safe JSON on container stdout, and
+production Compose rotates Docker logs at 10 MiB with fourteen files per
+service.
 
 The repository does not assume a homeserver exists. When one is available,
 install `cloudflared` on that host and route a named tunnel to the local Nginx
@@ -125,10 +130,11 @@ editing every placeholder:
 export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
 export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<selected-digest>"
 export BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+export POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
 mkdir -p backup
 
 # Back up before migrations. Store these files on a separate encrypted disk.
-$COMPOSE exec -T db pg_dump --format=custom --file="/backup/db-${BACKUP_ID}.dump" bikemapy
+$COMPOSE exec -T db pg_dump --username="$POSTGRES_USER" --format=custom --file="/backup/db-${BACKUP_ID}.dump" bikemapy
 docker run --rm -v bikemapy_gpx_data:/data:ro -v "$PWD/backup:/backup" alpine \
   tar czf "/backup/gpx-${BACKUP_ID}.tar.gz" -C / data
 
@@ -180,7 +186,7 @@ $COMPOSE stop backend worker beat
 # Restore to the production database only after checking the backup exists.
 test -s "backup/db-${BACKUP_ID}.dump"
 $COMPOSE start db redis
-$COMPOSE exec -T db pg_restore --clean --if-exists --no-owner --dbname=bikemapy \
+$COMPOSE exec -T db pg_restore --username="$POSTGRES_USER" --clean --if-exists --no-owner --dbname=bikemapy \
   "/backup/db-${BACKUP_ID}.dump"
 
 # Preserve the current GPX volume before replacing its contents.

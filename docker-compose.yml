@@ -15,6 +15,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: &default-log-rotation
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   redis:
     image: redis:7.4-alpine
@@ -27,6 +32,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    logging: *default-log-rotation
 
   backend:
     build:
@@ -51,6 +57,7 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
+    logging: *default-log-rotation
     healthcheck:
       test: ["CMD", "uv", "run", "--locked", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live/', timeout=2)"]
       interval: 10s
@@ -78,6 +85,7 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
+    logging: *default-log-rotation
 
   beat:
     build:
@@ -92,6 +100,7 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
+    logging: *default-log-rotation
 
   frontend:
     build:
@@ -109,6 +118,7 @@ services:
       - "${FRONTEND_PORT:-5173}:5173"
     depends_on:
       - backend
+    logging: *default-log-rotation
 
 volumes:
   frontend_node_modules:
