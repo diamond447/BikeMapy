@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
 MAX_AGE_SECONDS="${MAX_AGE_SECONDS:-172800}"
+test -d "$BACKUP_DIR"
+BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 latest="$(find "$BACKUP_DIR" -maxdepth 1 -type f \
   \( -name 'manifest-*.json' -o -name 'manifest-*.json.age' \) -printf '%f\n' |
   sort | tail -n 1 || true)"
