@@ -122,6 +122,7 @@ omitted, Django's secret key is used as a safe local fallback. The defaults
 allow three reports per hour and ten per day. The Celery beat service runs
 closed-report retention daily.
 
-Keep `REPORT_CLIENT_IP_MODE=direct` for local Compose. A production Cloudflare
-Tunnel must configure its exact proxy CIDRs before selecting `cloudflare`;
-never trust forwarded headers from arbitrary peers.
+Keep `REPORT_CLIENT_IP_MODE=direct` for local Compose. In the production
+Compose/Tunnel topology, select `cloudflare` only with
+`REPORT_TRUSTED_PROXY_CIDRS=172.30.0.2/32`; Django trusts the direct Nginx peer,
+not arbitrary forwarded headers or public Cloudflare ranges.

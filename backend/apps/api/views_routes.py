@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 from django.conf import settings
@@ -14,6 +16,7 @@ from django.core.exceptions import ValidationError
 from django.core.files.storage import default_storage
 from django.db import connection
 from django.db.models import Exists, F, OuterRef, Prefetch, Q, QuerySet
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -361,12 +364,23 @@ class RouteGpxDownloadView(APIView):
         version = route.current_approved_version
         if version is None or not version.original_gpx_storage_key:
             return Response({"detail": "GPX download is unavailable."}, status=404)
+        storage_key = version.original_gpx_storage_key
+        path = PurePosixPath(storage_key)
+        if path.is_absolute() or ".." in path.parts or not default_storage.exists(storage_key):
+            return Response({"detail": "GPX download is unavailable."}, status=404)
+        if getattr(settings, "GPX_INTERNAL_REDIRECT", False):
+            # Nginx authorizes this endpoint in Django, then serves the private
+            # volume through an internal location. Gunicorn does not hold a
+            # file descriptor or stream bytes for the duration of the download.
+            response = HttpResponse(status=status.HTTP_200_OK, content_type="application/gpx+xml")
+            response["X-Accel-Redirect"] = "/_protected_gpx/" + quote(storage_key, safe="/")
+            response["Content-Disposition"] = f'attachment; filename="{route.slug}.gpx"'
+            response["X-Content-Type-Options"] = "nosniff"
+            return response
         try:
-            payload = default_storage.open(version.original_gpx_storage_key, "rb")
+            payload = default_storage.open(storage_key, "rb")
         except (FileNotFoundError, OSError):
             return Response({"detail": "GPX download is unavailable."}, status=404)
-        from django.http import FileResponse
-
         return FileResponse(
             payload,
             as_attachment=True,

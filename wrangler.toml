@@ -1,0 +1,6 @@
+# Cloudflare Pages uses this file to keep the output directory explicit. The
+# Pages project is configured in the Cloudflare dashboard; this repository does
+# not contain credentials and does not deploy production automatically.
+name = "bikemapy-web"
+pages_build_output_dir = "frontend/dist"
+compatibility_date = "2026-01-01"

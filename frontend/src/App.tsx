@@ -56,6 +56,9 @@ declare global {
 
 const LANGUAGE_KEY = 'bikemapy:language'
 const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_URL)
+// Cloudflare preview builds set this to false. Keeping the guard at build time
+// means a preview contains only the public read API and has no report action.
+const REPORTS_ENABLED = import.meta.env.VITE_ENABLE_REPORTS !== 'false'
 
 const translations = {
   en: {
@@ -705,7 +708,7 @@ function App() {
   const turnstileConfigured = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY)
 
   useEffect(() => {
-    if (!reportOpen || !turnstileNode.current) return
+    if (!REPORTS_ENABLED || !reportOpen || !turnstileNode.current) return
     const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY
     if (!siteKey) return
     let disposed = false
@@ -1562,24 +1565,26 @@ function App() {
                       ? copy.copyFailed
                       : copy.copyLink}
                 </button>
-                <button
-                  type="button"
-                  className="detail-link detail-report"
-                  ref={reportTriggerNode}
-                  onClick={() => {
-                    setReportSent(false)
-                    setReportOutcome('idle')
-                    setReportError(null)
-                    setReportReason('incorrect_route')
-                    setReportMessage('')
-                    setReportEmail('')
-                    setReportToken('')
-                    setReportHoneypot('')
-                    setReportOpen(true)
-                  }}
-                >
-                  {copy.report}
-                </button>
+                {REPORTS_ENABLED && (
+                  <button
+                    type="button"
+                    className="detail-link detail-report"
+                    ref={reportTriggerNode}
+                    onClick={() => {
+                      setReportSent(false)
+                      setReportOutcome('idle')
+                      setReportError(null)
+                      setReportReason('incorrect_route')
+                      setReportMessage('')
+                      setReportEmail('')
+                      setReportToken('')
+                      setReportHoneypot('')
+                      setReportOpen(true)
+                    }}
+                  >
+                    {copy.report}
+                  </button>
+                )}
                 {selectedRoute.gpx_download_url ? (
                   <a className="detail-link" href={selectedRoute.gpx_download_url} download>
                     {copy.gpxDownload}
@@ -1674,7 +1679,7 @@ function App() {
           </button>
         </section>
       )}
-      {reportOpen && selectedRoute && (
+      {REPORTS_ENABLED && reportOpen && selectedRoute && (
         <div className="report-backdrop" role="presentation">
           <section
             ref={reportDialogNode}

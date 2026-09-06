@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "scan:bundle": "python3 ../scripts/check_frontend_bundle.py dist",
+    "build:preview": "VITE_ENABLE_REPORTS=false pnpm build && pnpm scan:bundle --read-only",
+    "build:pages": "if [ \"$CF_PAGES_BRANCH\" = \"main\" ]; then pnpm build && pnpm scan:bundle; else VITE_ENABLE_REPORTS=false pnpm build && pnpm scan:bundle --read-only; fi",
     "lint": "eslint .",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
