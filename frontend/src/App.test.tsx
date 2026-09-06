@@ -530,6 +530,7 @@ describe('BikeMapy route discovery', () => {
     expect(
       screen.getByRole('dialog', { name: /report a problem with this route/i }),
     ).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: /complete the security check/i })).toBeInTheDocument()
     expect(document.activeElement).toBe(
       screen.getByRole('textbox', { name: /what should we check/i }),
     )

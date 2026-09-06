@@ -756,7 +756,7 @@ function App() {
       if (event.key !== 'Tab' || !reportDialogNode.current) return
       const focusable = Array.from(
         reportDialogNode.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), textarea, a[href], input:not([disabled]), select:not([disabled])',
+          'button:not([disabled]), textarea, a[href], input:not([disabled]):not([tabindex="-1"]), select:not([disabled])',
         ),
       )
       if (!focusable.length) return
@@ -1771,20 +1771,24 @@ function App() {
                 />
                 <small id="report-email-hint">{copy.reportEmailHint}</small>
                 <div
-                  ref={turnstileNode}
-                  className="turnstile-widget"
-                  aria-label={copy.reportSecurity}
-                />
-                <input
-                  type="text"
-                  className="sr-only"
-                  aria-hidden="true"
-                  tabIndex={-1}
-                  name="turnstile_token"
-                  value={reportToken}
-                  onChange={(event) => setReportToken(event.target.value)}
-                />
-                <p className="report-security-hint">{copy.reportSecurity}</p>
+                  className="turnstile-field"
+                  role="group"
+                  aria-labelledby="report-security-hint"
+                >
+                  <div ref={turnstileNode} className="turnstile-widget" />
+                  <input
+                    type="text"
+                    className="sr-only"
+                    aria-hidden="true"
+                    tabIndex={-1}
+                    name="turnstile_token"
+                    value={reportToken}
+                    onChange={(event) => setReportToken(event.target.value)}
+                  />
+                  <p id="report-security-hint" className="report-security-hint">
+                    {copy.reportSecurity}
+                  </p>
+                </div>
                 <label className="report-honeypot" aria-hidden="true">
                   Website
                   <input
