@@ -75,7 +75,23 @@ const route: components['schemas']['Route'] = {
   descent_m: '620.00',
   loop_status: 'loop',
   source_status: 'verified',
-  sources: [],
+  sources: [
+    {
+      mapy_url: 'https://mapy.com/s/south-ridge',
+      title: 'South ridge on Mapy.com',
+      status: 'verified',
+      last_checked_at: null,
+      last_successful_check_at: null,
+      posts: [
+        {
+          url: 'https://bikeforum.example/thread/route#post-1',
+          thread_title: 'South ridge source discussion',
+          thread_url: 'https://bikeforum.example/thread/route',
+          author: null,
+        },
+      ],
+    },
+  ],
   variants: [],
   geometry: null,
   reviewed: false,
@@ -195,6 +211,28 @@ describe('BikeMapy route discovery', () => {
     expect(apiClient.GET).toHaveBeenCalledWith('/api/v1/routes/{route_id}/geometry/', {
       params: { path: { route_id: route.id } },
     })
+  })
+
+  it('tracks detail and source interactions, resets on close, and keeps GPX disabled', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const beacon = vi.fn().mockReturnValue(true)
+    Object.defineProperty(navigator, 'sendBeacon', { configurable: true, value: beacon })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await screen.findByRole('heading', { name: /south ridge loop/i })
+    await waitFor(() => expect(beacon).toHaveBeenCalledTimes(1))
+    expect(beacon.mock.calls[0][1].toString()).toBe('event=route_detail_view')
+    fireEvent.click(screen.getByRole('link', { name: /open mapy\.com route/i }))
+    expect(beacon.mock.calls[1][1].toString()).toBe('event=original_source_click')
+    expect(screen.getByRole('button', { name: /download gpx/i })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: /close route details/i }))
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await waitFor(() => expect(beacon).toHaveBeenCalledTimes(3))
+    expect(beacon.mock.calls[2][1].toString()).toBe('event=route_detail_view')
   })
 
   it('sends text and numeric filters and can clear them', async () => {

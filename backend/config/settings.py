@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "apps.reports",
     "apps.accounts",
     "apps.api",
+    "apps.analytics",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
     # Host-side smoke checks can run without native GeoDjango libraries. The
@@ -163,6 +164,9 @@ REST_FRAMEWORK = {
         "user": os.getenv("API_USER_RATE", "600/minute"),
     },
 }
+# Analytics is deliberately protected by one coarse, non-identifying bucket;
+# unlike the generic API throttle it never derives a cache key from an IP.
+ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
 SPECTACULAR_SETTINGS = {
     "TITLE": "BikeMapy API",
     "DESCRIPTION": "Public, versioned read API for BikeMapy.",
@@ -251,6 +255,10 @@ BIKEFORUM_ALLOWED_ORIGINS = [
     for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")
     if origin.strip()
 ]
+# The disposable launch harness sets this false because its synthetic source
+# URLs must never trigger requests to real Mapy hosts. Production must retain
+# the default and run the bounded source availability checks.
+BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
 BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)
 BIKEFORUM_LEASE_SECONDS = int(os.getenv("BIKEFORUM_LEASE_SECONDS", "600"))
 BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))

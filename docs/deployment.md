@@ -44,6 +44,7 @@ Create one Pages project connected to this repository with these settings:
 | Output directory | `dist` | `dist` |
 | `VITE_API_URL` | production read API origin | the same production read API origin |
 | `VITE_PUBLIC_SITE_URL` | canonical production URL | the preview URL or Pages project URL |
+| `VITE_CF_WEB_ANALYTICS_TOKEN` | public Cloudflare Web Analytics token | empty unless the owner has reviewed the property |
 | `VITE_ENABLE_REPORTS` | `true` only when reporting is approved | `false` |
 | `VITE_TURNSTILE_SITE_KEY` | public site key, if reporting is enabled | empty |
 

@@ -1,0 +1,28 @@
+# Disposable override used by scripts/rehearse_launch.py. It intentionally
+# allocates host ports dynamically and never changes the production Compose
+# contract.
+services:
+  db:
+    ports:
+      - "127.0.0.1::5432"
+  redis:
+    ports:
+      - "127.0.0.1::6379"
+  backend:
+    ports:
+      - "127.0.0.1::8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      BIKEFORUM_DNS_CHECK: "false"
+      BIKEFORUM_CHECK_SOURCES: "false"
+      BIKEFORUM_LEASE_SECONDS: "5"
+      BIKEFORUM_PAGE_ATTEMPTS: "3"
+  worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      BIKEFORUM_DNS_CHECK: "false"
+      BIKEFORUM_CHECK_SOURCES: "false"
+      BIKEFORUM_LEASE_SECONDS: "5"
+      BIKEFORUM_PAGE_ATTEMPTS: "3"

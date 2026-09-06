@@ -11,11 +11,46 @@ bases for processing.
 ## What the public site does
 
 The public catalogue has no user account, profile, advertising, marketing
-cookie, browser fingerprint, or non-essential analytics service. The frontend
+cookie, or browser fingerprint. When the operator configures the public
+`VITE_CF_WEB_ANALYTICS_TOKEN`, the site loads Cloudflare Web Analytics as a
+cookie-free, aggregate visit measurement service. It is the primary launch
+metric and is not combined with the product counters to identify a visitor.
+The frontend
 stores the selected language, filters, selected route, and viewport preference
 in the browser's `localStorage`; this stays on the device and is not sent as a
 personal profile. Search and map requests send the selected filters, map view,
 and route identifier to the BikeMapy API so the requested feature can work.
+
+The product also sends only three allow-listed aggregate events to the API:
+route-detail views, GPX download clicks, and original-source clicks. The API
+stores one counter per event and local calendar day. Events contain no route
+identifier, URL, session, user, network address, user-agent, or arbitrary
+metadata, and the response does not expose counter values publicly. GPX
+redistribution is disabled at launch, so the GPX click counter remains zero
+unless the legal deployment gate is later approved and a download link is
+explicitly enabled.
+
+### Cloudflare Web Analytics vendor boundary
+
+Cloudflare's [Web Analytics about page](https://developers.cloudflare.com/web-analytics/about/)
+and [FAQ](https://developers.cloudflare.com/web-analytics/faq/) (reviewed
+2026-09-06) describe Web Analytics as not collecting or using visitors'
+personal data and as operating without cookies or fingerprinting. The
+operator's review is still required: Cloudflare receives the browser beacon
+request and its network/protocol data at Cloudflare's analytics service, and
+the exact controller/processor role, applicable terms, and account settings
+must be confirmed for the production property. The application sends no
+custom event metadata to Cloudflare; the three product counters are sent only
+to the BikeMapy API.
+
+Cloudflare's FAQ says raw/unsampled beacon data is retained for seven days,
+then aggregated to approximately ten percent sampling, while dashboard data
+is available for the previous six months. It also says query strings are not
+logged, beacons can be blocked, and custom events are not supported by Web
+Analytics. These are vendor-stated limits, not guarantees made by BikeMapy;
+the owner must verify the production account's current retention and privacy
+settings before launch. Removing `VITE_CF_WEB_ANALYTICS_TOKEN` disables the
+beacon if that review fails.
 
 MapLibre loads the configured OpenFreeMap style and tiles. Those requests go
 to the map provider and may expose the visitor's network address to that
