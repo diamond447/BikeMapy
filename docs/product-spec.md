@@ -30,6 +30,12 @@ supplemented by anonymous aggregate counters for route-detail views, GPX
 download clicks, and original-source clicks. Visits remain the primary metric;
 the product will not use browser fingerprinting.
 
+The implementation keeps those product counters in day-bucketed, allow-listed
+records with no route, session, user, network address, user-agent, or arbitrary
+metadata. Cloudflare Web Analytics is configured only with its public site
+token; an empty token leaves the beacon unloaded in local development and
+previews.
+
 ## Product requirements
 
 ### Route discovery and ingestion

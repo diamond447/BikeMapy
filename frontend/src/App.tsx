@@ -4,6 +4,7 @@ import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 import type { components } from './api/generated/schema'
+import { trackProductEvent } from './analytics'
 import { apiClient } from './api/client'
 import { DEFAULT_VIEW, MAP_PROVIDER } from './mapProvider'
 import { normalizePublicSiteUrl, routeUrl } from './siteMetadata'
@@ -684,6 +685,7 @@ function App() {
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [mobilePanelHeight, setMobilePanelHeight] = useState<number | null>(null)
   const [mobileDetailHeight, setMobileDetailHeight] = useState<number | null>(null)
+  const trackedRouteRef = useRef<string | null>(null)
   const cameraSyncRef = useRef(false)
   const mapNode = useRef<HTMLDivElement>(null)
   const panelNode = useRef<HTMLElement>(null)
@@ -719,6 +721,12 @@ function App() {
     ? routeUrl(PUBLIC_SITE_URL, selectedRoute.id, selectedRoute.slug)
     : ''
   const turnstileConfigured = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY)
+
+  useEffect(() => {
+    if (!selectedId || trackedRouteRef.current === selectedId) return
+    trackedRouteRef.current = selectedId
+    trackProductEvent('route_detail_view')
+  }, [selectedId])
 
   useEffect(() => {
     if (!REPORTS_ENABLED || !reportOpen || !turnstileNode.current) return
@@ -819,6 +827,7 @@ function App() {
   }, [copy.intro, copy.siteDescription, copy.siteTitle, language, permanentRouteUrl, selectedRoute])
   const selectRoute = useCallback(
     (id: string | null, push = true) => {
+      if (!id) trackedRouteRef.current = null
       setSelectedId(id)
       setOverlap(id ? [id] : [])
       if (id && window.innerWidth <= 700) {
@@ -1599,7 +1608,12 @@ function App() {
                   </button>
                 )}
                 {selectedRoute.gpx_download_url ? (
-                  <a className="detail-link" href={selectedRoute.gpx_download_url} download>
+                  <a
+                    className="detail-link"
+                    href={selectedRoute.gpx_download_url}
+                    download
+                    onClick={() => trackProductEvent('gpx_download_click')}
+                  >
                     {copy.gpxDownload}
                   </a>
                 ) : (
@@ -1627,6 +1641,7 @@ function App() {
                           target="_blank"
                           rel="noreferrer"
                           aria-label={copy.mapyLink}
+                          onClick={() => trackProductEvent('original_source_click')}
                         >
                           {source.title || copy.mapyLink}
                         </a>
@@ -1657,6 +1672,7 @@ function App() {
                               target="_blank"
                               rel="noreferrer"
                               aria-label={copy.sourceLink(post.thread_title)}
+                              onClick={() => trackProductEvent('original_source_click')}
                             >
                               {post.thread_title || post.url}
                             </a>

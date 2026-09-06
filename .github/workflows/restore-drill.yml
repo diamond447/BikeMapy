@@ -62,10 +62,20 @@ jobs:
           (root / f"manifest-{backup_id}.json").write_text(json.dumps(manifest) + "\n")
           PY
       - name: Execute restore drill and produce evidence
-        run: BACKUP_DIR=backup POSTGRES_USER=bikemapy ./deploy/restore-drill.sh 20260101T030000Z
+        run: |
+          set -Eeuo pipefail
+          {
+            date -u +%Y-%m-%dT%H:%M:%SZ
+            echo "BACKUP_DIR=backup POSTGRES_USER=bikemapy ./deploy/restore-drill.sh 20260101T030000Z"
+            BACKUP_DIR=backup POSTGRES_USER=bikemapy ./deploy/restore-drill.sh 20260101T030000Z
+            date -u +%Y-%m-%dT%H:%M:%SZ
+          } | tee backup/restore-drill-command.log
       - name: Upload restore evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: restore-drill-evidence
-          path: backup/restore-drill-*.json
+          path: |
+            backup/manifest-*.json
+            backup/restore-drill-*.json
+            backup/restore-drill-command.log
           if-no-files-found: error
