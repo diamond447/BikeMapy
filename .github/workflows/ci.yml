@@ -147,9 +147,9 @@ jobs:
           VITE_API_URL: http://localhost:8000
           VITE_ENABLE_REPORTS: "false"
       - name: Scan browser bundle for server credentials
-        run: python scripts/check_frontend_bundle.py frontend/dist --read-only --forbidden-value "bikemapy-build-secret-canary"
+        run: python ../scripts/check_frontend_bundle.py dist --read-only --forbidden-value "bikemapy-build-secret-canary"
       - name: Verify preview bundle is read-only
-        run: test -z "$(rg -o '/reports/' frontend/dist || true)"
+        run: test -z "$(rg -o '/reports/' dist || true)"
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Run browser interaction and evidence tests
