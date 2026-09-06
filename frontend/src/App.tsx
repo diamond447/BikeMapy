@@ -36,6 +36,24 @@ type DiscoveryState = {
 
 type Language = 'en' | 'cs'
 
+type TurnstileApi = {
+  render: (
+    element: HTMLElement,
+    options: {
+      sitekey: string
+      callback: (token: string) => void
+      'expired-callback'?: () => void
+    },
+  ) => string
+  reset: (widgetId?: string) => void
+}
+
+declare global {
+  interface Window {
+    turnstile?: TurnstileApi
+  }
+}
+
 const LANGUAGE_KEY = 'bikemapy:language'
 const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_URL)
 
@@ -132,10 +150,29 @@ const translations = {
     copyFailed: 'Copy unavailable — use the address bar.',
     report: 'Report a problem',
     reportTitle: 'Report a problem with this route',
+    reportDescription:
+      'Reports are reviewed by the site owner. Submitting a report does not automatically hide or change this route.',
     reportLabel: 'What should we check?',
+    reportReason: 'Reason',
+    reportReasonIncorrect: 'Incorrect route information',
+    reportReasonSource: 'Source or attribution',
+    reportReasonAuthor: 'Author removal request',
+    reportReasonRights: 'Rights-holder request',
+    reportReasonOther: 'Other',
     reportPlaceholder: 'Describe an issue with the route or its attribution…',
-    sendReport: 'Report unavailable',
-    reportThanks: 'Secure reporting is not available yet. No report was submitted.',
+    reportEmail: 'Contact email (optional)',
+    reportEmailHint: 'Used only if the administrator needs to follow up.',
+    reportSecurity: 'Complete the security check before sending.',
+    sendReport: 'Send report',
+    reportUnavailable: 'Report unavailable',
+    sendingReport: 'Sending report…',
+    reportThanks:
+      'Thank you. Your report entered the review queue. The route was not changed automatically.',
+    reportFailure: 'The report could not be submitted. Please try again.',
+    reportDuplicate: 'A matching report was already submitted recently.',
+    reportRateLimited: 'The report limit was reached. Please try again later.',
+    reportVerification:
+      'Security verification failed. No report was submitted. Please complete the check again.',
     cancel: 'Cancel',
     gpxDownload: 'Download GPX',
     gpxUnavailable: 'GPX download is unavailable until redistribution is legally approved.',
@@ -231,10 +268,28 @@ const translations = {
     copyFailed: 'Kopírování není dostupné — použijte adresní řádek.',
     report: 'Nahlásit problém',
     reportTitle: 'Nahlásit problém s trasou',
+    reportDescription:
+      'Hlášení kontroluje vlastník webu. Odeslání hlášení tuto trasu automaticky neskryje ani nezmění.',
     reportLabel: 'Co máme prověřit?',
+    reportReason: 'Důvod',
+    reportReasonIncorrect: 'Nesprávné informace o trase',
+    reportReasonSource: 'Zdroj nebo uvedení autora',
+    reportReasonAuthor: 'Žádost autora o odstranění',
+    reportReasonRights: 'Žádost držitele práv',
+    reportReasonOther: 'Jiné',
     reportPlaceholder: 'Popište problém s trasou nebo uvedením zdroje…',
-    sendReport: 'Hlášení není dostupné',
-    reportThanks: 'Bezpečné hlášení zatím není dostupné. Hlášení nebylo odesláno.',
+    reportEmail: 'Kontaktní e-mail (volitelné)',
+    reportEmailHint: 'Použijeme jej pouze v případě, že správce potřebuje doplnění.',
+    reportSecurity: 'Před odesláním dokončete bezpečnostní kontrolu.',
+    sendReport: 'Odeslat hlášení',
+    reportUnavailable: 'Hlášení není dostupné',
+    sendingReport: 'Odesílám hlášení…',
+    reportThanks: 'Děkujeme. Hlášení bylo zařazeno ke kontrole. Trasa se automaticky nezměnila.',
+    reportFailure: 'Hlášení se nepodařilo odeslat. Zkuste to znovu.',
+    reportDuplicate: 'Stejné hlášení už bylo nedávno odesláno.',
+    reportRateLimited: 'Byl dosažen limit hlášení. Zkuste to později.',
+    reportVerification:
+      'Bezpečnostní kontrola selhala. Hlášení nebylo odesláno. Dokončete ji znovu.',
     cancel: 'Zrušit',
     gpxDownload: 'Stáhnout GPX',
     gpxUnavailable: 'Stažení GPX není dostupné, dokud nebude právně schváleno další šíření.',
@@ -603,6 +658,13 @@ function App() {
   const [mapError, setMapError] = useState<string | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
   const [reportSent, setReportSent] = useState(false)
+  const [reportReason, setReportReason] = useState('incorrect_route')
+  const [reportMessage, setReportMessage] = useState('')
+  const [reportEmail, setReportEmail] = useState('')
+  const [reportToken, setReportToken] = useState('')
+  const [reportHoneypot, setReportHoneypot] = useState('')
+  const [reportOutcome, setReportOutcome] = useState<'idle' | 'sending' | 'error'>('idle')
+  const [reportError, setReportError] = useState<string | null>(null)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [mobilePanelHeight, setMobilePanelHeight] = useState<number | null>(null)
   const [mobileDetailHeight, setMobileDetailHeight] = useState<number | null>(null)
@@ -613,6 +675,8 @@ function App() {
   const reportMessageNode = useRef<HTMLTextAreaElement>(null)
   const reportTriggerNode = useRef<HTMLButtonElement>(null)
   const reportDialogNode = useRef<HTMLElement>(null)
+  const turnstileNode = useRef<HTMLDivElement>(null)
+  const turnstileWidget = useRef<string | undefined>(undefined)
   const mapRef = useRef<MapLibreMap | null>(null)
   const { routes, count, loading, error } = useRouteList(
     filters,
@@ -638,6 +702,41 @@ function App() {
   const permanentRouteUrl = selectedRoute
     ? routeUrl(PUBLIC_SITE_URL, selectedRoute.id, selectedRoute.slug)
     : ''
+  const turnstileConfigured = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY)
+
+  useEffect(() => {
+    if (!reportOpen || !turnstileNode.current) return
+    const siteKey = import.meta.env.VITE_TURNSTILE_SITE_KEY
+    if (!siteKey) return
+    let disposed = false
+    const render = () => {
+      if (!disposed && turnstileNode.current && window.turnstile) {
+        turnstileWidget.current = window.turnstile.render(turnstileNode.current, {
+          sitekey: siteKey,
+          callback: setReportToken,
+          'expired-callback': () => setReportToken(''),
+        })
+      }
+    }
+    if (window.turnstile) render()
+    else {
+      const script =
+        document.querySelector<HTMLScriptElement>('script[data-turnstile]') ??
+        document.createElement('script')
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+      script.async = true
+      script.defer = true
+      script.dataset.turnstile = 'true'
+      script.addEventListener('load', render)
+      if (!script.parentNode) document.head.appendChild(script)
+    }
+    return () => {
+      disposed = true
+      if (turnstileWidget.current && window.turnstile)
+        window.turnstile.reset(turnstileWidget.current)
+      turnstileWidget.current = undefined
+    }
+  }, [reportOpen])
 
   useEffect(() => {
     if (!reportOpen) return
@@ -657,7 +756,7 @@ function App() {
       if (event.key !== 'Tab' || !reportDialogNode.current) return
       const focusable = Array.from(
         reportDialogNode.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), textarea, a[href], input:not([disabled]), select:not([disabled])',
+          'button:not([disabled]), textarea, a[href], input:not([disabled]):not([tabindex="-1"]), select:not([disabled])',
         ),
       )
       if (!focusable.length) return
@@ -1469,6 +1568,13 @@ function App() {
                   ref={reportTriggerNode}
                   onClick={() => {
                     setReportSent(false)
+                    setReportOutcome('idle')
+                    setReportError(null)
+                    setReportReason('incorrect_route')
+                    setReportMessage('')
+                    setReportEmail('')
+                    setReportToken('')
+                    setReportHoneypot('')
                     setReportOpen(true)
                   }}
                 >
@@ -1578,25 +1684,138 @@ function App() {
             aria-labelledby="report-title"
           >
             <h2 id="report-title">{copy.reportTitle}</h2>
+            <p className="report-description">{copy.reportDescription}</p>
             {reportSent ? (
               <p role="status">{copy.reportThanks}</p>
             ) : (
               <form
-                onSubmit={(event) => {
+                onSubmit={async (event) => {
                   event.preventDefault()
-                  setReportSent(true)
+                  if (reportOutcome === 'sending') return
+                  setReportOutcome('sending')
+                  setReportError(null)
+                  try {
+                    if (!reportToken) {
+                      setReportError(copy.reportVerification)
+                      setReportOutcome('error')
+                      return
+                    }
+                    const response = await fetch(
+                      `${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/api/v1/routes/${selectedRoute.id}/reports/`,
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          reason: reportReason,
+                          message: reportMessage,
+                          contact_email: reportEmail,
+                          turnstile_token: reportToken,
+                          website: reportHoneypot,
+                        }),
+                      },
+                    )
+                    if (!response.ok) {
+                      const payload = (await response.json().catch(() => ({}))) as {
+                        detail?: string
+                      }
+                      setReportError(
+                        response.status === 409
+                          ? copy.reportDuplicate
+                          : response.status === 429
+                            ? copy.reportRateLimited
+                            : response.status === 400
+                              ? copy.reportVerification
+                              : (payload.detail ?? copy.reportFailure),
+                      )
+                      setReportOutcome('error')
+                      return
+                    }
+                    setReportSent(true)
+                    setReportOutcome('idle')
+                  } catch {
+                    setReportError(copy.reportFailure)
+                    setReportOutcome('error')
+                  }
                 }}
               >
+                <label htmlFor="report-reason">{copy.reportReason}</label>
+                <select
+                  id="report-reason"
+                  value={reportReason}
+                  onChange={(event) => setReportReason(event.target.value)}
+                >
+                  <option value="incorrect_route">{copy.reportReasonIncorrect}</option>
+                  <option value="source_attribution">{copy.reportReasonSource}</option>
+                  <option value="author_removal">{copy.reportReasonAuthor}</option>
+                  <option value="rights_holder">{copy.reportReasonRights}</option>
+                  <option value="other">{copy.reportReasonOther}</option>
+                </select>
                 <label htmlFor="report-message">{copy.reportLabel}</label>
                 <textarea
                   id="report-message"
                   ref={reportMessageNode}
                   required
+                  minLength={10}
+                  value={reportMessage}
+                  onChange={(event) => setReportMessage(event.target.value)}
                   placeholder={copy.reportPlaceholder}
                   rows={5}
                 />
+                <label htmlFor="report-email">{copy.reportEmail}</label>
+                <input
+                  id="report-email"
+                  type="email"
+                  value={reportEmail}
+                  onChange={(event) => setReportEmail(event.target.value)}
+                  aria-describedby="report-email-hint"
+                />
+                <small id="report-email-hint">{copy.reportEmailHint}</small>
+                <div
+                  className="turnstile-field"
+                  role="group"
+                  aria-labelledby="report-security-hint"
+                >
+                  <div ref={turnstileNode} className="turnstile-widget" />
+                  <input
+                    type="text"
+                    className="sr-only"
+                    aria-hidden="true"
+                    tabIndex={-1}
+                    name="turnstile_token"
+                    value={reportToken}
+                    onChange={(event) => setReportToken(event.target.value)}
+                  />
+                  <p id="report-security-hint" className="report-security-hint">
+                    {copy.reportSecurity}
+                  </p>
+                </div>
+                <label className="report-honeypot" aria-hidden="true">
+                  Website
+                  <input
+                    name="website"
+                    tabIndex={-1}
+                    autoComplete="off"
+                    value={reportHoneypot}
+                    onChange={(event) => setReportHoneypot(event.target.value)}
+                  />
+                </label>
+                {reportError && (
+                  <p className="report-error" role="alert">
+                    {reportError}
+                  </p>
+                )}
                 <div className="report-actions">
-                  <button type="submit">{copy.sendReport}</button>
+                  <button
+                    type="submit"
+                    aria-label={
+                      turnstileConfigured
+                        ? copy.sendReport
+                        : `${copy.sendReport} (${copy.reportUnavailable})`
+                    }
+                    disabled={reportOutcome === 'sending'}
+                  >
+                    {reportOutcome === 'sending' ? copy.sendingReport : copy.sendReport}
+                  </button>
                   <button type="button" onClick={() => setReportOpen(false)}>
                     {copy.cancel}
                   </button>

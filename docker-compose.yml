@@ -37,6 +37,10 @@ services:
         required: false
     environment:
       DJANGO_CACHE_URL: ${DJANGO_CACHE_URL:-redis://redis:6379/1}
+      REPORT_TURNSTILE_SECRET_KEY: ${REPORT_TURNSTILE_SECRET_KEY:-}
+      REPORT_RATE_LIMIT_HMAC_SECRET: ${REPORT_RATE_LIMIT_HMAC_SECRET:-}
+      REPORT_CLIENT_IP_MODE: ${REPORT_CLIENT_IP_MODE:-direct}
+      REPORT_TRUSTED_PROXY_CIDRS: ${REPORT_TRUSTED_PROXY_CIDRS:-}
     command: uv run --locked --no-dev python backend/manage.py runserver 0.0.0.0:8000
     volumes:
       - ./backend:/app/backend
@@ -61,6 +65,10 @@ services:
         required: false
     environment:
       DJANGO_CACHE_URL: ${DJANGO_CACHE_URL:-redis://redis:6379/1}
+      REPORT_TURNSTILE_SECRET_KEY: ${REPORT_TURNSTILE_SECRET_KEY:-}
+      REPORT_RATE_LIMIT_HMAC_SECRET: ${REPORT_RATE_LIMIT_HMAC_SECRET:-}
+      REPORT_CLIENT_IP_MODE: ${REPORT_CLIENT_IP_MODE:-direct}
+      REPORT_TRUSTED_PROXY_CIDRS: ${REPORT_TRUSTED_PROXY_CIDRS:-}
     command: uv run --locked --no-dev celery -A config worker --loglevel=INFO
     volumes:
       - ./backend:/app/backend
@@ -90,6 +98,7 @@ services:
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
       VITE_PUBLIC_SITE_URL: ${VITE_PUBLIC_SITE_URL:-http://localhost:5173}
+      VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY:-}
     command: pnpm dev --host 0.0.0.0
     volumes:
       - ./frontend:/app

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -530,6 +530,7 @@ describe('BikeMapy route discovery', () => {
     expect(
       screen.getByRole('dialog', { name: /report a problem with this route/i }),
     ).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: /complete the security check/i })).toBeInTheDocument()
     expect(document.activeElement).toBe(
       screen.getByRole('textbox', { name: /what should we check/i }),
     )
@@ -542,5 +543,63 @@ describe('BikeMapy route discovery', () => {
     )
     await user.click(screen.getByRole('button', { name: /report unavailable/i }))
     expect(screen.getByText(/no report was submitted/i)).toBeInTheDocument()
+  })
+
+  it('submits a localized report and shows the review-queue outcome', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => ({ status: 'received' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await user.click(await screen.findByRole('button', { name: /report a problem/i }))
+    await user.selectOptions(screen.getByRole('combobox', { name: /reason/i }), 'rights_holder')
+    await user.type(
+      screen.getByRole('textbox', { name: /what should we check/i }),
+      'Please review rights.',
+    )
+    fireEvent.change(document.querySelector('input[name="turnstile_token"]')!, {
+      target: { value: 'verified-token' },
+    })
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(await screen.findByText(/entered the review queue/i)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/reports/'),
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).website).toBe('')
+  })
+
+  it('sends a filled honeypot and surfaces the rejected outcome', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ detail: 'Unable to submit this report.' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await user.click(await screen.findByRole('button', { name: /report a problem/i }))
+    await user.type(
+      screen.getByRole('textbox', { name: /what should we check/i }),
+      'Automated text.',
+    )
+    fireEvent.change(document.querySelector('input[name="turnstile_token"]')!, {
+      target: { value: 'verified-token' },
+    })
+    fireEvent.change(document.querySelector('input[name="website"]')!, {
+      target: { value: 'https://bot.example' },
+    })
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/security verification failed/i)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).website).toBe(
+      'https://bot.example',
+    )
   })
 })

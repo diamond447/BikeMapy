@@ -70,6 +70,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/routes/{route_id}/reports/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** @description Accept a report without creating a user account or changing route state. */
+    post: operations['v1_routes_reports_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/routes/by-slug/{slug}/': {
     parameters: {
       query?: never
@@ -149,6 +166,26 @@ export interface components {
        */
       previous?: string | null
       results: components['schemas']['Route'][]
+    }
+    /**
+     * @description * `incorrect_route` - Incorrect route
+     *     * `source_attribution` - Source or attribution
+     *     * `author_removal` - Author removal
+     *     * `rights_holder` - Rights-holder request
+     *     * `other` - Other
+     * @enum {string}
+     */
+    ReasonEnum:
+      'incorrect_route' | 'source_attribution' | 'author_removal' | 'rights_holder' | 'other'
+    ReportSubmission: {
+      reason: components['schemas']['ReasonEnum']
+      message: string
+      /** Format: email */
+      contact_email?: string
+      /** Format: email */
+      email?: string
+      turnstile_token: string
+      website?: string
     }
     Route: {
       /** Format: uuid */
@@ -339,6 +376,53 @@ export interface operations {
       }
       /** @description GPX redistribution is unavailable. */
       404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_routes_reports_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ReportSubmission']
+        'application/x-www-form-urlencoded': components['schemas']['ReportSubmission']
+        'multipart/form-data': components['schemas']['ReportSubmission']
+      }
+    }
+    responses: {
+      /** @description Report entered the review queue. */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid or failed protection. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Matching report already exists. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Report rate limit reached. */
+      429: {
         headers: {
           [name: string]: unknown
         }

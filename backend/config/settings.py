@@ -186,7 +186,31 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.ingestion.retry_payload_deletions",
         "schedule": 900,
     },
+    "retain-closed-reports": {
+        "task": "bikemapy.reports.retain_closed_reports",
+        "schedule": 86400,
+    },
 }
+
+# Anonymous report protections and privacy retention.  The secret is never
+# written to a report; only HMAC-derived cache identifiers are used.
+REPORT_TURNSTILE_SECRET_KEY = os.getenv("REPORT_TURNSTILE_SECRET_KEY", "")
+REPORT_TURNSTILE_VERIFY_URL = os.getenv(
+    "REPORT_TURNSTILE_VERIFY_URL", "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+)
+REPORT_TURNSTILE_TIMEOUT = float(os.getenv("REPORT_TURNSTILE_TIMEOUT", "5"))
+REPORT_RATE_LIMIT_HMAC_SECRET = os.getenv("REPORT_RATE_LIMIT_HMAC_SECRET", "")
+REPORT_RATE_LIMIT_HOURLY = int(os.getenv("REPORT_RATE_LIMIT_HOURLY", "3"))
+REPORT_RATE_LIMIT_DAILY = int(os.getenv("REPORT_RATE_LIMIT_DAILY", "10"))
+REPORT_CLIENT_IP_MODE = os.getenv("REPORT_CLIENT_IP_MODE", "direct").lower()
+REPORT_TRUSTED_PROXY_CIDRS = tuple(
+    value.strip()
+    for value in os.getenv("REPORT_TRUSTED_PROXY_CIDRS", "").split(",")
+    if value.strip()
+)
+REPORT_DUPLICATE_WINDOW = int(os.getenv("REPORT_DUPLICATE_WINDOW", str(24 * 3600)))
+REPORT_EMAIL_RETENTION = int(os.getenv("REPORT_EMAIL_RETENTION", str(90 * 86400)))
+REPORT_DETAILS_RETENTION = int(os.getenv("REPORT_DETAILS_RETENTION", str(365 * 86400)))
 
 # Crawl defaults are intentionally conservative.  A deployment can tune them
 # without changing code, while the identifiable UA remains explicit.
