@@ -10,6 +10,10 @@ frontend/coverage/
 frontend/test-results/
 frontend/playwright-report/
 .venv/
+backup/
+*.dump
+*.tar.gz
+*.age
 __pycache__/
 *.py[cod]
 .pytest_cache/
