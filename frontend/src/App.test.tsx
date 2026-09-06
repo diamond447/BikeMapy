@@ -155,6 +155,34 @@ describe('BikeMapy route discovery', () => {
     expect(screen.getByRole('searchbox', { name: /search routes/i })).toBeInTheDocument()
   })
 
+  it('exposes legal documents, independence notice, and map attribution in the footer', () => {
+    render(<App />)
+    expect(screen.getByRole('contentinfo', { name: /legal and attribution/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute(
+      'href',
+      'https://github.com/diamond447/BikeMapy/blob/main/docs/terms.md',
+    )
+    expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute(
+      'href',
+      'https://github.com/diamond447/BikeMapy/blob/main/docs/privacy.md',
+    )
+    expect(screen.getByRole('link', { name: 'Removal Policy' })).toHaveAttribute(
+      'href',
+      'https://github.com/diamond447/BikeMapy/blob/main/docs/removal-policy.md',
+    )
+    expect(
+      screen.getByText(/independent project; no affiliation with mapy\.com/i),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'OpenFreeMap' })).toHaveAttribute(
+      'href',
+      'https://openfreemap.org/',
+    )
+    expect(screen.getByRole('link', { name: 'OpenStreetMap contributors' })).toHaveAttribute(
+      'href',
+      'https://www.openstreetmap.org/copyright',
+    )
+  })
+
   it('renders a route, selects it, and requests the full geometry', async () => {
     vi.restoreAllMocks()
     mockApi(true)

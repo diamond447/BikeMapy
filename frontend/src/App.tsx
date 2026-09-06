@@ -56,6 +56,7 @@ declare global {
 
 const LANGUAGE_KEY = 'bikemapy:language'
 const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_URL)
+const LEGAL_DOCUMENTS_URL = 'https://github.com/diamond447/BikeMapy/blob/main/docs'
 // Cloudflare preview builds set this to false. Keeping the guard at build time
 // means a preview contains only the public read API and has no report action.
 const REPORTS_ENABLED = import.meta.env.VITE_ENABLE_REPORTS !== 'false'
@@ -179,6 +180,12 @@ const translations = {
     cancel: 'Cancel',
     gpxDownload: 'Download GPX',
     gpxUnavailable: 'GPX download is unavailable until redistribution is legally approved.',
+    footer: 'BikeMapy legal and attribution',
+    terms: 'Terms',
+    privacy: 'Privacy',
+    removalPolicy: 'Removal Policy',
+    mapAttribution: 'Map data',
+    independentProject: 'Independent project; no affiliation with Mapy.com.',
   },
   cs: {
     siteTitle: 'BikeMapy — trasy se zdrojem',
@@ -296,6 +303,12 @@ const translations = {
     cancel: 'Zrušit',
     gpxDownload: 'Stáhnout GPX',
     gpxUnavailable: 'Stažení GPX není dostupné, dokud nebude právně schváleno další šíření.',
+    footer: 'Právní informace a atribuce BikeMapy',
+    terms: 'Podmínky',
+    privacy: 'Soukromí',
+    removalPolicy: 'Zásady odstranění',
+    mapAttribution: 'Mapová data',
+    independentProject: 'Nezávislý projekt; není spojený s Mapy.com.',
   },
 } as const
 type Copy = (typeof translations)[Language]
@@ -1835,6 +1848,30 @@ function App() {
           </section>
         </div>
       )}
+      <footer className="app-footer" aria-label={copy.footer}>
+        <span>{copy.independentProject}</span>
+        <nav aria-label={copy.footer}>
+          <a href={`${LEGAL_DOCUMENTS_URL}/terms.md`} target="_blank" rel="noreferrer">
+            {copy.terms}
+          </a>
+          <a href={`${LEGAL_DOCUMENTS_URL}/privacy.md`} target="_blank" rel="noreferrer">
+            {copy.privacy}
+          </a>
+          <a href={`${LEGAL_DOCUMENTS_URL}/removal-policy.md`} target="_blank" rel="noreferrer">
+            {copy.removalPolicy}
+          </a>
+        </nav>
+        <span className="app-footer-attribution">
+          {copy.mapAttribution}:{' '}
+          <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">
+            OpenFreeMap
+          </a>{' '}
+          ·{' '}
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
+            OpenStreetMap contributors
+          </a>
+        </span>
+      </footer>
     </main>
   )
 }
