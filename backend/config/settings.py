@@ -50,6 +50,7 @@ if DATABASE_ENGINE == "django.db.backends.sqlite3":
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    "config.middleware.PreviewReadOnlyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -133,6 +134,15 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
     if origin
 ]
+READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
+    "READ_ONLY_PREVIEW_ORIGIN_REGEX",
+    r"\Ahttps://([a-z0-9-]+\.)+bikemapy\.pages\.dev\Z",
+)
+# GET requests from dynamic Pages previews need CORS, while the middleware
+# above rejects every state-changing request from the same origin pattern.
+CORS_ALLOWED_ORIGIN_REGEXES = [READ_ONLY_PREVIEW_ORIGIN_REGEX]
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = env_bool("USE_X_FORWARDED_HOST", False)
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
@@ -248,6 +258,9 @@ GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)
 # Legal/terms review is an explicit deployment gate. Keep downloads off by
 # default even when an imported payload remains in local storage.
 GPX_REDISTRIBUTION_APPROVED = env_bool("GPX_REDISTRIBUTION_APPROVED", False)
+# Direct Django deployments keep the streaming fallback. The production
+# Nginx stack enables the internal X-Accel-Redirect handoff.
+GPX_INTERNAL_REDIRECT = env_bool("GPX_INTERNAL_REDIRECT", False)
 
 # Spatial duplicate detection is intentionally precision-oriented.  Keep the
 # values configurable so benchmark results can tune policy without a schema

@@ -52,9 +52,10 @@ and decision has an audit event. `REPORT_RATE_LIMIT_HOURLY` and
 only in Redis, with 24-hour maximum retention; raw client addresses are never
 stored in the database.
 
-By default, rate limiting uses the direct `REMOTE_ADDR`. For a Cloudflare
-Tunnel, set `REPORT_CLIENT_IP_MODE=cloudflare` and list only the tunnel or
-proxy peer networks in `REPORT_TRUSTED_PROXY_CIDRS`. Only a single valid
+By default, rate limiting uses the direct `REMOTE_ADDR`. For the production
+Cloudflare Tunnel Compose topology, set `REPORT_CLIENT_IP_MODE=cloudflare` and
+list only the direct Nginx peer `172.30.0.2/32` in
+`REPORT_TRUSTED_PROXY_CIDRS`; do not list public Cloudflare CIDRs. Only a single valid
 `CF-Connecting-IP` value from those peers is accepted; untrusted peers and
 malformed or comma-separated values are safely ignored/rejected.
 

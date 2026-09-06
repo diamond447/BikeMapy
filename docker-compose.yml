@@ -36,6 +36,7 @@ services:
       - path: .env
         required: false
     environment:
+      DJANGO_MEDIA_ROOT: ${DJANGO_MEDIA_ROOT:-/app/storage/media}
       DJANGO_CACHE_URL: ${DJANGO_CACHE_URL:-redis://redis:6379/1}
       REPORT_TURNSTILE_SECRET_KEY: ${REPORT_TURNSTILE_SECRET_KEY:-}
       REPORT_RATE_LIMIT_HMAC_SECRET: ${REPORT_RATE_LIMIT_HMAC_SECRET:-}
@@ -64,6 +65,7 @@ services:
       - path: .env
         required: false
     environment:
+      DJANGO_MEDIA_ROOT: ${DJANGO_MEDIA_ROOT:-/app/storage/media}
       DJANGO_CACHE_URL: ${DJANGO_CACHE_URL:-redis://redis:6379/1}
       REPORT_TURNSTILE_SECRET_KEY: ${REPORT_TURNSTILE_SECRET_KEY:-}
       REPORT_RATE_LIMIT_HMAC_SECRET: ${REPORT_RATE_LIMIT_HMAC_SECRET:-}
