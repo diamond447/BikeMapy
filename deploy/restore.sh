@@ -4,6 +4,8 @@ set -Eeuo pipefail
 : "${1:?Usage: restore.sh BACKUP_ID}"
 BACKUP_ID="$1"
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
+test -d "$BACKUP_DIR"
+BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 COMPOSE="${COMPOSE:-docker compose --env-file deploy/.env.production -f deploy/compose.production.yml}"
 GPX_VOLUME="${GPX_VOLUME:-bikemapy_gpx_data}"
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"

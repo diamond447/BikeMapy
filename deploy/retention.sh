@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
 KEEP_SNAPSHOTS="${KEEP_SNAPSHOTS:-30}"
+test -d "$BACKUP_DIR"
+BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 mapfile -t manifests < <(find "$BACKUP_DIR" -maxdepth 1 -type f \
   \( -name 'manifest-*.json' -o -name 'manifest-*.json.age' \) -printf '%f\n' | sort -r)
 (( ${#manifests[@]} > KEEP_SNAPSHOTS )) || exit 0

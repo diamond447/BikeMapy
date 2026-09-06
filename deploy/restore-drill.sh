@@ -4,6 +4,8 @@ set -Eeuo pipefail
 : "${1:?Usage: restore-drill.sh BACKUP_ID}"
 BACKUP_ID="$1"
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
+test -d "$BACKUP_DIR"
+BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 PG_IMAGE="${PG_IMAGE:-postgis/postgis:17-3.5}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
 CONTAINER="bikemapy-restore-drill-$$"
