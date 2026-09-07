@@ -1,6 +1,6 @@
 # BikeMapy Privacy Notice
 
-**Last reviewed:** 2026-09-06  
+**Last reviewed:** 2026-09-06
 **Status:** launch draft — operator identity, legal basis, and jurisdiction
 require legal review
 
@@ -51,6 +51,22 @@ Analytics. These are vendor-stated limits, not guarantees made by BikeMapy;
 the owner must verify the production account's current retention and privacy
 settings before launch. Removing `VITE_CF_WEB_ANALYTICS_TOKEN` disables the
 beacon if that review fails.
+
+### Optional Strava game (not enabled)
+
+The private `/game` module is disabled by default and is not part of the
+current public service. `GAME_ENABLED` must remain `false` while the [Strava
+API and cross-member display review](strava-api-review.md) is blocked. No
+Strava credentials, activity geometry, profile fields, competition membership,
+or game-derived result is collected or returned by the public catalogue.
+
+The game specification describes a possible invite-only design, including
+explicit per-competition consent, withdrawal, deletion, and a personal-only
+fallback. Those are design requirements, not a statement that Strava has
+authorized the processing. A separate approved decision is required before
+any Strava data is imported, including for a personal-only mode. If enabled in
+the future, this notice must be updated with the actual provider fields,
+retention, deletion, and contact details before release.
 
 MapLibre loads the configured OpenFreeMap style and tiles. Those requests go
 to the map provider and may expose the visitor's network address to that

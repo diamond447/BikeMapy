@@ -69,6 +69,15 @@ awards: they are deterministic derived views with documented evidence.
 
 ## Pre-implementation Strava agreement and display gate
 
+The dedicated [Strava API and cross-member display review](strava-api-review.md)
+was completed on 2026-09-07 for issue [#65](https://github.com/diamond447/BikeMapy/issues/65).
+Its outcome is **BLOCKED**: the current primary Strava sources could not be
+retrieved in the review environment, so no permission for cross-member
+redistribution or derived results was established. Participant consent is
+still required as a product control, but it does not substitute for provider
+permission. The cross-member module must remain disabled until the review is
+re-run against the live sources and all listed unblock evidence is recorded.
+
 Before implementing #47 or #49, the operator must complete a dedicated,
 approved review of the current Strava API Agreement, developer terms,
 documentation, and display policies. The review must be recorded in a
@@ -98,19 +107,28 @@ import policy, not permission to redistribute activity data to other people or
 to publish derived results. This specification does not grant that permission.
 The review must record any limitations, required wording, retention/deletion
 conditions, and attribution obligations. If rights are unresolved or denied,
-keep the cross-member game slice disabled (`GAME_ENABLED=false`). A safe
-personal-only fallback may allow a connected player to view their own imported
-geometry and own derived completion/capture results, but it must not display
-traces, profile data, leaderboards, or derived aggregates across members or
-competitions. This fallback is a separately reviewed and separately flagged
-mode (for example, `PERSONAL_ONLY_MODE=false`), not an activation of `/game`;
-it requires its own privacy and retention decision. Personal-only behavior is
-not approval to activate the cross-member game.
+keep the cross-member game slice disabled (`GAME_ENABLED=false`). The [safe
+personal-only fallback](#safe-personal-only-fallback) may be considered only
+as a separately reviewed and separately flagged mode (for example,
+`PERSONAL_ONLY_MODE=false`), not as an activation of `/game`; it requires its
+own privacy and retention decision. Personal-only behavior is not approval to
+activate the cross-member game.
 
 The gate is a release blocker for cross-user display and derived processing.
 Any changed Strava policy or product sharing scope requires a new approved
 decision and an update to this specification before implementation or
 enablement.
+
+### Safe personal-only fallback
+
+The [issue #65 review](strava-api-review.md#safe-personal-only-fallback)
+defines the fallback precisely. Until a separate decision approves it, it is
+only a design option: no real Strava data may be imported or exposed. If
+approved, a player could see only their own geometry and own derived result;
+there would be no competitions, invites, cross-member fields, group unions,
+territory comparisons, leaderboards, or shared caches. The fallback must use a
+separate flag defaulting to `false`, while `GAME_ENABLED` remains `false` for
+the cross-member module.
 
 ## Player and Strava lifecycle
 
@@ -575,7 +593,7 @@ explicitly approved specification update before either #47 or #49 starts.
 | Order | Issue | Depends on |
 | ---: | --- | --- |
 | 1 | [#48 docs: specify the private Strava completion game](https://github.com/diamond447/BikeMapy/issues/48) | — |
-| S | Strava API agreement/display-policy review (dedicated approved issue or approved specification update) | #48; current legal/provider review |
+| S | [#65 docs: review Strava API agreement and cross-member display rights](https://github.com/diamond447/BikeMapy/issues/65) (currently **BLOCKED**; requires live-source re-review and owner approval) | #48; current legal/provider review |
 | 2 | [#47 feature: add Strava sign-in and player accounts](https://github.com/diamond447/BikeMapy/issues/47) | #48, S; authentication foundations in [#12 feature: secure owner administration and moderation](https://github.com/diamond447/BikeMapy/issues/12) |
 | 3 | [#46 feature: add invite-only game competitions](https://github.com/diamond447/BikeMapy/issues/46) | #47 |
 | 4 | [#49 feature: synchronize eligible Strava cycling activities](https://github.com/diamond447/BikeMapy/issues/49) | #47, #46, S |
@@ -647,6 +665,7 @@ permission for cross-member traces or derived results.
 - [Public BikeMapy product specification](product-spec.md)
 - [Privacy notice](privacy.md)
 - [Legal and attribution review](legal-review.md)
+- [Strava API and cross-member display review](strava-api-review.md)
 - [Terms](terms.md)
 - [Removal policy](removal-policy.md)
 - [Administration guide](administration.md)

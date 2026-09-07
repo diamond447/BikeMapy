@@ -1,6 +1,6 @@
 # BikeMapy Terms of Use
 
-**Last reviewed:** 2026-09-06  
+**Last reviewed:** 2026-09-06
 **Status:** launch draft — operator identity and legal review are still
 required
 
@@ -17,6 +17,12 @@ search, map, source links, and public API may change or be unavailable without
 notice. A route's `Reviewed` badge means only that the owner checked catalogue
 criteria; it does not certify safety, passability, legality of access, route
 condition, or suitability for a person or bicycle.
+
+The optional private Strava game is not enabled or included in these current
+catalogue terms. Its provider permissions, participant disclosures, data
+retention, and deletion rules remain blocked and are recorded in the [Strava
+API review](strava-api-review.md). These terms must be updated before any game
+or Strava data is enabled.
 
 BikeMapy is not affiliated with, sponsored by, or endorsed by Mapy.com,
 Seznam.cz, Bike-forum.cz, MTBIKER, OpenFreeMap, or OpenStreetMap. Mapy.com is

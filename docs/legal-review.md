@@ -1,6 +1,6 @@
 # Legal and attribution review
 
-**Review date:** 2026-09-06  
+**Review date:** 2026-09-06
 **Status:** launch gate; not legal advice
 
 This is a product and engineering record of the sources checked for BikeMapy.
@@ -18,6 +18,25 @@ changing the map provider, or publishing GPX files.
 | OpenStreetMap and ODbL    | [OSM copyright and licence notice](https://www.openstreetmap.org/copyright), [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/), retrieved 2026-09-06      | OpenStreetMap data is available under the Open Database License (ODbL), with attribution and notice obligations. BikeMapy does not claim that its route catalogue is an OSM-derived database; the current map style uses OSM-backed tiles. The app displays “© OpenStreetMap contributors” with a link to the OSM notice. Any future extraction, combination, or publication of OSM data requires a separate ODbL database/produced-work review.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GPX and route rights      | [BikeForum terms, section 6](https://www.bike-forum.cz/podminky-uziti#6), [Mapy.com licensing](https://licence.mapy.cz/?doc=mapy_pu&lang=en), retrieved 2026-09-06 | A shared Mapy link is not proof that the person who posted it owns or may redistribute the underlying track. A GPX file can contain copyrightable route description, personal data, or other protected material. BikeMapy makes the conservative decision **not to offer public GPX downloads at launch**. Raw payloads may be fetched and held in private storage for bounded processing and moderation, but this internal capability is not permission to publish. `GPX_REDISTRIBUTION_APPROVED=false` remains the default and the API returns 404 until a documented affirmative approval changes the deployment gate.                                                                                                                                                                                                                                                                                                      |
 | Name and affiliation      | [Mapy.com terms](https://mapy.com/en/terms), retrieved 2026-09-06                                                                                                  | BikeMapy is an independent project and is not Mapy.com, Seznam.cz, MTBIKER, Bike-forum.cz, OpenFreeMap, or OpenStreetMap. The product uses “BikeMapy” only as its own project name, labels Mapy.com as a source, links to the provider, and does not use the Mapy.com logo or imply sponsorship, endorsement, or affiliation. A trademark/name clearance for the project name is still a launch blocker.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+## Strava API gate
+
+The dedicated [Strava API and cross-member display review](strava-api-review.md)
+for issue [#65](https://github.com/diamond447/BikeMapy/issues/65) was reviewed
+on 2026-09-07. The primary Strava legal and developer pages were inaccessible
+from the review environment because network policy blocked the Strava domains.
+The official `strava/go.strava` repository was reachable, but its README says
+that the client and documentation are no longer updated; it is not a current
+policy source. No current permission to redistribute activity geometry,
+profile fields, or derived cross-member results was therefore established.
+
+This is a **BLOCKED** launch gate, not a finding that Strava necessarily
+prohibits the product. Participant opt-in is required by the product privacy
+model but cannot substitute for provider permission. Keep `GAME_ENABLED=false`
+and do not configure a live Strava integration until the primary-source review
+is re-run and owner-approved. The dedicated review records the complete source
+register, use-by-use outcomes, personal-only fallback, issue consequences,
+webhook trust model, and evidence required to unblock the gate.
 
 ## Required attribution
 
@@ -49,6 +68,14 @@ assumed away:
    and backup copies.
 6. Confirm the hosted Sentry retention setting (the app requires 30 days) and
    the deployment's proxy/log retention before collecting production reports.
+7. **Optional Strava game only:** Re-run and approve the blocked Strava
+   API/display review from an environment that can retrieve the current
+   primary Strava sources, including the API Agreement,
+   authentication/scopes, activity/reference, webhook, rate-limit, privacy,
+   and branding pages.
 
-Until these questions are answered and recorded, do not call the service a
-public launch and do not set `GPX_REDISTRIBUTION_APPROVED=true`.
+Until blockers 1–6 are answered and recorded, do not call the catalogue-only
+service a public launch and do not set `GPX_REDISTRIBUTION_APPROVED=true`.
+Blocker 7 does not delay a catalogue-only launch while `GAME_ENABLED=false`,
+but the optional Strava game must not be released or enabled until blocker 7
+is answered and recorded.

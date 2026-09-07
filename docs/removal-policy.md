@@ -1,6 +1,6 @@
 # Removal Policy
 
-**Last reviewed:** 2026-09-06  
+**Last reviewed:** 2026-09-06
 **Status:** launch draft — private contact and operator identity are pending
 
 BikeMapy aims to preserve useful provenance while responding promptly to
@@ -21,6 +21,15 @@ launch blocker recorded in [the legal review](legal-review.md).
 You can also use the route's **Report a problem** form and choose **Author
 removal request** or **Rights-holder request**. The report is queued for owner
 review; it does not automatically change public route state.
+
+The optional Strava game is currently disabled, so this route-removal process
+does not accept or process Strava account or activity-deletion requests. The
+future game must provide an authenticated disconnect/account-deletion path,
+remove provider credentials and imported activity data, remove competition
+projections, and recompute surviving results. The [Strava API review](strava-api-review.md)
+records these as unresolved release requirements; this document must be
+updated with the actual request channel and retention behavior before the game
+is enabled.
 
 ## Information to include
 
