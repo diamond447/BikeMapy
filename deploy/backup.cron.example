@@ -1,0 +1,3 @@
+# Run after the app has been healthy for the day. Alert on a non-zero exit;
+# the script leaves a backup-failed-* marker for inspection.
+15 2 * * * cd /srv/bikemapy && BACKUP_DIR=/srv/bikemapy/backup ./deploy/backup.sh >> /var/log/bikemapy-backup.log 2>&1
