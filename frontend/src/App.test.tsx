@@ -61,6 +61,7 @@ vi.mock('maplibre-gl', () => ({
   Map: MockMap,
   AttributionControl: class {},
   NavigationControl: class {},
+  setWorkerUrl: vi.fn(),
 }))
 
 import type { components } from './api/generated/schema'

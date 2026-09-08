@@ -1,7 +1,10 @@
 /* eslint-disable react-refresh/only-export-components -- state helpers are exported for interaction tests. */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
+import { setWorkerUrl, type GeoJSONSource, type Map as MapLibreMap } from 'maplibre-gl'
+import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 import 'maplibre-gl/dist/maplibre-gl.css'
+
+setWorkerUrl(workerUrl)
 
 import type { components } from './api/generated/schema'
 import { trackProductEvent } from './analytics'
