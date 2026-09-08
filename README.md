@@ -27,6 +27,14 @@ terms and data rights.
 
 See the [product specification](docs/product-spec.md) for the approved product
 requirements, architecture direction, operational model, and launch gates.
+The separate [private Strava completion game specification](docs/game-spec.md)
+defines the optional invite-only `/game` module without changing the public
+catalogue’s scope; the game is disabled by default.
+Owner OAuth administration and moderation workflows are documented in
+the [administration guide](docs/administration.md). Deployment, Cloudflare
+Pages previews, immutable backend images, the reverse proxy, Tunnel
+integration, and manual rollback are documented in the
+[deployment runbook](docs/deployment.md).
 
 ## Local development
 

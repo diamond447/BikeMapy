@@ -1,0 +1,64 @@
+{
+  "kind": "disposable-postgis-redis-celery-resume-rehearsal",
+  "verified_at": "2026-09-06T13:20:41.012233Z",
+  "project": "bikemapy-crawler-472640",
+  "worker_interruption": {
+    "signal": "SIGKILL",
+    "interrupted_state": {
+      "posts": 1,
+      "sources": 1,
+      "routes": 1,
+      "page_number": 1,
+      "next_url": "http://host.docker.internal:50789/t/42?page=2",
+      "work": [
+        {
+          "url": "http://host.docker.internal:50789/t/42",
+          "status": "succeeded",
+          "attempts": 1
+        },
+        {
+          "url": "http://host.docker.internal:50789/t/42?page=2",
+          "status": "processing",
+          "attempts": 1
+        }
+      ],
+      "task_statuses": [
+        "running"
+      ]
+    },
+    "resumed_state": {
+      "posts": 2,
+      "sources": 2,
+      "routes": 2,
+      "page_number": 2,
+      "next_url": "",
+      "work": [
+        {
+          "url": "http://host.docker.internal:50789/t/42",
+          "status": "succeeded",
+          "attempts": 1
+        },
+        {
+          "url": "http://host.docker.internal:50789/t/42?page=2",
+          "status": "succeeded",
+          "attempts": 2
+        }
+      ],
+      "task_statuses": [
+        "completed"
+      ]
+    }
+  },
+  "api": {
+    "before_backfill_route_count": 0,
+    "partial_browse_route_count": 1,
+    "partial_detail_source_count": 1,
+    "after_resume_route_count": 2,
+    "after_resume_detail_source_counts": [
+      1,
+      1
+    ]
+  },
+  "environment": "local disposable Docker Compose PostGIS/Redis/Celery stack",
+  "scope": "synthetic fixture only; production worker and catalogue remain owner actions"
+}

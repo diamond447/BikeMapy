@@ -1,0 +1,14 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>Review route</h1>
+<p>{{ object }}</p>
+<p>The Reviewed badge is narrow and requires every criterion below.</p>
+<form method="post">
+  {% csrf_token %}
+  <p><label for="reason">Reason</label><br><textarea id="reason" name="reason" rows="5" cols="80" required></textarea></p>
+  <p><label><input type="checkbox" name="technical_validity"> Technical validity</label></p>
+  <p><label><input type="checkbox" name="source_context"> Source context</label></p>
+  <p><label><input type="checkbox" name="content_suitability"> Obvious content suitability</label></p>
+  <button type="submit">Record Reviewed criteria</button>
+</form>
+{% endblock %}

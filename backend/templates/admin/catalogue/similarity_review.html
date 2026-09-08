@@ -1,0 +1,84 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+{% block extrastyle %}
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css" integrity="sha384-+x+nUa+lxDqIl/FtRlXQrDRhYvq5EsTxjNUmATsepQqxOqUqm+HIC7/EHymPk1dd" crossorigin="anonymous">
+<style>
+  .duplicate-review { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .duplicate-map { height: 420px; border: 1px solid var(--hairline-color); }
+  .evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+  @media (max-width: 800px) { .duplicate-review { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Duplicate review</h1>
+<p>Compare route geometry and scoring evidence before recording a decision.</p>
+<div class="duplicate-review">
+  <section><h2>{{ route_a }}</h2><div id="map-a" class="duplicate-map"></div></section>
+  <section><h2>{{ route_b }}</h2><div id="map-b" class="duplicate-map"></div></section>
+</div>
+<h2>Scoring evidence</h2>
+<pre class="evidence">{{ evidence_json }}</pre>
+<form method="post">
+  {% csrf_token %}
+  <p><label for="reason">Reason</label><br><textarea id="reason" name="reason" required rows="4" cols="80"></textarea></p>
+  <p><label for="target_route">Target route</label>
+    <select id="target_route" name="target_route"><option value="{{ route_a.pk }}">{{ route_a }}</option><option value="{{ route_b.pk }}">{{ route_b }}</option></select>
+  </p>
+  <button name="action" value="merge_sources" type="submit">Merge sources</button>
+  <button name="action" value="keep_both" type="submit">Keep both</button>
+  <button name="action" value="quarantine" type="submit">Quarantine target</button>
+  <button name="action" value="restore" type="submit">Restore target</button>
+</form>
+{{ geometry_a|json_script:"geometry-a" }}
+{{ geometry_b|json_script:"geometry-b" }}
+<script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js" integrity="sha384-/L1njH4bbgNt9Uk3HwJ272N9fxJzRBQCxhtwGkZiqgl+Nxpq2ETUNZhNMNV1RgyW" crossorigin="anonymous"></script>
+<script>
+  const style = 'https://demotiles.maplibre.org/style.json';
+  const maps = [];
+  let initialized = 0;
+  let syncing = false;
+  function geometryBounds(geometry) {
+    const points = [];
+    function visit(value) {
+      if (Array.isArray(value) && value.length >= 2 && typeof value[0] === 'number') points.push(value);
+      else if (Array.isArray(value)) value.forEach(visit);
+    }
+    visit(geometry && geometry.coordinates);
+    if (!points.length) return null;
+    return points.reduce((bounds, point) => bounds.extend(point), new maplibregl.LngLatBounds(points[0], points[0]));
+  }
+  function sharedBounds() {
+    const bounds = new maplibregl.LngLatBounds();
+    ['geometry-a', 'geometry-b'].forEach(id => {
+      const geometry = JSON.parse(document.getElementById(id).textContent || 'null');
+      const geometryBoundsValue = geometryBounds(geometry);
+      if (geometryBoundsValue && !geometryBoundsValue.isEmpty()) bounds.extend(geometryBoundsValue);
+    });
+    return bounds.isEmpty() ? null : bounds;
+  }
+  function reviewMap(id, geometryId) {
+    const map = new maplibregl.Map({container: id, style, center: [15, 49.8], zoom: 6});
+    maps.push(map);
+    const geometry = JSON.parse(document.getElementById(geometryId).textContent || 'null');
+    map.on('load', () => {
+      if (geometry) {
+        map.addSource(geometryId, {type: 'geojson', data: geometry});
+        map.addLayer({id: geometryId, type: 'line', source: geometryId, paint: {'line-color': id === 'map-a' ? '#e45756' : '#2a9d8f', 'line-width': 4}});
+      }
+      initialized += 1;
+      if (initialized === 2) {
+        const bounds = sharedBounds();
+        if (bounds) maps.forEach(candidate => candidate.fitBounds(bounds, {padding: 36, maxZoom: 15}));
+      }
+    });
+    map.on('move', () => {
+      if (syncing || initialized < 2 || maps.length < 2) return;
+      syncing = true;
+      const other = maps.find(candidate => candidate !== map);
+      other.jumpTo({center: map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch()});
+      syncing = false;
+    });
+  }
+  reviewMap('map-a', 'geometry-a'); reviewMap('map-b', 'geometry-b');
+</script>
+{% endblock %}
