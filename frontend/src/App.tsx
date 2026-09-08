@@ -462,7 +462,7 @@ function App() {
     let map: MapLibreMap | null = null
     let disposed = false
     import('maplibre-gl')
-      .then(({ default: maplibregl }) => {
+      .then((maplibregl) => {
         if (disposed || !mapNode.current) return
         let mapInstance: MapLibreMap
         try {

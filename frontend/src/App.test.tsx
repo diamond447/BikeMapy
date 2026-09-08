@@ -58,7 +58,9 @@ const { MockMap } = vi.hoisted(() => {
   return { MockMap }
 })
 vi.mock('maplibre-gl', () => ({
-  default: { Map: MockMap, AttributionControl: class {}, NavigationControl: class {} },
+  Map: MockMap,
+  AttributionControl: class {},
+  NavigationControl: class {},
 }))
 
 import type { components } from './api/generated/schema'
