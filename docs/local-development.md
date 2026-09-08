@@ -114,3 +114,18 @@ them locally; never commit `.env`, credentials, OAuth secrets, or production
 configuration. A production deployment must provide a strong secret key and
 explicit hosts, database credentials, allowed origins, and secure cookie/TLS
 settings through its environment.
+
+Anonymous reporting also requires `REPORT_TURNSTILE_SECRET_KEY` and the public
+frontend `VITE_TURNSTILE_SITE_KEY` for the Cloudflare challenge.
+Cloudflare Web Analytics is optional locally; set the public
+`VITE_CF_WEB_ANALYTICS_TOKEN` only when you intentionally want the cookie-free
+visit beacon. Leave it empty for ordinary development and previews.
+`REPORT_RATE_LIMIT_HMAC_SECRET` should be a separate deployment secret; when
+omitted, Django's secret key is used as a safe local fallback. The defaults
+allow three reports per hour and ten per day. The Celery beat service runs
+closed-report retention daily.
+
+Keep `REPORT_CLIENT_IP_MODE=direct` for local Compose. In the production
+Compose/Tunnel topology, select `cloudflare` only with
+`REPORT_TRUSTED_PROXY_CIDRS=172.30.0.2/32`; Django trusts the direct Nginx peer,
+not arbitrary forwarded headers or public Cloudflare ranges.

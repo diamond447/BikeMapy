@@ -1118,8 +1118,10 @@ def run_crawl(
                 if parsed.page_kind == PageKind.THREAD:
                     page_result = import_thread(parsed, lease=(stream, token))
                 _renew_lease(task.pk, stream, token, lease_seconds)
-                source_errors = _check_sources(
-                    page_result.source_ids, source_checker, lease=(stream, token)
+                source_errors = (
+                    _check_sources(page_result.source_ids, source_checker, lease=(stream, token))
+                    if getattr(settings, "BIKEFORUM_CHECK_SOURCES", True)
+                    else []
                 )
                 page_errors.extend(page_result.errors + source_errors)
                 total.threads += page_result.threads
