@@ -143,7 +143,8 @@ test('captures the desktop map-first discovery state with overlap controls', asy
   await expect(page.getByText(/2 routes in view/i)).toBeVisible()
   await expect(page.locator('.maplibregl-canvas')).toBeVisible()
   await page.evaluate(() => document.fonts.ready)
-  await page.waitForTimeout(500)
+  // MapLibre v6 may need an extra render cycle after the source data arrives.
+  await page.waitForTimeout(1000)
 
   const map = page.locator('.map-canvas')
   const box = await map.boundingBox()
