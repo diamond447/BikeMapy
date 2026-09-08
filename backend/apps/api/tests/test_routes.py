@@ -300,7 +300,7 @@ def test_postgres_route_search_uses_tsvector_match_not_rank_threshold(
         pytest.skip("requires PostgreSQL query compilation")
     query = str(
         filter_routes(public_route_queryset(), {"search": "gravel"})
-        .order_by("-_search_rank", "id")
+        .order_by("-_search_rank", "id")  # type: ignore[misc]
         .query
     )
     assert "@@" in query

@@ -72,5 +72,21 @@ strict = true
 warn_unreachable = true
 exclude = "backend/.*/migrations/"
 
+[[tool.mypy.overrides]]
+module = ["allauth.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "apps.accounts.apps",
+  "apps.analytics.apps",
+  "apps.api.apps",
+  "apps.catalogue.apps",
+  "apps.ingestion.apps",
+  "apps.moderation.apps",
+  "apps.reports.apps",
+]
+disable_error_code = ["import-untyped"]
+
 [tool.django-stubs]
 django_settings_module = "config.settings"

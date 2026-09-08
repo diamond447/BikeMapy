@@ -252,7 +252,7 @@ class RouteSource(models.Model):
 
     route = models.ForeignKey(Route, on_delete=models.PROTECT, related_name="sources")
     mapy_url = models.URLField(unique=True, max_length=1000)
-    posts = models.ManyToManyField(  # type: ignore[var-annotated]
+    posts = models.ManyToManyField(
         ForumPost, through="RouteSourcePost", related_name="route_sources"
     )
     source_title = models.CharField(max_length=500, blank=True)
