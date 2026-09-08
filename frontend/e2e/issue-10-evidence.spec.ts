@@ -170,14 +170,22 @@ test('captures unobscured mobile selection and the return-to-list flow', async (
   await page.goto('/')
   await page.getByRole('button', { name: /south moravia ridge ride/i }).click()
   await expect(page.getByRole('heading', { name: /south moravia ridge ride/i })).toBeVisible()
-  const collapsedToggle = page.getByRole('button', { name: /show routes/i })
-  await expect(collapsedToggle).toBeDisabled()
+  await expect(page.locator('.route-sheet .route-detail')).toBeVisible()
+  const selectedToggle = page.getByRole('button', { name: /hide routes/i })
+  await expect(selectedToggle).toBeVisible()
+  await expect(selectedToggle).toBeDisabled()
+  const detailBox = await page.locator('.route-sheet .route-detail').boundingBox()
+  expect(detailBox).not.toBeNull()
+  expect(detailBox?.x).toBe(0)
+  expect(detailBox?.width).toBeGreaterThan(0)
+  expect((detailBox?.x ?? 0) + (detailBox?.width ?? 0)).toBeLessThanOrEqual(390)
   await page.screenshot({
     path: 'test-results/issue-10-screenshots/issue-10-mobile.png',
     animations: 'disabled',
   })
 
-  await page.getByRole('button', { name: /close route details/i }).click()
+  await page.getByRole('button', { name: /back to results/i }).click()
+  await expect(page.locator('.route-sheet .route-detail')).toHaveCount(0)
   await expect(page.getByRole('button', { name: /show routes/i })).toBeEnabled()
   await page.getByRole('button', { name: /show routes/i }).click()
   await expect(page.getByRole('button', { name: /south moravia ridge ride/i })).toBeVisible()
