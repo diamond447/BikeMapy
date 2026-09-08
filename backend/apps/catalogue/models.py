@@ -322,6 +322,10 @@ class RouteVersion(models.Model):
     distance_m = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     ascent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     descent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+    # A compact, derived profile is safe to publish alongside the route shape.
+    # Keep it separate from the original GPX payload so payload removal still
+    # removes the source file while preserving useful public metrics.
+    elevation_profile = models.JSONField(default=list, blank=True)
     loop_status = models.CharField(
         max_length=20, choices=LoopStatus.choices, default=LoopStatus.UNKNOWN
     )
@@ -394,6 +398,7 @@ class RouteVersion(models.Model):
                 "distance_m",
                 "ascent_m",
                 "descent_m",
+                "elevation_profile",
                 "loop_status",
                 "technical_status",
                 "validation_error",
@@ -723,13 +728,29 @@ class ModerationDecision(models.Model):
     class Action(models.TextChoices):
         REVIEW = "review", "Reviewed"
         PUBLISH = "publish", "Published automatically"
+        SELECT_VERSION = "select_version", "Selected approved version"
         KEEP_BOTH = "keep_both", "Keep both"
         MERGE_SOURCES = "merge_sources", "Merge sources"
         QUARANTINE = "quarantine", "Quarantine"
         RESTORE = "restore", "Restore"
         REMOVE = "remove", "Remove"
+        SOURCE_UNAVAILABLE = "source_unavailable", "Source unavailable"
+        SOURCE_AVAILABLE = "source_available", "Source available"
+        DENYLIST_RESTORE = "denylist_restore", "Restore denylist entry"
+        ROUTE_METADATA = "route_metadata", "Update route metadata"
+        CATEGORY_CREATE = "category_create", "Create category"
+        CATEGORY_UPDATE = "category_update", "Update category"
+        CATEGORY_DELETE = "category_delete", "Delete category"
+        CATEGORY_ASSIGN = "category_assign", "Assign category"
+        CATEGORY_UNASSIGN = "category_unassign", "Remove category"
 
-    route = models.ForeignKey(Route, on_delete=models.PROTECT, related_name="moderation_decisions")
+    route = models.ForeignKey(
+        Route,
+        on_delete=models.PROTECT,
+        related_name="moderation_decisions",
+        blank=True,
+        null=True,
+    )
     version = models.ForeignKey(
         RouteVersion,
         on_delete=models.PROTECT,

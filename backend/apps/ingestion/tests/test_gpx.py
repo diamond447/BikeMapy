@@ -68,6 +68,7 @@ def test_parse_gpx_normalizes_geometry_and_optional_metrics() -> None:
         "coordinates": [[16.0, 49.0], [16.001, 49.001], [16.0, 49.0]],
     }
     assert parsed.distance_m > 0
+    assert parsed.elevations == (100.0, 120.0, 110.0)
     assert parsed.ascent_m == 20
     assert parsed.descent_m == 10
     assert parsed.loop_status == LoopStatus.LOOP
@@ -118,6 +119,11 @@ def test_extraction_is_idempotent_and_publishes_valid_data(tmp_path: Path) -> No
     assert first["created"] is True
     assert second["created"] is False
     assert RouteVersion.objects.count() == 1
+    assert RouteVersion.objects.get().elevation_profile == [
+        {"distance_m": 0.0, "elevation_m": 100.0},
+        {"distance_m": 132.99, "elevation_m": 120.0},
+        {"distance_m": 265.98, "elevation_m": 110.0},
+    ]
     assert Route.objects.get(pk=route_source.route_id).is_public
     assert ExtractionAttempt.objects.filter(status=ExtractionStatus.SUCCEEDED).count() == 2
 
