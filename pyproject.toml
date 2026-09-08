@@ -26,8 +26,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "django-stubs[compatible-mypy]>=5.2,<6",
-  "mypy>=1.15,<2",
+  "django-stubs[compatible-mypy]>=5.2,<7",
+  "mypy>=1.15,<3",
   "pre-commit>=4.2,<5",
   "pytest>=8.3,<10",
   "pytest-cov>=6,<7",
@@ -71,6 +71,10 @@ plugins = ["mypy_django_plugin.main"]
 strict = true
 warn_unreachable = true
 exclude = "backend/.*/migrations/"
+
+[[tool.mypy.overrides]]
+module = ["allauth.*"]
+ignore_missing_imports = true
 
 [tool.django-stubs]
 django_settings_module = "config.settings"
