@@ -154,6 +154,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Run browser interaction and evidence tests
         run: pnpm exec playwright test
+      - name: Run production preview MapLibre smoke test
+        run: pnpm exec playwright test --config playwright.preview.config.ts
       - name: Upload issue 10 screenshots
         if: always()
         uses: actions/upload-artifact@v4

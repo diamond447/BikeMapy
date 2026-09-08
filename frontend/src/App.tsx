@@ -961,13 +961,18 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!mapNode.current) return
+    const mapElement = mapNode.current
+    if (!mapElement) return
     setMapError(null)
     let map: MapLibreMap | null = null
     let disposed = false
     import('maplibre-gl')
-      .then(({ default: maplibregl }) => {
+      .then(async (maplibregl) => {
         if (disposed || !mapNode.current) return
+        const { default: workerUrl } =
+          await import('maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url')
+        if (disposed || !mapNode.current) return
+        maplibregl.setWorkerUrl(workerUrl)
         let mapInstance: MapLibreMap
         try {
           mapInstance = new maplibregl.Map({
@@ -1047,6 +1052,11 @@ function App() {
             source: SELECTED_SOURCE,
             paint: { 'line-color': '#d34d32', 'line-width': 5, 'line-opacity': 1 },
           })
+          mapNode.current?.setAttribute('data-map-ready', 'true')
+          mapNode.current?.setAttribute(
+            'data-map-sources',
+            'browse-heatmap,browse-routes,selected-route',
+          )
           setMapReady(true)
         })
         mapInstance.on('error', (event) => {
@@ -1096,6 +1106,9 @@ function App() {
     return () => {
       disposed = true
       setMapReady(false)
+      mapElement.setAttribute('data-map-ready', 'false')
+      mapElement.removeAttribute('data-map-route-features')
+      mapElement.removeAttribute('data-map-rendered-features')
       map?.remove()
       mapRef.current = null
     }
@@ -1144,6 +1157,7 @@ function App() {
     const data = mapData
     const heatSource = map.getSource(HEAT_SOURCE) as GeoJSONSource | undefined
     const routeSource = map.getSource(ROUTE_SOURCE) as GeoJSONSource | undefined
+    const routeFeatures = data.routes.filter((route) => route.geometry)
     heatSource?.setData({
       type: 'FeatureCollection',
       features: data.cells
@@ -1156,13 +1170,16 @@ function App() {
     })
     routeSource?.setData({
       type: 'FeatureCollection',
-      features: data.routes
-        .filter((route) => route.geometry)
-        .map((route) => ({
-          type: 'Feature',
-          properties: { routeId: route.id, title: route.title },
-          geometry: route.geometry!,
-        })),
+      features: routeFeatures.map((route) => ({
+        type: 'Feature',
+        properties: { routeId: route.id, title: route.title },
+        geometry: route.geometry!,
+      })),
+    })
+    mapNode.current?.setAttribute('data-map-route-features', String(routeFeatures.length))
+    map.once('idle', () => {
+      const renderedFeatureCount = map.queryRenderedFeatures({ layers: ['browse-routes'] }).length
+      mapNode.current?.setAttribute('data-map-rendered-features', String(renderedFeatureCount))
     })
     if (map.getLayer('heat-cells'))
       map.setLayoutProperty(

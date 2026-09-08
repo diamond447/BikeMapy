@@ -17,6 +17,11 @@ const { MockMap } = vi.hoisted(() => {
       if (event === 'load') setTimeout(handler, 0)
       return this
     }
+    once(event: string, handler: (event?: never) => void) {
+      this.on(event, handler)
+      if (event === 'idle') setTimeout(handler, 0)
+      return this
+    }
     addControl() {
       return this
     }
@@ -58,7 +63,10 @@ const { MockMap } = vi.hoisted(() => {
   return { MockMap }
 })
 vi.mock('maplibre-gl', () => ({
-  default: { Map: MockMap, AttributionControl: class {}, NavigationControl: class {} },
+  Map: MockMap,
+  AttributionControl: class {},
+  NavigationControl: class {},
+  setWorkerUrl: vi.fn(),
 }))
 
 import type { components } from './api/generated/schema'
