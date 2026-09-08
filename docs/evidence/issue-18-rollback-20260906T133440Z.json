@@ -1,0 +1,27 @@
+{
+  "kind": "disposable-deployment-rollback-rehearsal",
+  "verified_at": "2026-09-06T13:35:14.626472Z",
+  "project": "bikemapy-rollback-489285",
+  "candidate": {
+    "source_ref": "working-tree",
+    "image": "bikemapy-rehearsal:489285-candidate",
+    "image_id": "sha256:c9fcae6065ef8eca7f6e7bd2e59855e7f1972380b3cb1b80c612019ae8f584ef",
+    "running_image_id": "sha256:c9fcae6065ef8eca7f6e7bd2e59855e7f1972380b3cb1b80c612019ae8f584ef",
+    "health": {
+      "status": "ready"
+    },
+    "route_count": 1
+  },
+  "previous": {
+    "source_ref": "HEAD",
+    "image": "bikemapy-rehearsal:489285-previous",
+    "image_id": "sha256:0752d01dd4fa0a121dc05a5102b5bd512187a287c910d7d14d9138a88650984b",
+    "running_image_id": "sha256:0752d01dd4fa0a121dc05a5102b5bd512187a287c910d7d14d9138a88650984b",
+    "health": {
+      "status": "ready"
+    },
+    "route_count": 1
+  },
+  "environment": "local disposable Docker Compose PostGIS/Redis stack",
+  "scope": "non-production rehearsal; production rollback remains an owner action"
+}
