@@ -61,6 +61,13 @@ const LEGAL_DOCUMENTS_URL = 'https://github.com/diamond447/BikeMapy/blob/main/do
 // Cloudflare preview builds set this to false. Keeping the guard at build time
 // means a preview contains only the public read API and has no report action.
 const REPORTS_ENABLED = import.meta.env.VITE_ENABLE_REPORTS !== 'false'
+export function categoriesEnabled(): boolean {
+  return import.meta.env.VITE_ENABLE_CATEGORIES === 'true'
+}
+
+export function normalizeFilters(filters: Filters): Filters {
+  return categoriesEnabled() ? filters : { ...filters, category: '' }
+}
 
 const translations = {
   en: {
@@ -86,6 +93,16 @@ const translations = {
     hideRoutes: 'Hide routes',
     showRoutes: 'Show routes',
     searchRoutes: 'Search routes',
+    atlasKicker: 'Cycling atlas · Czechia and beyond',
+    resultHeading: 'Routes in this view',
+    backToResults: 'Back to results',
+    mapView: 'Map view',
+    listView: 'List view',
+    sheetCollapsed: 'Collapse route list',
+    sheetHalf: 'Expand routes',
+    sheetFull: 'Open route list',
+    categoriesToggle: 'Category filters (coming soon)',
+    categoriesHint: 'Category support is documented but not ready yet.',
     eyebrow: 'A map with a memory',
     heading: 'Find the ride',
     headingSecond: 'worth repeating.',
@@ -102,7 +119,6 @@ const translations = {
     climbTo: 'Climb to (m)',
     reading: 'Reading the archive…',
     unavailable: 'Archive unavailable',
-    ridesFound: (count: number) => `${count} rides found`,
     clearFilters: 'Clear filters',
     currentViewport: 'Current viewport',
     viewportHint: 'List follows the current map bounds',
@@ -211,6 +227,16 @@ const translations = {
     hideRoutes: 'Skrýt trasy',
     showRoutes: 'Zobrazit trasy',
     searchRoutes: 'Hledat trasy',
+    atlasKicker: 'Cykloatlas · Česko a okolí',
+    resultHeading: 'Trasy v tomto výřezu',
+    backToResults: 'Zpět na výsledky',
+    mapView: 'Zobrazení mapy',
+    listView: 'Zobrazení seznamu',
+    sheetCollapsed: 'Sbalit seznam tras',
+    sheetHalf: 'Rozbalit trasy',
+    sheetFull: 'Otevřít seznam tras',
+    categoriesToggle: 'Kategorie (připravujeme)',
+    categoriesHint: 'Podpora kategorií je zdokumentovaná, ale zatím není připravená.',
     eyebrow: 'Mapa s pamětí',
     heading: 'Najděte trasu',
     headingSecond: 'ke které se vrátíte.',
@@ -226,7 +252,6 @@ const translations = {
     climbTo: 'Stoupání do (m)',
     reading: 'Procházím archiv…',
     unavailable: 'Archiv není dostupný',
-    ridesFound: (count: number) => `${count} tras nalezeno`,
     clearFilters: 'Zrušit filtry',
     currentViewport: 'Aktuální výřez',
     viewportHint: 'Seznam sleduje hranice mapy',
@@ -511,6 +536,125 @@ function routeStatus(status: string, copy: Copy): string {
   return copy.unknownSource
 }
 
+function RouteSources({ route, copy, language }: { route: Route; copy: Copy; language: Language }) {
+  return (
+    <div className="source-section">
+      <h3>{copy.sources}</h3>
+      {route.sources.length ? (
+        <ul className="source-list">
+          {route.sources.map((source) => (
+            <li key={source.mapy_url}>
+              <a
+                href={source.mapy_url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={copy.mapyLink}
+                onClick={() => trackProductEvent('original_source_click')}
+              >
+                {source.title || copy.mapyLink}
+              </a>
+              <span>{routeStatus(source.status, copy)}</span>
+              {source.last_successful_check_at ? (
+                <time dateTime={source.last_successful_check_at}>
+                  {copy.sourceLastSuccessfulCheck(
+                    new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
+                      dateStyle: 'medium',
+                    }).format(new Date(source.last_successful_check_at)),
+                  )}
+                </time>
+              ) : null}
+              {source.last_checked_at &&
+              source.last_checked_at !== source.last_successful_check_at ? (
+                <time dateTime={source.last_checked_at}>
+                  {copy.sourceChecked(
+                    new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
+                      dateStyle: 'medium',
+                    }).format(new Date(source.last_checked_at)),
+                  )}
+                </time>
+              ) : null}
+              {source.posts.map((post) => (
+                <span key={post.url} className="source-post">
+                  <a
+                    href={post.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={copy.sourceLink(post.thread_title)}
+                    onClick={() => trackProductEvent('original_source_click')}
+                  >
+                    {post.thread_title || post.url}
+                  </a>
+                  {post.author && <span> · {post.author}</span>}
+                  {post.posted_at && (
+                    <time dateTime={post.posted_at}>
+                      {' · '}
+                      {copy.posted(
+                        new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
+                          dateStyle: 'medium',
+                        }).format(new Date(post.posted_at)),
+                      )}
+                    </time>
+                  )}
+                </span>
+              ))}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="no-sources">{copy.noSources}</p>
+      )}
+    </div>
+  )
+}
+
+function SidebarFooter({
+  copy,
+  language,
+  onToggleLanguage,
+}: {
+  copy: Copy
+  language: Language
+  onToggleLanguage: () => void
+}) {
+  return (
+    <footer className="app-footer" aria-label={copy.footer}>
+      <div className="app-footer-language">
+        <button
+          type="button"
+          className="language-switcher"
+          aria-label={copy.changeLanguage}
+          aria-pressed={language === 'cs'}
+          onClick={onToggleLanguage}
+        >
+          {language === 'en' ? 'EN / CZ' : 'CZ / EN'}
+        </button>
+      </div>
+      <span>{copy.independentProject}</span>
+      <nav aria-label={copy.footer}>
+        <a href={`${LEGAL_DOCUMENTS_URL}/terms.md`} target="_blank" rel="noreferrer">
+          {copy.terms}
+        </a>
+        <a href={`${LEGAL_DOCUMENTS_URL}/privacy.md`} target="_blank" rel="noreferrer">
+          {copy.privacy}
+        </a>
+        <a href={`${LEGAL_DOCUMENTS_URL}/removal-policy.md`} target="_blank" rel="noreferrer">
+          {copy.removalPolicy}
+        </a>
+      </nav>
+      <span className="app-footer-attribution">
+        {copy.mapAttribution}:{' '}
+        <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">
+          OpenFreeMap
+        </a>{' '}
+        ·{' '}
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
+          OpenStreetMap contributors
+        </a>
+      </span>
+    </footer>
+  )
+}
+
 function setMeta(name: string, content: string, property = false) {
   const attribute = property ? 'property' : 'name'
   let element = document.head.querySelector<HTMLMetaElement>(`meta[${attribute}="${name}"]`)
@@ -653,9 +797,10 @@ function App() {
   const initial = useMemo(parseState, [])
   const [language, setLanguage] = useState<Language>(initialLanguage)
   const copy = translations[language]
+  const categoriesEnabledForBuild = categoriesEnabled()
   const copyRef = useRef(copy)
   copyRef.current = copy
-  const [filters, setFilters] = useState<Filters>(initial.filters)
+  const [filters, setFilters] = useState<Filters>(() => normalizeFilters(initial.filters))
   const [view, setView] = useState<ViewState>(initial.view)
   const [selectedId, setSelectedId] = useState<string | null>(initial.routeId)
   const [selected, setSelected] = useState<SpatialRoute | null>(null)
@@ -667,7 +812,12 @@ function App() {
   const [metadataRetryToken, setMetadataRetryToken] = useState(0)
   const [geometryRetryToken, setGeometryRetryToken] = useState(0)
   const [overlap, setOverlap] = useState<string[]>([])
-  const [panelOpen, setPanelOpen] = useState(true)
+  const isMobileViewport = typeof window !== 'undefined' && window.innerWidth <= 700
+  const [panelOpen, setPanelOpen] = useState(!isMobileViewport)
+  const [mobileSheetPosition, setMobileSheetPosition] = useState<'collapsed' | 'half' | 'full'>(
+    isMobileViewport ? 'collapsed' : 'full',
+  )
+  const [hoveredRouteId, setHoveredRouteId] = useState<string | null>(null)
   const [mapReady, setMapReady] = useState(false)
   const [viewportOnly, setViewportOnly] = useState(initial.viewportOnly)
   const [retryToken, setRetryToken] = useState(0)
@@ -696,13 +846,7 @@ function App() {
   const turnstileNode = useRef<HTMLDivElement>(null)
   const turnstileWidget = useRef<string | undefined>(undefined)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const { routes, count, loading, error } = useRouteList(
-    filters,
-    view,
-    viewportOnly,
-    retryToken,
-    copy,
-  )
+  const { routes, loading, error } = useRouteList(filters, view, viewportOnly, retryToken, copy)
   const viewport = useViewport(view, filters, mapReady, retryToken, copy)
   const selectedRoute = routes.find((route) => route.id === selectedId) ?? selectedRecord
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
@@ -721,6 +865,16 @@ function App() {
     ? routeUrl(PUBLIC_SITE_URL, selectedRoute.id, selectedRoute.slug)
     : ''
   const turnstileConfigured = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY)
+  const panelToggleLabel =
+    window.innerWidth <= 700
+      ? mobileSheetPosition === 'collapsed'
+        ? copy.showRoutes
+        : mobileSheetPosition === 'half'
+          ? copy.sheetHalf
+          : copy.hideRoutes
+      : panelOpen
+        ? copy.hideRoutes
+        : copy.showRoutes
 
   useEffect(() => {
     if (!selectedId || trackedRouteRef.current === selectedId) return
@@ -830,9 +984,14 @@ function App() {
       if (!id) trackedRouteRef.current = null
       setSelectedId(id)
       setOverlap(id ? [id] : [])
-      if (id && window.innerWidth <= 700) {
+      if (window.innerWidth <= 700) {
         setMobilePanelHeight(null)
-        setPanelOpen(false)
+        if (id) {
+          setPanelOpen(false)
+          setMobileSheetPosition('full')
+        } else {
+          setMobileSheetPosition('collapsed')
+        }
       }
       if (push) writeUrl(filters, view, id, 'push', viewportOnly)
     },
@@ -938,7 +1097,7 @@ function App() {
   useEffect(() => {
     const handlePopState = () => {
       const next = parseState()
-      setFilters(next.filters)
+      setFilters(normalizeFilters(next.filters))
       setView(next.view)
       setSelectedId(next.routeId)
       setOverlap(next.routeId ? [next.routeId] : [])
@@ -965,6 +1124,7 @@ function App() {
     if (!mapElement) return
     setMapError(null)
     let map: MapLibreMap | null = null
+    let mapResizeObserver: ResizeObserver | undefined
     let disposed = false
     import('maplibre-gl')
       .then(async (maplibregl) => {
@@ -989,6 +1149,10 @@ function App() {
         }
         map = mapInstance
         mapRef.current = mapInstance
+        if (typeof ResizeObserver !== 'undefined') {
+          mapResizeObserver = new ResizeObserver(() => mapInstance.resize())
+          mapResizeObserver.observe(mapElement)
+        }
         mapInstance.addControl(
           new maplibregl.AttributionControl({ customAttribution: MAP_PROVIDER.attribution }),
           'bottom-left',
@@ -1036,6 +1200,17 @@ function App() {
               'line-opacity': 0.72,
             },
           })
+          mapInstance.addLayer({
+            id: 'hovered-route',
+            type: 'line',
+            source: ROUTE_SOURCE,
+            filter: ['==', ['get', 'routeId'], ''],
+            paint: {
+              'line-color': '#e4d866',
+              'line-width': ['interpolate', ['linear'], ['zoom'], 7, 4, 14, 7],
+              'line-opacity': 0.9,
+            },
+          })
           mapInstance.addSource(SELECTED_SOURCE, {
             type: 'geojson',
             data: { type: 'FeatureCollection', features: [] },
@@ -1050,7 +1225,12 @@ function App() {
             id: 'selected-route-line',
             type: 'line',
             source: SELECTED_SOURCE,
-            paint: { 'line-color': '#d34d32', 'line-width': 5, 'line-opacity': 1 },
+            paint: {
+              'line-color': '#d34d32',
+              'line-width': 5,
+              'line-opacity': 1,
+              'line-dasharray': [1.2, 0.8],
+            },
           })
           mapNode.current?.setAttribute('data-map-ready', 'true')
           mapNode.current?.setAttribute(
@@ -1101,6 +1281,15 @@ function App() {
             writeUrl(filtersRef.current, viewRef.current, ids[0], 'push', viewportOnlyRef.current)
           }
         })
+        mapInstance.on('mousemove', (event) => {
+          if (!mapInstance.getLayer('browse-routes')) return
+          const feature = mapInstance.queryRenderedFeatures(event.point, {
+            layers: ['browse-routes'],
+          })[0]
+          const id = String(feature?.properties?.routeId ?? '')
+          setHoveredRouteId(id || null)
+        })
+        mapInstance.on('mouseout', () => setHoveredRouteId(null))
       })
       .catch(() => setMapError(copyRef.current.mapStartError))
     return () => {
@@ -1110,6 +1299,7 @@ function App() {
       mapElement.removeAttribute('data-map-route-features')
       mapElement.removeAttribute('data-map-rendered-features')
       map?.remove()
+      mapResizeObserver?.disconnect()
       mapRef.current = null
     }
     // The map is intentionally created once; state updates its sources below.
@@ -1172,7 +1362,12 @@ function App() {
       type: 'FeatureCollection',
       features: routeFeatures.map((route) => ({
         type: 'Feature',
-        properties: { routeId: route.id, title: route.title },
+        properties: {
+          routeId: route.id,
+          title: route.title,
+          selected: route.id === selectedId,
+          hovered: route.id === hoveredRouteId,
+        },
         geometry: route.geometry!,
       })),
     })
@@ -1193,7 +1388,9 @@ function App() {
         'visibility',
         data.mode === 'routes' ? 'visible' : 'none',
       )
-  }, [mapData, mapReady])
+    if (map.getLayer('hovered-route') && typeof map.setFilter === 'function')
+      map.setFilter('hovered-route', ['==', ['get', 'routeId'], hoveredRouteId ?? ''])
+  }, [hoveredRouteId, mapData, mapReady, selectedId])
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
@@ -1212,18 +1409,38 @@ function App() {
           window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
         const mobileSheetHeight = mobilePanelHeight ?? (panelOpen ? window.innerHeight * 0.67 : 42)
         const mobileDetailOffset = mobileDetailHeight ?? 150
+        const padding = mobile
+          ? {
+              top: 80,
+              right: 24,
+              bottom: mobileSheetHeight + mobileDetailOffset + 24,
+              left: 24,
+            }
+          : { top: 120, right: 90, bottom: 100, left: 90 }
+        const fitCenter = () => {
+          if (typeof map.project !== 'function' || typeof map.getContainer !== 'function') return
+          const point = map.project([
+            (bounds[0][0] + bounds[1][0]) / 2,
+            (bounds[0][1] + bounds[1][1]) / 2,
+          ])
+          const container = map.getContainer().getBoundingClientRect()
+          mapNode.current?.setAttribute(
+            'data-map-fit-center',
+            JSON.stringify({
+              x: point.x,
+              y: point.y,
+              width: container.width,
+              height: container.height,
+            }),
+          )
+        }
         map.fitBounds(bounds, {
-          padding: mobile
-            ? {
-                top: 80,
-                right: 24,
-                bottom: mobileSheetHeight + mobileDetailOffset + 24,
-                left: 24,
-              }
-            : { top: 120, right: panelOpen ? 430 : 90, bottom: 100, left: 90 },
+          padding,
           maxZoom: 13,
           duration: reducedMotion ? 0 : 600,
         })
+        if (reducedMotion) fitCenter()
+        else map.once('moveend', fitCenter)
       }
     }
   }, [mapReady, mobileDetailHeight, mobilePanelHeight, panelOpen, selected])
@@ -1242,6 +1459,16 @@ function App() {
     }
   }
   const toggleLanguage = () => setLanguage((current) => (current === 'en' ? 'cs' : 'en'))
+  const setSheetPosition = (position: 'collapsed' | 'half' | 'full') => {
+    if (position === 'collapsed') {
+      setPanelOpen(false)
+      setMobileSheetPosition('collapsed')
+    } else {
+      setPanelOpen(true)
+      setMobileSheetPosition(position)
+    }
+    setMobilePanelHeight(null)
+  }
   const nextOverlap = (direction: number) => {
     if (overlap.length < 2) return
     const nextIndex = (Math.max(0, selectedIndex) + direction + overlap.length) % overlap.length
@@ -1251,13 +1478,21 @@ function App() {
   return (
     <main
       className="app-shell"
+      data-sheet-position={mobileSheetPosition}
       style={
         {
-          '--mobile-sheet-height': panelOpen ? '67vh' : '42px',
-          ...(mobilePanelHeight ? { '--mobile-sheet-height': `${mobilePanelHeight}px` } : {}),
+          '--mobile-sheet-height':
+            mobileSheetPosition === 'collapsed'
+              ? '42px'
+              : mobileSheetPosition === 'half'
+                ? '50vh'
+                : '82vh',
         } as CSSProperties
       }
     >
+      <span className="sr-only" data-testid="sheet-position" data-position={mobileSheetPosition}>
+        {mobileSheetPosition}
+      </span>
       <a className="skip-link" href="#route-browser">
         {copy.routes}
       </a>
@@ -1268,20 +1503,6 @@ function App() {
           </span>
           <span>BikeMapy</span>
         </a>
-        <div className="topbar-meta">
-          <span className="live-indicator">
-            <i aria-hidden="true" /> {copy.indexed(count)}
-          </span>
-          <button
-            type="button"
-            className="language-switcher"
-            aria-label={copy.changeLanguage}
-            aria-pressed={language === 'cs'}
-            onClick={toggleLanguage}
-          >
-            {language === 'en' ? 'EN / CZ' : 'CZ / EN'}
-          </button>
-        </div>
       </header>
       <section className="map-stage" aria-label={copy.map}>
         <div
@@ -1289,6 +1510,7 @@ function App() {
           className="map-canvas"
           role="application"
           aria-label={copy.interactiveMap}
+          data-hovered-route={hoveredRouteId ?? undefined}
         />
         <div className="map-vignette" aria-hidden="true" />
         <div className="map-status" role="status">
@@ -1320,290 +1542,352 @@ function App() {
           {copy.nearby}
         </div>
       </section>
-      <aside
-        ref={panelNode}
-        className={`route-panel ${panelOpen ? 'is-open' : 'is-collapsed'}`}
-        aria-label={copy.searchRoutes}
-      >
-        <button
-          type="button"
-          className="panel-toggle"
-          onClick={() => {
-            if (mobileSelectionActive) return
-            setMobilePanelHeight(null)
-            setPanelOpen((open) => !open)
-          }}
-          disabled={mobileSelectionActive}
-          aria-expanded={panelOpen}
-          aria-controls="route-browser"
+      <div className="route-sheet">
+        <aside
+          ref={panelNode}
+          className={`route-panel ${panelOpen ? 'is-open' : 'is-collapsed'}`}
+          aria-label={copy.searchRoutes}
         >
-          {panelOpen ? copy.hideRoutes : copy.showRoutes}{' '}
-          <span aria-hidden="true">{panelOpen ? '−' : '+'}</span>
-        </button>
-        <div id="route-browser" className="panel-content">
-          <p className="eyebrow">{copy.eyebrow}</p>
-          <h1>
-            {copy.heading}
-            <br />
-            {copy.headingSecond}
-          </h1>
-          <p className="intro">{copy.intro}</p>
-          <label className="search-field">
-            <span aria-hidden="true">⌕</span>
-            <span className="sr-only">{copy.searchRoutes}</span>
-            <input
-              type="search"
-              aria-label={copy.searchRoutes}
-              value={filters.search}
-              onChange={(event) => updateFilter('search', event.target.value)}
-              placeholder={copy.searchPlaceholder}
-            />
-          </label>
-          <div className="filter-grid">
-            <label>
-              {copy.author}
-              <input
-                aria-label={copy.author}
-                value={filters.author}
-                onChange={(event) => updateFilter('author', event.target.value)}
-                placeholder={copy.authorPlaceholder}
-              />
-            </label>
-            <label>
-              {copy.category}
-              <input
-                aria-label={copy.category}
-                value={filters.category}
-                onChange={(event) => updateFilter('category', event.target.value)}
-                placeholder={copy.categoryPlaceholder}
-              />
-            </label>
-            <label>
-              {copy.distanceFrom}
-              <input
-                aria-label={copy.distanceFrom}
-                inputMode="numeric"
-                value={filters.min_distance_m}
-                onChange={(event) => updateFilter('min_distance_m', event.target.value)}
-              />
-            </label>
-            <label>
-              {copy.distanceTo}
-              <input
-                aria-label={copy.distanceTo}
-                inputMode="numeric"
-                value={filters.max_distance_m}
-                onChange={(event) => updateFilter('max_distance_m', event.target.value)}
-              />
-            </label>
-            <label>
-              {copy.climbFrom}
-              <input
-                aria-label={copy.climbFrom}
-                inputMode="numeric"
-                value={filters.min_ascent_m}
-                onChange={(event) => updateFilter('min_ascent_m', event.target.value)}
-              />
-            </label>
-            <label>
-              {copy.climbTo}
-              <input
-                aria-label={copy.climbTo}
-                inputMode="numeric"
-                value={filters.max_ascent_m}
-                onChange={(event) => updateFilter('max_ascent_m', event.target.value)}
-              />
-            </label>
-          </div>
-          <div className="results-heading">
-            <span>
-              {loading
-                ? copy.reading
-                : error
-                  ? copy.unavailable
-                  : copy.ridesFound(displayRoutes.length)}
-            </span>
-            <button
-              type="button"
-              onClick={resetFilters}
-              disabled={!Object.values(filters).some(Boolean)}
-            >
-              {copy.clearFilters}
-            </button>
-          </div>
-          <label className="viewport-filter">
-            <input
-              type="checkbox"
-              checked={viewportOnly}
-              onChange={(event) => setViewportOnly(event.target.checked)}
-            />
-            <span>{copy.currentViewport}</span>
-            {viewportOnly && viewport.data?.mode === 'heatmap' && (
-              <small>{copy.viewportHint}</small>
-            )}
-          </label>
-          {error && (
-            <div className="notice error-notice">
-              <strong>{copy.lostConnection}</strong>
-              <span>{copy.checkApi}</span>
-              <button type="button" onClick={retry}>
-                {copy.retry}
-              </button>
+          <button
+            type="button"
+            className="panel-toggle"
+            onClick={() => {
+              if (mobileSelectionActive) {
+                selectRoute(null, false)
+                return
+              }
+              if (window.innerWidth <= 700) {
+                const next =
+                  mobileSheetPosition === 'collapsed'
+                    ? 'half'
+                    : mobileSheetPosition === 'half'
+                      ? 'full'
+                      : 'collapsed'
+                setSheetPosition(next)
+              } else setSheetPosition(panelOpen ? 'collapsed' : 'full')
+            }}
+            disabled={mobileSelectionActive}
+            aria-expanded={panelOpen}
+            aria-controls="route-browser"
+          >
+            {panelToggleLabel} <span aria-hidden="true">{panelOpen ? '−' : '+'}</span>
+          </button>
+          <div id="route-browser" className="panel-content">
+            <p className="eyebrow">{copy.atlasKicker}</p>
+            <div className="atlas-heading">
+              <h1>{copy.heading}</h1>
+              <p className="intro">{copy.intro}</p>
             </div>
-          )}
-          {!loading && !error && displayRoutes.length === 0 && (
-            <div className="notice">
-              <strong>{copy.noMatches}</strong>
-              <span>{copy.widerSearch}</span>
-              <button type="button" onClick={resetFilters}>
+            <label className="search-field">
+              <span aria-hidden="true">⌕</span>
+              <span className="sr-only">{copy.searchRoutes}</span>
+              <input
+                type="search"
+                aria-label={copy.searchRoutes}
+                value={filters.search}
+                onChange={(event) => updateFilter('search', event.target.value)}
+                placeholder={copy.searchPlaceholder}
+              />
+            </label>
+            <div className="filter-grid">
+              <label>
+                {copy.author}
+                <input
+                  aria-label={copy.author}
+                  value={filters.author}
+                  onChange={(event) => updateFilter('author', event.target.value)}
+                  placeholder={copy.authorPlaceholder}
+                />
+              </label>
+              {categoriesEnabledForBuild && (
+                <label>
+                  {copy.category}
+                  <input
+                    aria-label={copy.category}
+                    value={filters.category}
+                    onChange={(event) => updateFilter('category', event.target.value)}
+                    placeholder={copy.categoryPlaceholder}
+                  />
+                </label>
+              )}
+              <label>
+                {copy.distanceFrom}
+                <input
+                  aria-label={copy.distanceFrom}
+                  inputMode="numeric"
+                  value={filters.min_distance_m}
+                  onChange={(event) => updateFilter('min_distance_m', event.target.value)}
+                />
+              </label>
+              <label>
+                {copy.distanceTo}
+                <input
+                  aria-label={copy.distanceTo}
+                  inputMode="numeric"
+                  value={filters.max_distance_m}
+                  onChange={(event) => updateFilter('max_distance_m', event.target.value)}
+                />
+              </label>
+              <label>
+                {copy.climbFrom}
+                <input
+                  aria-label={copy.climbFrom}
+                  inputMode="numeric"
+                  value={filters.min_ascent_m}
+                  onChange={(event) => updateFilter('min_ascent_m', event.target.value)}
+                />
+              </label>
+              <label>
+                {copy.climbTo}
+                <input
+                  aria-label={copy.climbTo}
+                  inputMode="numeric"
+                  value={filters.max_ascent_m}
+                  onChange={(event) => updateFilter('max_ascent_m', event.target.value)}
+                />
+              </label>
+            </div>
+            {!categoriesEnabledForBuild && (
+              <div
+                className="category-toggle"
+                role="group"
+                aria-describedby="category-support-hint"
+              >
+                <label>
+                  <input type="checkbox" disabled aria-label={copy.categoriesToggle} />
+                  <span>{copy.categoriesToggle}</span>
+                </label>
+                <small id="category-support-hint">{copy.categoriesHint}</small>
+              </div>
+            )}
+            <div className="results-heading">
+              <span>{loading ? copy.reading : error ? copy.unavailable : copy.resultHeading}</span>
+              <button
+                type="button"
+                onClick={resetFilters}
+                disabled={!Object.values(filters).some(Boolean)}
+              >
                 {copy.clearFilters}
               </button>
             </div>
-          )}
-          <nav className="route-list" aria-label={copy.routes}>
-            {displayRoutes.map((route) => (
-              <button
-                key={route.id}
-                type="button"
-                className={`route-card ${route.id === selectedId ? 'is-selected' : ''}`}
-                onClick={() => selectRoute(route.id)}
-              >
-                <span className="route-card-title">{route.title}</span>
-                {(route.categories[0] || hasMetric(route.distance_m)) && (
-                  <span className="route-card-meta">
-                    {route.categories[0] && <span>{route.categories[0].name}</span>}
-                    {hasMetric(route.distance_m) && (
-                      <span>{(Number(route.distance_m) / 1000).toFixed(1)} km</span>
-                    )}
-                  </span>
-                )}
-              </button>
-            ))}
-          </nav>
-        </div>
-      </aside>
-      {selectionVisible && (
-        <section ref={detailNode} className="route-detail" aria-labelledby="route-detail-title">
-          <div className="detail-kicker">
-            {copy.selectedRoute}{' '}
-            {overlap.length > 1 && (
-              <span className="overlap-picker">
+            <label className="viewport-filter">
+              <input
+                type="checkbox"
+                checked={viewportOnly}
+                onChange={(event) => setViewportOnly(event.target.checked)}
+              />
+              <span>{copy.currentViewport}</span>
+              {viewportOnly && viewport.data?.mode === 'heatmap' && (
+                <small>{copy.viewportHint}</small>
+              )}
+            </label>
+            {error && (
+              <div className="notice error-notice">
+                <strong>{copy.lostConnection}</strong>
+                <span>{copy.checkApi}</span>
+                <button type="button" onClick={retry}>
+                  {copy.retry}
+                </button>
+              </div>
+            )}
+            {!loading && !error && displayRoutes.length === 0 && (
+              <div className="notice">
+                <strong>{copy.noMatches}</strong>
+                <span>{copy.widerSearch}</span>
+                <button type="button" onClick={resetFilters}>
+                  {copy.clearFilters}
+                </button>
+              </div>
+            )}
+            <nav className="route-list" aria-label={copy.routes}>
+              {displayRoutes.map((route) => (
                 <button
+                  key={route.id}
                   type="button"
-                  onClick={() => nextOverlap(-1)}
-                  aria-label={copy.previousOverlap}
+                  className={`route-card ${route.id === selectedId ? 'is-selected' : ''} ${route.id === hoveredRouteId ? 'is-hovered' : ''}`}
+                  aria-current={route.id === selectedId ? 'true' : undefined}
+                  onMouseEnter={() => setHoveredRouteId(route.id)}
+                  onMouseLeave={() => setHoveredRouteId(null)}
+                  onFocus={() => setHoveredRouteId(route.id)}
+                  onBlur={() => setHoveredRouteId(null)}
+                  onClick={() => selectRoute(route.id)}
                 >
-                  ‹
+                  <span className="route-card-marker" aria-hidden="true">
+                    {route.id === selectedId ? '◆' : '◇'}
+                  </span>
+                  <span className="route-card-title">{route.title}</span>
+                  {(categoriesEnabledForBuild && route.categories[0]) ||
+                  hasMetric(route.distance_m) ? (
+                    <span className="route-card-meta">
+                      {categoriesEnabledForBuild && route.categories[0] && (
+                        <span>{route.categories[0].name}</span>
+                      )}
+                      {hasMetric(route.distance_m) && (
+                        <span>{(Number(route.distance_m) / 1000).toFixed(1)} km</span>
+                      )}
+                    </span>
+                  ) : null}
                 </button>
-                <span>
-                  {Math.max(1, selectedIndex + 1)} / {overlap.length}
-                </span>
-                <button type="button" onClick={() => nextOverlap(1)} aria-label={copy.nextOverlap}>
-                  ›
-                </button>
-              </span>
+              ))}
+            </nav>
+            {!selectionVisible && (
+              <SidebarFooter copy={copy} language={language} onToggleLanguage={toggleLanguage} />
             )}
           </div>
-          <h2 id="route-detail-title">
-            {selectedRoute?.title ??
-              (selectedMetadataLoading ? copy.loadingRoute : copy.detailsUnavailable)}
-          </h2>
-          {selectedRoute && (
-            <>
-              {selectedRoute.reviewed && (
-                <div className="reviewed-badge" title={copy.reviewedDisclaimer}>
-                  {copy.reviewed}
+        </aside>
+        {selectionVisible && (
+          <section ref={detailNode} className="route-detail" aria-labelledby="route-detail-title">
+            <button type="button" className="back-results" onClick={() => selectRoute(null)}>
+              ← {copy.backToResults}
+            </button>
+            <div className="detail-kicker">
+              {copy.selectedRoute}{' '}
+              {overlap.length > 1 && (
+                <span className="overlap-picker">
+                  <button
+                    type="button"
+                    onClick={() => nextOverlap(-1)}
+                    aria-label={copy.previousOverlap}
+                  >
+                    ‹
+                  </button>
+                  <span>
+                    {Math.max(1, selectedIndex + 1)} / {overlap.length}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => nextOverlap(1)}
+                    aria-label={copy.nextOverlap}
+                  >
+                    ›
+                  </button>
+                </span>
+              )}
+            </div>
+            <h2 id="route-detail-title">
+              {selectedRoute?.title ??
+                (selectedMetadataLoading ? copy.loadingRoute : copy.detailsUnavailable)}
+            </h2>
+            {selectedRoute && (
+              <>
+                {selectedRoute.reviewed && (
+                  <div className="reviewed-badge" title={copy.reviewedDisclaimer}>
+                    {copy.reviewed}
+                  </div>
+                )}
+                {(hasMetric(selectedRoute.distance_m) ||
+                  hasMetric(selectedRoute.ascent_m) ||
+                  hasMetric(selectedRoute.descent_m) ||
+                  selectedRoute.loop_status === 'loop' ||
+                  selectedRoute.loop_status === 'point_to_point') && (
+                  <dl className="detail-stats">
+                    {hasMetric(selectedRoute.distance_m) && (
+                      <div>
+                        <dt>{copy.distance}</dt>
+                        <dd>{formatMetric(selectedRoute.distance_m, 'm')}</dd>
+                      </div>
+                    )}
+                    {hasMetric(selectedRoute.ascent_m) && (
+                      <div>
+                        <dt>{copy.ascent}</dt>
+                        <dd>{formatMetric(selectedRoute.ascent_m, 'm')}</dd>
+                      </div>
+                    )}
+                    {hasMetric(selectedRoute.descent_m) && (
+                      <div>
+                        <dt>{copy.descent}</dt>
+                        <dd>{formatMetric(selectedRoute.descent_m, 'm')}</dd>
+                      </div>
+                    )}
+                    {(selectedRoute.loop_status === 'loop' ||
+                      selectedRoute.loop_status === 'point_to_point') && (
+                      <div>
+                        <dt>{copy.routeType}</dt>
+                        <dd>
+                          {selectedRoute.loop_status === 'loop' ? copy.loop : copy.pointToPoint}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                )}
+                {selectedRoute.elevation_profile && (
+                  <ElevationProfile points={selectedRoute.elevation_profile} copy={copy} />
+                )}
+                {categoriesEnabledForBuild && selectedRoute.categories.length > 0 && (
+                  <ul className="detail-categories" aria-label={copy.category}>
+                    {selectedRoute.categories.map((category) => (
+                      <li key={category.slug}>{category.name}</li>
+                    ))}
+                  </ul>
+                )}
+                {selectedRoute.reviewed && (
+                  <p className="reviewed-disclaimer">{copy.reviewedDisclaimer}</p>
+                )}
+              </>
+            )}
+            <p className="detail-source">
+              {selectedMetadataError
+                ? null
+                : (selectedGeometryError ??
+                  (selectedRoute
+                    ? `${routeStatus(selectedRoute.source_status, copy)} · ${selectedGeometryLoading ? copy.fullGeometryLoading : copy.geometryFramed}`
+                    : copy.detailsStillLoading))}
+            </p>
+            {selectedMetadataError && (
+              <button
+                type="button"
+                className="detail-retry"
+                onClick={() => setMetadataRetryToken((current) => current + 1)}
+              >
+                {copy.retryDetails}
+              </button>
+            )}
+            {selectedGeometryError && (
+              <button
+                type="button"
+                className="detail-retry"
+                onClick={() => setGeometryRetryToken((current) => current + 1)}
+              >
+                {copy.retryGeometry}
+              </button>
+            )}
+            {selectedRoute && (
+              <>
+                <RouteSources route={selectedRoute} copy={copy} language={language} />
+                <div className="detail-actions" aria-label={copy.share}>
+                  <a className="detail-link" href={permanentRouteUrl}>
+                    {copy.share}
+                  </a>
+                  <button type="button" className="detail-link" onClick={copyPermanentLink}>
+                    {shareState === 'copied'
+                      ? copy.copied
+                      : shareState === 'failed'
+                        ? copy.copyFailed
+                        : copy.copyLink}
+                  </button>
+                  {selectedRoute.gpx_download_url ? (
+                    <a
+                      className="detail-link"
+                      href={selectedRoute.gpx_download_url}
+                      download
+                      onClick={() => trackProductEvent('gpx_download_click')}
+                    >
+                      {copy.gpxDownload}
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      className="detail-link"
+                      disabled
+                      title={copy.gpxUnavailable}
+                    >
+                      {copy.gpxDownload}
+                    </button>
+                  )}
                 </div>
-              )}
-              {(hasMetric(selectedRoute.distance_m) ||
-                hasMetric(selectedRoute.ascent_m) ||
-                hasMetric(selectedRoute.descent_m) ||
-                selectedRoute.loop_status === 'loop' ||
-                selectedRoute.loop_status === 'point_to_point') && (
-                <dl className="detail-stats">
-                  {hasMetric(selectedRoute.distance_m) && (
-                    <div>
-                      <dt>{copy.distance}</dt>
-                      <dd>{formatMetric(selectedRoute.distance_m, 'm')}</dd>
-                    </div>
-                  )}
-                  {hasMetric(selectedRoute.ascent_m) && (
-                    <div>
-                      <dt>{copy.ascent}</dt>
-                      <dd>{formatMetric(selectedRoute.ascent_m, 'm')}</dd>
-                    </div>
-                  )}
-                  {hasMetric(selectedRoute.descent_m) && (
-                    <div>
-                      <dt>{copy.descent}</dt>
-                      <dd>{formatMetric(selectedRoute.descent_m, 'm')}</dd>
-                    </div>
-                  )}
-                  {(selectedRoute.loop_status === 'loop' ||
-                    selectedRoute.loop_status === 'point_to_point') && (
-                    <div>
-                      <dt>{copy.routeType}</dt>
-                      <dd>
-                        {selectedRoute.loop_status === 'loop' ? copy.loop : copy.pointToPoint}
-                      </dd>
-                    </div>
-                  )}
-                </dl>
-              )}
-              {selectedRoute.elevation_profile && (
-                <ElevationProfile points={selectedRoute.elevation_profile} copy={copy} />
-              )}
-              {selectedRoute.categories.length > 0 && (
-                <ul className="detail-categories" aria-label={copy.category}>
-                  {selectedRoute.categories.map((category) => (
-                    <li key={category.slug}>{category.name}</li>
-                  ))}
-                </ul>
-              )}
-              {selectedRoute.reviewed && (
-                <p className="reviewed-disclaimer">{copy.reviewedDisclaimer}</p>
-              )}
-            </>
-          )}
-          <p className="detail-source">
-            {selectedMetadataError
-              ? null
-              : (selectedGeometryError ??
-                (selectedRoute
-                  ? `${routeStatus(selectedRoute.source_status, copy)} · ${selectedGeometryLoading ? copy.fullGeometryLoading : copy.geometryFramed}`
-                  : copy.detailsStillLoading))}
-          </p>
-          {selectedMetadataError && (
-            <button
-              type="button"
-              className="detail-retry"
-              onClick={() => setMetadataRetryToken((current) => current + 1)}
-            >
-              {copy.retryDetails}
-            </button>
-          )}
-          {selectedGeometryError && (
-            <button
-              type="button"
-              className="detail-retry"
-              onClick={() => setGeometryRetryToken((current) => current + 1)}
-            >
-              {copy.retryGeometry}
-            </button>
-          )}
-          {selectedRoute && (
-            <>
-              <div className="detail-actions" aria-label={copy.share}>
-                <a className="detail-link" href={permanentRouteUrl}>
-                  {copy.share}
-                </a>
-                <button type="button" className="detail-link" onClick={copyPermanentLink}>
-                  {shareState === 'copied'
-                    ? copy.copied
-                    : shareState === 'failed'
-                      ? copy.copyFailed
-                      : copy.copyLink}
-                </button>
+                {!selectedRoute.gpx_download_url && (
+                  <p className="gpx-notice">{copy.gpxUnavailable}</p>
+                )}
                 {REPORTS_ENABLED && (
                   <button
                     type="button"
@@ -1624,107 +1908,20 @@ function App() {
                     {copy.report}
                   </button>
                 )}
-                {selectedRoute.gpx_download_url ? (
-                  <a
-                    className="detail-link"
-                    href={selectedRoute.gpx_download_url}
-                    download
-                    onClick={() => trackProductEvent('gpx_download_click')}
-                  >
-                    {copy.gpxDownload}
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    className="detail-link"
-                    disabled
-                    title={copy.gpxUnavailable}
-                  >
-                    {copy.gpxDownload}
-                  </button>
-                )}
-              </div>
-              {!selectedRoute.gpx_download_url && (
-                <p className="gpx-notice">{copy.gpxUnavailable}</p>
-              )}
-              <div className="source-section">
-                <h3>{copy.sources}</h3>
-                {selectedRoute.sources.length ? (
-                  <ul className="source-list">
-                    {selectedRoute.sources.map((source) => (
-                      <li key={source.mapy_url}>
-                        <a
-                          href={source.mapy_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          aria-label={copy.mapyLink}
-                          onClick={() => trackProductEvent('original_source_click')}
-                        >
-                          {source.title || copy.mapyLink}
-                        </a>
-                        <span>{routeStatus(source.status, copy)}</span>
-                        {source.last_successful_check_at ? (
-                          <time dateTime={source.last_successful_check_at}>
-                            {copy.sourceLastSuccessfulCheck(
-                              new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
-                                dateStyle: 'medium',
-                              }).format(new Date(source.last_successful_check_at)),
-                            )}
-                          </time>
-                        ) : null}
-                        {source.last_checked_at &&
-                        source.last_checked_at !== source.last_successful_check_at ? (
-                          <time dateTime={source.last_checked_at}>
-                            {copy.sourceChecked(
-                              new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
-                                dateStyle: 'medium',
-                              }).format(new Date(source.last_checked_at)),
-                            )}
-                          </time>
-                        ) : null}
-                        {source.posts.map((post) => (
-                          <span key={post.url} className="source-post">
-                            <a
-                              href={post.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              aria-label={copy.sourceLink(post.thread_title)}
-                              onClick={() => trackProductEvent('original_source_click')}
-                            >
-                              {post.thread_title || post.url}
-                            </a>
-                            {post.author && <span> · {post.author}</span>}
-                            {post.posted_at && (
-                              <time dateTime={post.posted_at}>
-                                {' · '}
-                                {copy.posted(
-                                  new Intl.DateTimeFormat(language === 'cs' ? 'cs-CZ' : 'en-GB', {
-                                    dateStyle: 'medium',
-                                  }).format(new Date(post.posted_at)),
-                                )}
-                              </time>
-                            )}
-                          </span>
-                        ))}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="no-sources">{copy.noSources}</p>
-                )}
-              </div>
-            </>
-          )}
-          <button
-            type="button"
-            className="close-detail"
-            onClick={() => selectRoute(null)}
-            aria-label={copy.closeDetails}
-          >
-            ×
-          </button>
-        </section>
-      )}
+              </>
+            )}
+            <SidebarFooter copy={copy} language={language} onToggleLanguage={toggleLanguage} />
+            <button
+              type="button"
+              className="close-detail"
+              onClick={() => selectRoute(null)}
+              aria-label={copy.closeDetails}
+            >
+              ×
+            </button>
+          </section>
+        )}
+      </div>
       {REPORTS_ENABLED && reportOpen && selectedRoute && (
         <div className="report-backdrop" role="presentation">
           <section
@@ -1881,30 +2078,6 @@ function App() {
           </section>
         </div>
       )}
-      <footer className="app-footer" aria-label={copy.footer}>
-        <span>{copy.independentProject}</span>
-        <nav aria-label={copy.footer}>
-          <a href={`${LEGAL_DOCUMENTS_URL}/terms.md`} target="_blank" rel="noreferrer">
-            {copy.terms}
-          </a>
-          <a href={`${LEGAL_DOCUMENTS_URL}/privacy.md`} target="_blank" rel="noreferrer">
-            {copy.privacy}
-          </a>
-          <a href={`${LEGAL_DOCUMENTS_URL}/removal-policy.md`} target="_blank" rel="noreferrer">
-            {copy.removalPolicy}
-          </a>
-        </nav>
-        <span className="app-footer-attribution">
-          {copy.mapAttribution}:{' '}
-          <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">
-            OpenFreeMap
-          </a>{' '}
-          ·{' '}
-          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
-            OpenStreetMap contributors
-          </a>
-        </span>
-      </footer>
     </main>
   )
 }
