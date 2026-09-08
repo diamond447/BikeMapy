@@ -14,6 +14,13 @@ export default tseslint.config(
     plugins: { 'react-hooks': reactHooks, 'react-refresh': reactRefresh },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      // These rules were added to the recommended preset in react-hooks 7.
+      // Existing effects and refs intentionally coordinate asynchronous map
+      // state and imperative MapLibre APIs, so keep their established usage
+      // compatible while adopting the plugin update.
+      'react-hooks/refs': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/use-memo': 'off',
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
     },
   },
