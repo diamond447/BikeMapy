@@ -1,0 +1,11 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>Assign category</h1>
+<form method="post">
+  {% csrf_token %}
+  <p><label>Route ID</label><br><input name="route_id" required></p>
+  <p><label>Category ID</label><br><input name="category_id" required></p>
+  <p><label>Reason</label><br><textarea name="reason" required></textarea></p>
+  <button type="submit">Assign category</button>
+</form>
+{% endblock %}

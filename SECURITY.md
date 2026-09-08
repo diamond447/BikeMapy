@@ -92,3 +92,15 @@ configured thresholds. A suppression is allowed only when the finding is a
 documented false positive or accepted, time-bounded risk; record the reason
 and expiry next to the suppression and obtain maintainer review. Never
 baseline a real credential or hide a finding to make a workflow green.
+
+### Client-side discovery state
+
+The discovery UI stores filters, the selected public route ID, and the
+viewport-only mode in `localStorage`. It deliberately does not store the map
+viewport: latitude, longitude, and bounds can represent sensitive geographic
+data, and CodeQL's `js/clear-text-storage-of-sensitive-data` query correctly
+guards browser-storage sinks. The current viewport is instead serialized in
+the shareable URL by `frontend/src/App.tsx`; that URL is the canonical way to
+restore a browse context across reloads or devices. No device geolocation,
+inferred starting location, authentication data, or secret is collected or
+written to browser storage.

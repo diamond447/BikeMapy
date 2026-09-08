@@ -94,6 +94,8 @@ jobs:
       POSTGRES_USER: bikemapy
       POSTGRES_PASSWORD: bikemapy
       DJANGO_DATABASE_ENGINE: django.contrib.gis.db.backends.postgis
+      DJANGO_CACHE_URL: redis://localhost:6379/1
+      RUN_REDIS_TEST: "1"
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/0
       PYTHONPATH: backend
@@ -106,7 +108,9 @@ jobs:
         with: { version: '0.9.26', enable-cache: true }
       - run: uv sync --locked --extra dev
       - run: uv run --locked --extra dev python backend/manage.py migrate --noinput
-      - name: Run PostGIS backend tests
+      # RUN_REDIS_TEST=1 and DJANGO_CACHE_URL above make the marked Redis
+      # limiter test run as part of this complete PostGIS test suite.
+      - name: Run PostGIS backend and Redis tests
         run: uv run --locked --extra dev pytest
       - name: Start Celery worker
         run: |
@@ -138,6 +142,14 @@ jobs:
       - run: pnpm exec tsc -b --pretty false
       - run: pnpm test
       - run: pnpm build
+        env:
+          VITE_PUBLIC_SITE_URL: http://localhost:5173
+          VITE_API_URL: http://localhost:8000
+          VITE_ENABLE_REPORTS: "false"
+      - name: Scan browser bundle for server credentials
+        run: python ../scripts/check_frontend_bundle.py dist --read-only --forbidden-value "bikemapy-build-secret-canary"
+      - name: Verify preview bundle is read-only
+        run: test -z "$(rg -o '/reports/' dist || true)"
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
       - name: Run browser interaction and evidence tests

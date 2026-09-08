@@ -6,10 +6,12 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from django.conf import settings
+from django.urls import reverse
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from apps.catalogue.models import Category, ForumPost, Route, RouteSource
+from apps.catalogue.models import Category, ForumPost, ModerationDecision, Route, RouteSource
 from apps.catalogue.spatial import _geojson
 
 
@@ -33,6 +35,8 @@ class SourceAttributionSerializer(serializers.ModelSerializer[RouteSource]):
     title = serializers.CharField(source="source_title", read_only=True)
     status = serializers.CharField(source="source_status", read_only=True)
     posts = ForumPostAttributionSerializer(many=True, read_only=True)
+    last_checked_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    last_successful_check_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
     class Meta:
         model = RouteSource
@@ -40,6 +44,8 @@ class SourceAttributionSerializer(serializers.ModelSerializer[RouteSource]):
             "mapy_url",
             "title",
             "status",
+            "last_checked_at",
+            "last_successful_check_at",
             "posts",
         )
 
@@ -51,6 +57,11 @@ class VariantSerializer(serializers.Serializer):
     similarity_score = serializers.DecimalField(
         max_digits=5, decimal_places=4, allow_null=True, required=False
     )
+
+
+class ElevationProfilePointSerializer(serializers.Serializer):
+    distance_m = serializers.FloatField()
+    elevation_m = serializers.FloatField()
 
 
 GEOJSON_GEOMETRY_SCHEMA = {
@@ -154,6 +165,9 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
     sources = serializers.SerializerMethodField()
     variants = serializers.SerializerMethodField()
     geometry = serializers.SerializerMethodField()
+    reviewed = serializers.SerializerMethodField()
+    elevation_profile = serializers.SerializerMethodField()
+    gpx_download_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Route
@@ -170,6 +184,9 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
             "sources",
             "variants",
             "geometry",
+            "reviewed",
+            "elevation_profile",
+            "gpx_download_url",
             "created_at",
             "updated_at",
         )
@@ -187,6 +204,42 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
         version = route.current_approved_version
         source = version.source if version is not None else None
         return source.source_status if source is not None else "unknown"
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_reviewed(self, route: Route) -> bool:
+        """Expose the badge only when all three explicit review checks pass."""
+
+        decisions = getattr(route, "public_review_decisions", None)
+        if decisions is None:
+            decisions = route.moderation_decisions.filter(
+                action=ModerationDecision.Action.REVIEW
+            ).order_by("-created_at", "-pk")
+        decision = next(iter(decisions), None)
+        if decision is None:
+            return False
+        criteria = decision.metadata or {}
+        return all(
+            criteria.get(name) is True
+            for name in ("technical_validity", "source_context", "content_suitability")
+        )
+
+    @extend_schema_field(ElevationProfilePointSerializer(many=True, allow_null=True))
+    def get_elevation_profile(self, route: Route) -> list[dict[str, float]] | None:
+        profile = getattr(route.current_approved_version, "elevation_profile", None)
+        return profile or None
+
+    @extend_schema_field(serializers.URLField(allow_null=True))
+    def get_gpx_download_url(self, route: Route) -> str | None:
+        """Never expose a download URL until legal redistribution is approved."""
+
+        if not getattr(settings, "GPX_REDISTRIBUTION_APPROVED", False):
+            return None
+        version = route.current_approved_version
+        if version is None or not version.original_gpx_storage_key:
+            return None
+        request = self.context.get("request")
+        path = reverse("public-route-gpx", kwargs={"route_id": route.pk})
+        return request.build_absolute_uri(path) if request else path
 
     def _route_sources(self, route: Route) -> list[RouteSource]:
         direct = list(getattr(route, "public_sources", route.sources.all()))

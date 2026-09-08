@@ -30,6 +30,12 @@ supplemented by anonymous aggregate counters for route-detail views, GPX
 download clicks, and original-source clicks. Visits remain the primary metric;
 the product will not use browser fingerprinting.
 
+The implementation keeps those product counters in day-bucketed, allow-listed
+records with no route, session, user, network address, user-agent, or arbitrary
+metadata. Cloudflare Web Analytics is configured only with its public site
+token; an empty token leaves the beacon unloaded in local development and
+previews.
+
 ## Product requirements
 
 ### Route discovery and ingestion
@@ -323,11 +329,20 @@ Privacy will use data minimization:
 
 - Rate limiting will use an HMAC-derived identifier in Redis for 24 hours; raw IP
   addresses are not stored in the application database.
-- Reverse-proxy access logs are retained for 14 days.
+- Production Docker logging keeps at most fourteen rotated files of 10 MiB per
+  service. This is a size/count cap rather than a 14-day period; elapsed
+  retention depends on traffic and is not currently known.
 - An optional report email is removed 90 days after the report closes.
 - Report text and its decision are retained for 12 months, then personal
   details are anonymized.
-- Admin audit data is retained for 12 months.
+- Admin audit data currently has no automatic expiry; a lawful retention and
+  deletion policy is a launch blocker.
+- Fetched BikeForum HTML is stored verbatim in `CrawlResponseCache.body` with
+  no implemented expiry or cleanup task. Its retention and removal from
+  database/backups are launch blockers.
+- Database and GPX backups retain their newest 30 complete host snapshots and
+  newest 90 encrypted laptop snapshots. These are counts, not elapsed-day
+  limits, so actual retention depends on scheduling and operator cleanup.
 - Denylist URLs are retained until an admin restores the entry.
 - No browser fingerprinting, marketing cookies, or non-essential analytics
   cookies are used in the MVP.

@@ -1,0 +1,8 @@
+{
+  "backup_id": "20260906T132000Z",
+  "created_at": "2026-09-06T13:20:00Z",
+  "database": "db-20260906T132000Z.dump",
+  "database_sha256": "eec61f995ab85aa45982f03021ae895d9e4d2adc7fbee35cb55f0957e6ca3c3f",
+  "gpx": "gpx-20260906T132000Z.tar.gz",
+  "gpx_sha256": "8c16bb81a5538a8c9a5763e7a6084baa4cf10506a5317766b72a187693afb386"
+}
