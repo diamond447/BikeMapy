@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .logging import LOGGING as LOGGING_CONFIG_VALUE
+from .observability import init_sentry
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
@@ -41,6 +44,7 @@ INSTALLED_APPS = [
     "apps.reports",
     "apps.accounts",
     "apps.api",
+    "apps.analytics",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
     # Host-side smoke checks can run without native GeoDjango libraries. The
@@ -125,6 +129,8 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+LOGGING_CONFIG = "logging.config.dictConfig"
+LOGGING = LOGGING_CONFIG_VALUE
 ROOT_STORAGE = BASE_DIR / "storage"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", str(ROOT_STORAGE / "media")))
 MEDIA_URL = "/media/"
@@ -158,6 +164,9 @@ REST_FRAMEWORK = {
         "user": os.getenv("API_USER_RATE", "600/minute"),
     },
 }
+# Analytics is deliberately protected by one coarse, non-identifying bucket;
+# unlike the generic API throttle it never derives a cache key from an IP.
+ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
 SPECTACULAR_SETTINGS = {
     "TITLE": "BikeMapy API",
     "DESCRIPTION": "Public, versioned read API for BikeMapy.",
@@ -187,6 +196,8 @@ else:
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+CELERY_WORKER_REDIRECT_STDOUTS = True
 CELERY_BEAT_SCHEDULE = {
     "bikeforum-incremental-daily": {
         "task": "bikemapy.ingestion.incremental_bikeforum_crawl",
@@ -201,6 +212,10 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": 86400,
     },
 }
+
+# Health monitoring treats a daily crawl as stale after this configurable
+# window. The separate endpoint is intended for an external uptime check.
+CRAWLER_FRESHNESS_MAX_AGE = int(os.getenv("CRAWLER_FRESHNESS_MAX_AGE", str(36 * 3600)))
 
 # Anonymous report protections and privacy retention.  The secret is never
 # written to a report; only HMAC-derived cache identifiers are used.
@@ -240,6 +255,10 @@ BIKEFORUM_ALLOWED_ORIGINS = [
     for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")
     if origin.strip()
 ]
+# The disposable launch harness sets this false because its synthetic source
+# URLs must never trigger requests to real Mapy hosts. Production must retain
+# the default and run the bounded source availability checks.
+BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
 BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)
 BIKEFORUM_LEASE_SECONDS = int(os.getenv("BIKEFORUM_LEASE_SECONDS", "600"))
 BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))
@@ -261,6 +280,17 @@ GPX_REDISTRIBUTION_APPROVED = env_bool("GPX_REDISTRIBUTION_APPROVED", False)
 # Direct Django deployments keep the streaming fallback. The production
 # Nginx stack enables the internal X-Accel-Redirect handoff.
 GPX_INTERNAL_REDIRECT = env_bool("GPX_INTERNAL_REDIRECT", False)
+
+# Sentry stores events according to the project retention setting. Keep the
+# application-side contract explicit and document the required 30-day Sentry
+# project policy in the operations runbook.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "production")
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
+SENTRY_RETENTION_DAYS = int(os.getenv("SENTRY_RETENTION_DAYS", "30"))
+if SENTRY_RETENTION_DAYS != 30:
+    raise ValueError("SENTRY_RETENTION_DAYS must remain exactly 30 days")
+init_sentry()
 
 # Spatial duplicate detection is intentionally precision-oriented.  Keep the
 # values configurable so benchmark results can tune policy without a schema

@@ -4,6 +4,29 @@
  */
 
 export interface paths {
+  '/api/v1/analytics/events/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * @description Record one allow-listed event without retaining request identifiers.
+     *
+     *     This endpoint is CSRF-exempt because it has no authenticated session and
+     *     its only side effect is an anonymous product counter.  The dedicated
+     *     global non-IP throttle still bounds accidental or automated bursts.
+     */
+    post: operations['v1_analytics_events_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/routes/': {
     parameters: {
       query?: never
@@ -125,6 +148,10 @@ export interface paths {
 export type webhooks = Record<string, never>
 export interface components {
   schemas: {
+    /** @description Accept only known event names and no other event metadata. */
+    AnalyticsEvent: {
+      event: components['schemas']['EventEnum']
+    }
     Category: {
       slug: string
       name: string
@@ -136,6 +163,13 @@ export interface components {
       /** Format: double */
       elevation_m: number
     }
+    /**
+     * @description * `route_detail_view` - Route-detail view
+     *     * `gpx_download_click` - GPX download click
+     *     * `original_source_click` - Original-source click
+     * @enum {string}
+     */
+    EventEnum: 'route_detail_view' | 'gpx_download_click' | 'original_source_click'
     ForumPostAttribution: {
       /** Format: uri */
       url: string
@@ -275,6 +309,30 @@ export interface components {
 }
 export type $defs = Record<string, never>
 export interface operations {
+  v1_analytics_events_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AnalyticsEvent']
+        'application/x-www-form-urlencoded': components['schemas']['AnalyticsEvent']
+        'multipart/form-data': components['schemas']['AnalyticsEvent']
+      }
+    }
+    responses: {
+      /** @description Event accepted for aggregation. */
+      202: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
   v1_routes_list: {
     parameters: {
       query?: {

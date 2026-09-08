@@ -36,6 +36,16 @@ latest review decision explicitly records all three boolean checks:
 
 It does not claim safety, current passability, or legal access.
 
+## Launch analytics
+
+The **Analytics counters** view is read-only and owner-only. It shows one
+day-bucketed total for each of the three allow-listed product events:
+route-detail views, GPX download clicks, and original-source clicks. These
+totals are not unique visitors; Cloudflare Web Analytics remains the primary
+visit metric. Do not use them to infer a visitor's route or identity. GPX
+downloads remain disabled while `GPX_REDISTRIBUTION_APPROVED=false`, so the
+download counter should remain zero at launch.
+
 ## Anonymous reports
 
 Reports are available at the route detail endpoint

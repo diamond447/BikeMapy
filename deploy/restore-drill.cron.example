@@ -1,0 +1,3 @@
+# Run on the production host's operator account after the daily backup.
+# The drill uses a disposable PostGIS container and never touches production volumes.
+30 3 * * 0 cd /srv/bikemapy && BACKUP_DIR=/srv/bikemapy/backup ./deploy/restore-drill.sh "$(ls -1t backup/manifest-*.json | head -n1 | sed -E 's#.*manifest-(.*)\.json#\1#')" >> /var/log/bikemapy-restore-drill.log 2>&1

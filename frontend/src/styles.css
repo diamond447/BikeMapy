@@ -28,6 +28,39 @@ a {
   overflow: hidden;
   position: relative;
 }
+.app-footer {
+  align-items: center;
+  background: rgba(247, 250, 242, 0.92);
+  bottom: 0;
+  color: #41675a;
+  display: flex;
+  flex-wrap: wrap;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.58rem;
+  gap: 7px 18px;
+  justify-content: center;
+  left: 0;
+  line-height: 1.4;
+  padding: 7px 56px;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  text-align: center;
+  z-index: 2;
+}
+.app-footer nav {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  pointer-events: auto;
+}
+.app-footer a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.app-footer-attribution {
+  pointer-events: auto;
+}
 .skip-link {
   background: #e7f24e;
   color: #162d28;
@@ -788,6 +821,14 @@ h1 {
 @media (max-width: 700px) {
   .topbar {
     padding: 18px 19px;
+  }
+  .app-footer {
+    bottom: auto;
+    left: 12px;
+    padding: 6px 8px;
+    right: 12px;
+    top: 64px;
+    z-index: 5;
   }
   .live-indicator {
     display: none;
