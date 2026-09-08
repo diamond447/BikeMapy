@@ -32,6 +32,7 @@ export default defineConfig(({ mode }) => {
   const siteUrl = normalizePublicSiteUrl(env.VITE_PUBLIC_SITE_URL)
   return {
     plugins: [react(), siteMetadataPlugin(siteUrl)],
+    optimizeDeps: { exclude: ['maplibre-gl'] },
     server: { port: 5173 },
     test: {
       environment: 'jsdom',
