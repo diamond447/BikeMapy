@@ -153,6 +153,19 @@ def test_gpx_download_uses_backend_origin_and_serves_only_existing_payload(
     assert b"<gpx />" in b"".join(content)
 
 
+def test_gpx_download_can_use_internal_proxy_handoff(public_route: Route, tmp_path: Path) -> None:
+    with override_settings(
+        GPX_REDISTRIBUTION_APPROVED=True,
+        GPX_INTERNAL_REDIRECT=True,
+        MEDIA_ROOT=tmp_path,
+    ):
+        default_storage.save("gpx/public-api-route.gpx", ContentFile(b"<gpx />"))
+        response = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
+    assert response.status_code == 200
+    assert response["X-Accel-Redirect"] == "/_protected_gpx/gpx/public-api-route.gpx"
+    assert response.content == b""
+
+
 def test_stable_uuid_survives_readable_slug_change(public_route: Route) -> None:
     original_id = public_route.pk
     public_route.slug = "new-readable-name"

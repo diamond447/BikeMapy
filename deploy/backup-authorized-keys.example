@@ -1,0 +1,6 @@
+# Place one line like this in ~bikemapy-backup/.ssh/authorized_keys on the
+# production host. Replace the key and directory; the account retains a valid
+# login shell for SSH command execution but has no interactive shell, sudo, or
+# write access. The forced command permits only the file list
+# and cat operations used by deploy/pull-backups.sh.
+restrict,command="/usr/local/sbin/bikemapy-backup-readonly" ssh-ed25519 AAAA... laptop-backup

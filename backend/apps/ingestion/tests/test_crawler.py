@@ -177,6 +177,14 @@ class FailingFetcher(FakeFetcher):
         return super().fetch(url)
 
 
+class InterruptedFetcher(FakeFetcher):
+    """Simulate a worker process stopping while a frontier item is leased."""
+
+    def fetch(self, url: str) -> FetchedPage:
+        self.urls.append(url)
+        raise KeyboardInterrupt
+
+
 @override_settings(
     BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"], BIKEFORUM_DNS_CHECK=False
 )
@@ -196,6 +204,53 @@ def test_crawl_advances_checkpoint_and_second_run_resumes() -> None:
     assert second["pages"] == 2, second
     assert fetcher.urls == [THREAD_URL, "https://bikeforum.example/t/42?page=2"]
     assert CrawlTask.objects.filter(status=CrawlTaskStatus.COMPLETED).count() == 1
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"],
+    BIKEFORUM_DNS_CHECK=False,
+    BIKEFORUM_LEASE_SECONDS=60,
+)
+def test_interrupted_backfill_resumes_expired_frontier_without_duplicate_import() -> None:
+    single_page = FIXTURE.read_text().replace('href="/t/42?page=2"', 'href=""')
+    interrupted = InterruptedFetcher({THREAD_URL: single_page})
+    with pytest.raises(KeyboardInterrupt):
+        run_crawl(
+            start_url=THREAD_URL,
+            max_pages=1,
+            kind=CrawlTask.Kind.BACKFILL,
+            stream="backfill-interruption",
+            fetcher=interrupted,
+            source_checker=NoopSourceChecker(),
+        )
+
+    checkpoint = CrawlCheckpoint.objects.get(stream="backfill-interruption")
+    work = CrawlPageWork.objects.get(url=THREAD_URL)
+    task = CrawlTask.objects.get(stream="backfill-interruption")
+    assert checkpoint.next_url == THREAD_URL
+    assert work.status == CrawlPageStatus.PROCESSING
+    assert task.status == CrawlTaskStatus.RUNNING
+
+    # A restarted worker can reclaim the durable lease after its bounded lease
+    # expires, exactly as it would after a process or host interruption.
+    expired = timezone.now() - timedelta(seconds=1)
+    CrawlCheckpoint.objects.filter(pk=checkpoint.pk).update(lease_until=expired)
+    CrawlPageWork.objects.filter(pk=work.pk).update(lease_until=expired)
+    CrawlTask.objects.filter(pk=task.pk).update(lease_until=expired)
+    resumed = run_crawl(
+        start_url=THREAD_URL,
+        max_pages=1,
+        kind=CrawlTask.Kind.BACKFILL,
+        stream="backfill-interruption",
+        fetcher=FakeFetcher({THREAD_URL: single_page}),
+        source_checker=NoopSourceChecker(),
+    )
+
+    assert resumed["pages"] == 1
+    assert resumed["frontier_remaining"] is False
+    assert ForumThread.objects.count() == 1
+    assert ForumPost.objects.count() == 1
+    assert RouteSource.objects.count() == 1
 
 
 @override_settings(

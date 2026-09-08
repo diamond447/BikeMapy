@@ -728,13 +728,29 @@ class ModerationDecision(models.Model):
     class Action(models.TextChoices):
         REVIEW = "review", "Reviewed"
         PUBLISH = "publish", "Published automatically"
+        SELECT_VERSION = "select_version", "Selected approved version"
         KEEP_BOTH = "keep_both", "Keep both"
         MERGE_SOURCES = "merge_sources", "Merge sources"
         QUARANTINE = "quarantine", "Quarantine"
         RESTORE = "restore", "Restore"
         REMOVE = "remove", "Remove"
+        SOURCE_UNAVAILABLE = "source_unavailable", "Source unavailable"
+        SOURCE_AVAILABLE = "source_available", "Source available"
+        DENYLIST_RESTORE = "denylist_restore", "Restore denylist entry"
+        ROUTE_METADATA = "route_metadata", "Update route metadata"
+        CATEGORY_CREATE = "category_create", "Create category"
+        CATEGORY_UPDATE = "category_update", "Update category"
+        CATEGORY_DELETE = "category_delete", "Delete category"
+        CATEGORY_ASSIGN = "category_assign", "Assign category"
+        CATEGORY_UNASSIGN = "category_unassign", "Remove category"
 
-    route = models.ForeignKey(Route, on_delete=models.PROTECT, related_name="moderation_decisions")
+    route = models.ForeignKey(
+        Route,
+        on_delete=models.PROTECT,
+        related_name="moderation_decisions",
+        blank=True,
+        null=True,
+    )
     version = models.ForeignKey(
         RouteVersion,
         on_delete=models.PROTECT,

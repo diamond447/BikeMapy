@@ -1,0 +1,103 @@
+name: bikemapy
+
+services:
+  backend:
+    image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
+    env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
+    command: uv run --locked --no-dev gunicorn config.wsgi:application --logger-class config.gunicorn.JsonGunicornLogger --bind 0.0.0.0:8000 --workers ${WEB_WORKERS:-3} --error-logfile -
+    volumes:
+      - gpx_data:/app/storage
+    networks:
+      default: {}
+      proxy:
+        ipv4_address: 172.30.0.3
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "uv", "run", "--locked", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready/', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: &default-log-rotation
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "14"
+
+  worker:
+    image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
+    env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
+    command: uv run --locked --no-dev celery -A config worker --loglevel=INFO
+    volumes:
+      - gpx_data:/app/storage
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    logging: *default-log-rotation
+
+  beat:
+    image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
+    env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
+    command: uv run --locked --no-dev celery -A config beat --loglevel=INFO
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    logging: *default-log-rotation
+
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in the runtime environment}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in the runtime environment}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the runtime environment}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../backup:/backup
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging: *default-log-rotation
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    logging: *default-log-rotation
+
+  proxy:
+    image: nginx:1.29-alpine
+    entrypoint: ["/bin/sh", "/usr/local/bin/nginx-json-entrypoint.sh"]
+    command: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "127.0.0.1:${PROXY_PORT:-8080}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./proxy_params:/etc/nginx/proxy_params:ro
+      - ./nginx-json-entrypoint.sh:/usr/local/bin/nginx-json-entrypoint.sh:ro
+      - gpx_data:/app/storage:ro
+    networks:
+      proxy:
+        ipv4_address: 172.30.0.2
+    depends_on:
+      backend: { condition: service_healthy }
+    logging: *default-log-rotation
+
+volumes:
+  gpx_data:
+  postgres_data:
+  redis_data:
+
+networks:
+  proxy:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
