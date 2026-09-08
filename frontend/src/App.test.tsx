@@ -17,6 +17,11 @@ const { MockMap } = vi.hoisted(() => {
       if (event === 'load') setTimeout(handler, 0)
       return this
     }
+    once(event: string, handler: (event?: never) => void) {
+      this.on(event, handler)
+      if (event === 'idle') setTimeout(handler, 0)
+      return this
+    }
     addControl() {
       return this
     }
