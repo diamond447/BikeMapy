@@ -4,6 +4,7 @@ import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 import type { components } from './api/generated/schema'
+import { trackProductEvent } from './analytics'
 import { apiClient } from './api/client'
 import { DEFAULT_VIEW, MAP_PROVIDER } from './mapProvider'
 import { normalizePublicSiteUrl, routeUrl } from './siteMetadata'
@@ -56,6 +57,7 @@ declare global {
 
 const LANGUAGE_KEY = 'bikemapy:language'
 const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_URL)
+const LEGAL_DOCUMENTS_URL = 'https://github.com/diamond447/BikeMapy/blob/main/docs'
 // Cloudflare preview builds set this to false. Keeping the guard at build time
 // means a preview contains only the public read API and has no report action.
 const REPORTS_ENABLED = import.meta.env.VITE_ENABLE_REPORTS !== 'false'
@@ -179,6 +181,12 @@ const translations = {
     cancel: 'Cancel',
     gpxDownload: 'Download GPX',
     gpxUnavailable: 'GPX download is unavailable until redistribution is legally approved.',
+    footer: 'BikeMapy legal and attribution',
+    terms: 'Terms',
+    privacy: 'Privacy',
+    removalPolicy: 'Removal Policy',
+    mapAttribution: 'Map data',
+    independentProject: 'Independent project; no affiliation with Mapy.com.',
   },
   cs: {
     siteTitle: 'BikeMapy — trasy se zdrojem',
@@ -296,6 +304,12 @@ const translations = {
     cancel: 'Zrušit',
     gpxDownload: 'Stáhnout GPX',
     gpxUnavailable: 'Stažení GPX není dostupné, dokud nebude právně schváleno další šíření.',
+    footer: 'Právní informace a atribuce BikeMapy',
+    terms: 'Podmínky',
+    privacy: 'Soukromí',
+    removalPolicy: 'Zásady odstranění',
+    mapAttribution: 'Mapová data',
+    independentProject: 'Nezávislý projekt; není spojený s Mapy.com.',
   },
 } as const
 type Copy = (typeof translations)[Language]
@@ -671,6 +685,7 @@ function App() {
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [mobilePanelHeight, setMobilePanelHeight] = useState<number | null>(null)
   const [mobileDetailHeight, setMobileDetailHeight] = useState<number | null>(null)
+  const trackedRouteRef = useRef<string | null>(null)
   const cameraSyncRef = useRef(false)
   const mapNode = useRef<HTMLDivElement>(null)
   const panelNode = useRef<HTMLElement>(null)
@@ -706,6 +721,12 @@ function App() {
     ? routeUrl(PUBLIC_SITE_URL, selectedRoute.id, selectedRoute.slug)
     : ''
   const turnstileConfigured = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY)
+
+  useEffect(() => {
+    if (!selectedId || trackedRouteRef.current === selectedId) return
+    trackedRouteRef.current = selectedId
+    trackProductEvent('route_detail_view')
+  }, [selectedId])
 
   useEffect(() => {
     if (!REPORTS_ENABLED || !reportOpen || !turnstileNode.current) return
@@ -806,6 +827,7 @@ function App() {
   }, [copy.intro, copy.siteDescription, copy.siteTitle, language, permanentRouteUrl, selectedRoute])
   const selectRoute = useCallback(
     (id: string | null, push = true) => {
+      if (!id) trackedRouteRef.current = null
       setSelectedId(id)
       setOverlap(id ? [id] : [])
       if (id && window.innerWidth <= 700) {
@@ -1586,7 +1608,12 @@ function App() {
                   </button>
                 )}
                 {selectedRoute.gpx_download_url ? (
-                  <a className="detail-link" href={selectedRoute.gpx_download_url} download>
+                  <a
+                    className="detail-link"
+                    href={selectedRoute.gpx_download_url}
+                    download
+                    onClick={() => trackProductEvent('gpx_download_click')}
+                  >
                     {copy.gpxDownload}
                   </a>
                 ) : (
@@ -1614,6 +1641,7 @@ function App() {
                           target="_blank"
                           rel="noreferrer"
                           aria-label={copy.mapyLink}
+                          onClick={() => trackProductEvent('original_source_click')}
                         >
                           {source.title || copy.mapyLink}
                         </a>
@@ -1644,6 +1672,7 @@ function App() {
                               target="_blank"
                               rel="noreferrer"
                               aria-label={copy.sourceLink(post.thread_title)}
+                              onClick={() => trackProductEvent('original_source_click')}
                             >
                               {post.thread_title || post.url}
                             </a>
@@ -1835,6 +1864,30 @@ function App() {
           </section>
         </div>
       )}
+      <footer className="app-footer" aria-label={copy.footer}>
+        <span>{copy.independentProject}</span>
+        <nav aria-label={copy.footer}>
+          <a href={`${LEGAL_DOCUMENTS_URL}/terms.md`} target="_blank" rel="noreferrer">
+            {copy.terms}
+          </a>
+          <a href={`${LEGAL_DOCUMENTS_URL}/privacy.md`} target="_blank" rel="noreferrer">
+            {copy.privacy}
+          </a>
+          <a href={`${LEGAL_DOCUMENTS_URL}/removal-policy.md`} target="_blank" rel="noreferrer">
+            {copy.removalPolicy}
+          </a>
+        </nav>
+        <span className="app-footer-attribution">
+          {copy.mapAttribution}:{' '}
+          <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">
+            OpenFreeMap
+          </a>{' '}
+          ·{' '}
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
+            OpenStreetMap contributors
+          </a>
+        </span>
+      </footer>
     </main>
   )
 }

@@ -117,6 +117,9 @@ settings through its environment.
 
 Anonymous reporting also requires `REPORT_TURNSTILE_SECRET_KEY` and the public
 frontend `VITE_TURNSTILE_SITE_KEY` for the Cloudflare challenge.
+Cloudflare Web Analytics is optional locally; set the public
+`VITE_CF_WEB_ANALYTICS_TOKEN` only when you intentionally want the cookie-free
+visit beacon. Leave it empty for ordinary development and previews.
 `REPORT_RATE_LIMIT_HMAC_SECRET` should be a separate deployment secret; when
 omitted, Django's secret key is used as a safe local fallback. The defaults
 allow three reports per hour and ten per day. The Celery beat service runs
