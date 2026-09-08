@@ -2,6 +2,10 @@
 
 import os
 from pathlib import Path
+from typing import Any
+
+from .logging import LOGGING as LOGGING_CONFIG_VALUE
+from .observability import init_sentry
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -25,16 +29,22 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     "django.contrib.sessions",
     "django.contrib.messages",
+    "django.contrib.sites",
     "django.contrib.staticfiles",
     "corsheaders",
     "rest_framework",
     "drf_spectacular",
+    "allauth",
+    "allauth.account",
+    "allauth.socialaccount",
+    "allauth.socialaccount.providers.github",
     "apps.catalogue",
     "apps.ingestion",
     "apps.moderation",
     "apps.reports",
     "apps.accounts",
     "apps.api",
+    "apps.analytics",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
     # Host-side smoke checks can run without native GeoDjango libraries. The
@@ -44,15 +54,45 @@ if DATABASE_ENGINE == "django.db.backends.sqlite3":
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    "config.middleware.PreviewReadOnlyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "allauth.account.middleware.AccountMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
+SITE_ID = 1
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "allauth.account.auth_backends.AuthenticationBackend",
+]
+LOGIN_REDIRECT_URL = "/admin/"
+SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
+ACCOUNT_EMAIL_VERIFICATION = "none"
+SOCIALACCOUNT_PROVIDERS: dict[str, dict[str, Any]] = {
+    "github": {
+        "SCOPE": ["read:user"],
+    }
+}
+GITHUB_OAUTH_CLIENT_ID = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
+GITHUB_OAUTH_CLIENT_SECRET = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
+if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
+    SOCIALACCOUNT_PROVIDERS["github"]["APP"] = {
+        "client_id": GITHUB_OAUTH_CLIENT_ID,
+        "secret": GITHUB_OAUTH_CLIENT_SECRET,
+    }
+
+# Authorization uses GitHub's immutable numeric account ID.  Keep this empty
+# by default so a deployment must explicitly opt in to owner administration.
+GITHUB_OWNER_IDS = frozenset(
+    value.strip()
+    for value in os.getenv("GITHUB_OWNER_IDS", "").split(",")
+    if value.strip().isdigit()
+)
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -89,6 +129,8 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+LOGGING_CONFIG = "logging.config.dictConfig"
+LOGGING = LOGGING_CONFIG_VALUE
 ROOT_STORAGE = BASE_DIR / "storage"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", str(ROOT_STORAGE / "media")))
 MEDIA_URL = "/media/"
@@ -98,6 +140,15 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
     if origin
 ]
+READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
+    "READ_ONLY_PREVIEW_ORIGIN_REGEX",
+    r"\Ahttps://([a-z0-9-]+\.)+bikemapy\.pages\.dev\Z",
+)
+# GET requests from dynamic Pages previews need CORS, while the middleware
+# above rejects every state-changing request from the same origin pattern.
+CORS_ALLOWED_ORIGIN_REGEXES = [READ_ONLY_PREVIEW_ORIGIN_REGEX]
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = env_bool("USE_X_FORWARDED_HOST", False)
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
@@ -113,6 +164,9 @@ REST_FRAMEWORK = {
         "user": os.getenv("API_USER_RATE", "600/minute"),
     },
 }
+# Analytics is deliberately protected by one coarse, non-identifying bucket;
+# unlike the generic API throttle it never derives a cache key from an IP.
+ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
 SPECTACULAR_SETTINGS = {
     "TITLE": "BikeMapy API",
     "DESCRIPTION": "Public, versioned read API for BikeMapy.",
@@ -142,6 +196,8 @@ else:
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+CELERY_WORKER_REDIRECT_STDOUTS = True
 CELERY_BEAT_SCHEDULE = {
     "bikeforum-incremental-daily": {
         "task": "bikemapy.ingestion.incremental_bikeforum_crawl",
@@ -151,7 +207,35 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.ingestion.retry_payload_deletions",
         "schedule": 900,
     },
+    "retain-closed-reports": {
+        "task": "bikemapy.reports.retain_closed_reports",
+        "schedule": 86400,
+    },
 }
+
+# Health monitoring treats a daily crawl as stale after this configurable
+# window. The separate endpoint is intended for an external uptime check.
+CRAWLER_FRESHNESS_MAX_AGE = int(os.getenv("CRAWLER_FRESHNESS_MAX_AGE", str(36 * 3600)))
+
+# Anonymous report protections and privacy retention.  The secret is never
+# written to a report; only HMAC-derived cache identifiers are used.
+REPORT_TURNSTILE_SECRET_KEY = os.getenv("REPORT_TURNSTILE_SECRET_KEY", "")
+REPORT_TURNSTILE_VERIFY_URL = os.getenv(
+    "REPORT_TURNSTILE_VERIFY_URL", "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+)
+REPORT_TURNSTILE_TIMEOUT = float(os.getenv("REPORT_TURNSTILE_TIMEOUT", "5"))
+REPORT_RATE_LIMIT_HMAC_SECRET = os.getenv("REPORT_RATE_LIMIT_HMAC_SECRET", "")
+REPORT_RATE_LIMIT_HOURLY = int(os.getenv("REPORT_RATE_LIMIT_HOURLY", "3"))
+REPORT_RATE_LIMIT_DAILY = int(os.getenv("REPORT_RATE_LIMIT_DAILY", "10"))
+REPORT_CLIENT_IP_MODE = os.getenv("REPORT_CLIENT_IP_MODE", "direct").lower()
+REPORT_TRUSTED_PROXY_CIDRS = tuple(
+    value.strip()
+    for value in os.getenv("REPORT_TRUSTED_PROXY_CIDRS", "").split(",")
+    if value.strip()
+)
+REPORT_DUPLICATE_WINDOW = int(os.getenv("REPORT_DUPLICATE_WINDOW", str(24 * 3600)))
+REPORT_EMAIL_RETENTION = int(os.getenv("REPORT_EMAIL_RETENTION", str(90 * 86400)))
+REPORT_DETAILS_RETENTION = int(os.getenv("REPORT_DETAILS_RETENTION", str(365 * 86400)))
 
 # Crawl defaults are intentionally conservative.  A deployment can tune them
 # without changing code, while the identifiable UA remains explicit.
@@ -171,6 +255,10 @@ BIKEFORUM_ALLOWED_ORIGINS = [
     for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")
     if origin.strip()
 ]
+# The disposable launch harness sets this false because its synthetic source
+# URLs must never trigger requests to real Mapy hosts. Production must retain
+# the default and run the bounded source availability checks.
+BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
 BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)
 BIKEFORUM_LEASE_SECONDS = int(os.getenv("BIKEFORUM_LEASE_SECONDS", "600"))
 BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))
@@ -186,6 +274,23 @@ GPX_BACKOFF = float(os.getenv("GPX_BACKOFF", "0.5"))
 GPX_MAX_BYTES = int(os.getenv("GPX_MAX_BYTES", str(10 * 1024 * 1024)))
 GPX_MAX_POINTS = int(os.getenv("GPX_MAX_POINTS", "200000"))
 GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)
+# Legal/terms review is an explicit deployment gate. Keep downloads off by
+# default even when an imported payload remains in local storage.
+GPX_REDISTRIBUTION_APPROVED = env_bool("GPX_REDISTRIBUTION_APPROVED", False)
+# Direct Django deployments keep the streaming fallback. The production
+# Nginx stack enables the internal X-Accel-Redirect handoff.
+GPX_INTERNAL_REDIRECT = env_bool("GPX_INTERNAL_REDIRECT", False)
+
+# Sentry stores events according to the project retention setting. Keep the
+# application-side contract explicit and document the required 30-day Sentry
+# project policy in the operations runbook.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "production")
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
+SENTRY_RETENTION_DAYS = int(os.getenv("SENTRY_RETENTION_DAYS", "30"))
+if SENTRY_RETENTION_DAYS != 30:
+    raise ValueError("SENTRY_RETENTION_DAYS must remain exactly 30 days")
+init_sentry()
 
 # Spatial duplicate detection is intentionally precision-oriented.  Keep the
 # values configurable so benchmark results can tune policy without a schema
