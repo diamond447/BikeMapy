@@ -71,7 +71,13 @@ vi.mock('maplibre-gl', () => ({
 
 import type { components } from './api/generated/schema'
 import { apiClient } from './api/client'
-import App, { geometryBounds, geometryCoordinates, parseState, writeUrl } from './App'
+import App, {
+  categoriesEnabled,
+  geometryBounds,
+  geometryCoordinates,
+  parseState,
+  writeUrl,
+} from './App'
 
 const route: components['schemas']['Route'] = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -88,14 +94,15 @@ const route: components['schemas']['Route'] = {
       mapy_url: 'https://mapy.com/s/south-ridge',
       title: 'South ridge on Mapy.com',
       status: 'verified',
-      last_checked_at: null,
-      last_successful_check_at: null,
+      last_checked_at: '2026-02-01T00:00:00Z',
+      last_successful_check_at: '2026-02-02T00:00:00Z',
       posts: [
         {
           url: 'https://bikeforum.example/thread/route#post-1',
           thread_title: 'South ridge source discussion',
           thread_url: 'https://bikeforum.example/thread/route',
           author: null,
+          posted_at: '2026-01-15T00:00:00Z',
         },
       ],
     },
@@ -461,7 +468,7 @@ describe('BikeMapy route discovery', () => {
     render(<App />)
     await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
     await waitFor(() => expect(MockMap.last?.fitBounds).toHaveBeenCalled())
-    const sheetToggle = screen.getByRole('button', { name: /show routes/i })
+    const sheetToggle = screen.getByRole('button', { name: /hide routes/i })
     expect(sheetToggle).toBeDisabled()
     const collapsedCall = MockMap.last?.fitBounds.mock.calls.at(-1)
     expect(collapsedCall?.[1].padding.bottom).toBe(42 + 150 + 24)
@@ -470,7 +477,7 @@ describe('BikeMapy route discovery', () => {
     await user.click(screen.getByRole('button', { name: /close route details/i }))
     expect(screen.getByRole('button', { name: /show routes/i })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: /show routes/i }))
-    expect(screen.getByRole('button', { name: /hide routes/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /expand routes/i })).toBeInTheDocument()
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 667 })
     await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
     await waitFor(() => {
@@ -537,6 +544,42 @@ describe('BikeMapy route discovery', () => {
     expect(screen.getByRole('button', { name: /show routes/i })).toBeInTheDocument()
   })
 
+  it('keeps keyboard hover and selection indicators synchronized with the map', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    const card = await screen.findByRole('button', { name: /south ridge loop/i })
+    await user.hover(card)
+    expect(card).toHaveClass('is-hovered')
+    expect(document.querySelector('.map-canvas')).toHaveAttribute('data-hovered-route', route.id)
+    await user.unhover(card)
+    expect(card).not.toHaveClass('is-hovered')
+    await user.click(card)
+    expect(card).toHaveClass('is-selected')
+    expect(card).toHaveAttribute('aria-current', 'true')
+    expect(card.querySelector('.route-card-marker')).toHaveTextContent('◆')
+  })
+
+  it('offers collapsed, half, and full mobile sheet positions', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const originalWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const user = userEvent.setup()
+    render(<App />)
+    const sheetToggle = screen.getByRole('button', { name: /show routes/i })
+    expect(screen.getByTestId('sheet-position')).toHaveAttribute('data-position', 'collapsed')
+    await user.click(sheetToggle)
+    expect(screen.getByTestId('sheet-position')).toHaveAttribute('data-position', 'half')
+    expect(screen.getByRole('button', { name: /expand routes/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /expand routes/i }))
+    expect(screen.getByTestId('sheet-position')).toHaveAttribute('data-position', 'full')
+    await user.click(screen.getByRole('button', { name: /hide routes/i }))
+    expect(screen.getByTestId('sheet-position')).toHaveAttribute('data-position', 'collapsed')
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
+  })
+
   it('covers numeric filters, history navigation, and retry', async () => {
     vi.restoreAllMocks()
     mockApi(true)
@@ -546,13 +589,56 @@ describe('BikeMapy route discovery', () => {
     await user.type(screen.getByLabelText('Distance to (m)'), '80000')
     await user.type(screen.getByLabelText('Climb from (m)'), '100')
     await user.type(screen.getByLabelText('Climb to (m)'), '1000')
-    await user.type(screen.getByLabelText('Category'), 'gravel')
-    expect(window.location.search).toContain('category=gravel')
+    expect(screen.queryByLabelText('Category')).not.toBeInTheDocument()
     window.dispatchEvent(new PopStateEvent('popstate'))
     vi.restoreAllMocks()
     mockApi()
     render(<App />)
     await user.click(await screen.findByRole('button', { name: /^retry$/i }))
+  })
+
+  it('keeps category UI disabled by default and enables it from the build flag', async () => {
+    expect(categoriesEnabled()).toBe(false)
+    expect(screen.queryByLabelText('Category')).not.toBeInTheDocument()
+    vi.stubEnv('VITE_ENABLE_CATEGORIES', 'true')
+    expect(categoriesEnabled()).toBe(true)
+    vi.restoreAllMocks()
+    mockApi(true)
+    render(<App />)
+    expect(await screen.findByLabelText('Category')).toBeInTheDocument()
+    expect(screen.getAllByText('Gravel').length).toBeGreaterThan(0)
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument()
+    vi.unstubAllEnvs()
+  })
+
+  it('does not send a parsed category to APIs while category support is disabled', async () => {
+    window.history.replaceState({}, '', '/?category=gravel')
+    vi.restoreAllMocks()
+    const api = mockApi(true)
+    render(<App />)
+    await waitFor(() => expect(api).toHaveBeenCalled())
+    expect(api.mock.calls.every((call) => !JSON.stringify(call).includes('gravel'))).toBe(true)
+    window.history.pushState({}, '', '/?category=gravel&author=Jana')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await waitFor(() => expect(api.mock.calls.length).toBeGreaterThan(2))
+    expect(api.mock.calls.every((call) => !JSON.stringify(call).includes('gravel'))).toBe(true)
+  })
+
+  it('keeps route detail content in the accessible atlas order', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    const detail = await screen.findByRole('region', { name: /selected route/i }).catch(() => null)
+    const section = detail ?? document.querySelector('.route-detail')
+    expect(section).toBeTruthy()
+    const text = section?.textContent ?? ''
+    expect(text.indexOf('South ridge loop')).toBeLessThan(text.indexOf('Distance'))
+    expect(text.indexOf('Distance')).toBeLessThan(text.indexOf('Elevation profile'))
+    expect(text.indexOf('Elevation profile')).toBeLessThan(text.indexOf('BikeForum sources'))
+    expect(text.indexOf('BikeForum sources')).toBeLessThan(text.indexOf('Share route'))
+    expect(text.indexOf('Share route')).toBeLessThan(text.indexOf('Report a problem'))
   })
 
   it('walks nested route geometry and bounds', () => {
