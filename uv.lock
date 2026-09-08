@@ -117,7 +117,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.15,<2" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.2,<5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<9" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<10" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6,<7" },
     { name = "pytest-django", marker = "extra == 'dev'", specifier = ">=4.11,<5" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11,<0.12" },
