@@ -127,6 +127,11 @@ The operator must choose the exact image before each release. From the host,
 after copying `deploy/.env.production.example` to `deploy/.env.production` and
 editing every placeholder:
 
+Keep the `backend` hostname in `DJANGO_ALLOWED_HOSTS`. The production Compose
+readiness probe calls `http://backend:8000/health/ready/` over the internal
+network; with `DJANGO_DEBUG=false`, removing that internal hostname makes the
+backend unhealthy even when the public `PUBLIC_HOST` is correct.
+
 ```sh
 export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
 export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<selected-digest>"

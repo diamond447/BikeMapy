@@ -15,7 +15,9 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "uv", "run", "--locked", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready/', timeout=2)"]
+      # Keep `backend` in DJANGO_ALLOWED_HOSTS: DEBUG=False rejects this
+      # internal service hostname even though the public host is configured.
+      test: ["CMD", "uv", "run", "--locked", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://backend:8000/health/ready/', timeout=2)"]
       interval: 10s
       timeout: 5s
       retries: 12
