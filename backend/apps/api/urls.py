@@ -1,5 +1,6 @@
 from django.urls import path
 
+from apps.analytics.api import AnalyticsEventView
 from apps.reports.api import RouteReportView
 
 from .views import api_root
@@ -13,6 +14,7 @@ from .views_routes import (
 
 urlpatterns = [
     path("", api_root, name="api-root"),
+    path("analytics/events/", AnalyticsEventView.as_view(), name="analytics-events"),
     path("routes/", RouteListView.as_view(), name="public-route-list"),
     path("routes/viewport/", ViewportRouteView.as_view(), name="public-route-viewport"),
     path("routes/<uuid:route_id>/", RouteDetailView.as_view(), name="public-route-detail"),

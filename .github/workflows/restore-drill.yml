@@ -1,0 +1,81 @@
+name: Non-production restore drill
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 3 * * 0"
+
+permissions:
+  contents: read
+
+jobs:
+  restore-drill:
+    name: Restore a disposable PostGIS snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build a representative non-production snapshot
+        env:
+          BACKUP_ID: "20260101T030000Z"
+        run: |
+          set -Eeuo pipefail
+          mkdir -p backup gpx-drill
+          docker run -d --name bikemapy-drill-source \
+            -e POSTGRES_DB=bikemapy -e POSTGRES_USER=bikemapy -e POSTGRES_PASSWORD=drill-only \
+            postgis/postgis:17-3.5 >/dev/null
+          trap 'docker rm -f bikemapy-drill-source >/dev/null 2>&1 || true' EXIT
+          database_ready=0
+          for attempt in {1..60}; do
+            if docker exec bikemapy-drill-source psql -h 127.0.0.1 -U bikemapy -d bikemapy \
+              -c 'SELECT 1' >/dev/null 2>&1; then
+              database_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$database_ready" -ne 1 ]; then
+            echo "Source PostGIS database did not become queryable over TCP" >&2
+            docker logs bikemapy-drill-source >&2 || true
+            exit 1
+          fi
+          docker exec bikemapy-drill-source psql -U bikemapy -d bikemapy -v ON_ERROR_STOP=1 \
+            -c 'CREATE TABLE catalogue_route (id bigint PRIMARY KEY); INSERT INTO catalogue_route VALUES (1), (2);'
+          docker exec bikemapy-drill-source pg_dump -U bikemapy -Fc bikemapy > "backup/db-${BACKUP_ID}.dump"
+          printf 'sample gpx payload\n' > gpx-drill/sample.gpx
+          tar czf "backup/gpx-${BACKUP_ID}.tar.gz" -C gpx-drill .
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          backup_id = os.environ["BACKUP_ID"]
+          root = Path("backup")
+          db = root / f"db-{backup_id}.dump"
+          gpx = root / f"gpx-{backup_id}.tar.gz"
+          manifest = {
+              "backup_id": backup_id,
+              "created_at": "2026-01-01T03:00:00Z",
+              "database": db.name,
+              "database_sha256": hashlib.sha256(db.read_bytes()).hexdigest(),
+              "gpx": gpx.name,
+              "gpx_sha256": hashlib.sha256(gpx.read_bytes()).hexdigest(),
+          }
+          (root / f"manifest-{backup_id}.json").write_text(json.dumps(manifest) + "\n")
+          PY
+      - name: Execute restore drill and produce evidence
+        run: |
+          set -Eeuo pipefail
+          {
+            date -u +%Y-%m-%dT%H:%M:%SZ
+            echo "BACKUP_DIR=backup POSTGRES_USER=bikemapy ./deploy/restore-drill.sh 20260101T030000Z"
+            BACKUP_DIR=backup POSTGRES_USER=bikemapy ./deploy/restore-drill.sh 20260101T030000Z
+            date -u +%Y-%m-%dT%H:%M:%SZ
+          } | tee backup/restore-drill-command.log
+      - name: Upload restore evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: restore-drill-evidence
+          path: |
+            backup/manifest-*.json
+            backup/restore-drill-*.json
+            backup/restore-drill-command.log
+          if-no-files-found: error
