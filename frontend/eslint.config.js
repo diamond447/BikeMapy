@@ -17,4 +17,14 @@ export default tseslint.config(
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
     },
   },
+  {
+    files: ['src/App.tsx'],
+    rules: {
+      // App.tsx intentionally coordinates asynchronous map state and
+      // imperative MapLibre APIs through refs and effects.
+      'react-hooks/refs': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/use-memo': 'off',
+    },
+  },
 )
