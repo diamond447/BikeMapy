@@ -63,6 +63,10 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+if not DEBUG:
+    # Static files are served by the application only in the production image;
+    # local development keeps Django's runserver static-file behavior.
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "config.urls"
 SITE_ID = 1
@@ -126,14 +130,24 @@ LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Europe/Prague"
 USE_I18N = True
 USE_TZ = True
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
-LOGGING_CONFIG = "logging.config.dictConfig"
-LOGGING = LOGGING_CONFIG_VALUE
 ROOT_STORAGE = BASE_DIR / "storage"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", str(ROOT_STORAGE / "media")))
 MEDIA_URL = "/media/"
+if not DEBUG:
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {"location": str(MEDIA_ROOT), "base_url": MEDIA_URL},
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+LOGGING_CONFIG = "logging.config.dictConfig"
+LOGGING = LOGGING_CONFIG_VALUE
 
 CORS_ALLOWED_ORIGINS = [
     origin

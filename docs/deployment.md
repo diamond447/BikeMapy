@@ -25,7 +25,10 @@ the original artifact intact. Use the recorded digest (`image@sha256:…`) for
 deployment; do not deploy a floating tag such as `latest`. The provenance
 artifact and OCI revision label make the selected build auditable.
 
-The image contains application code and locked runtime dependencies only.
+The image contains application code, locked runtime dependencies, and the
+collected Django static assets under `/app/staticfiles`. In production,
+WhiteNoise serves that immutable asset set through the Nginx `/static/` proxy;
+the development Compose stack leaves static serving to Django's runserver.
 Secrets, database data, GPX files, OAuth credentials, and deployment settings
 remain in the host environment or Docker volumes. Keep `.env.production` on
 the host and restrict its permissions (`chmod 600`). The production Compose
@@ -71,10 +74,23 @@ release approval separate from GitHub Actions and from pull-request previews.
 
 ## Reverse proxy and Cloudflare Tunnel
 
-`deploy/nginx.conf` proxies only health, API, account, and owner-admin paths to
-the backend. The GPX endpoint remains authorized by Django and uses an
-`X-Accel-Redirect` internal handoff to stream directly from the read-only GPX
-volume; `/storage/` and `/media/` never map directly to a public location.
+`deploy/nginx.conf` proxies health, API, account, owner-admin, and static asset
+paths to the backend. The GPX endpoint remains authorized by Django and uses
+an `X-Accel-Redirect` internal handoff to stream directly from the read-only
+GPX volume; `/storage/` and `/media/` never map directly to a public location.
+Static files are collected during the image build and served by WhiteNoise
+only when `DEBUG=False`.
+
+The production asset path is covered by a disposable-stack smoke test. Run it
+from the repository root before releasing an image:
+
+```sh
+uv run --locked --no-dev python scripts/check_production_static_assets.py
+```
+
+It builds the current backend image, starts the production Compose topology,
+and verifies HTTP 200 responses for the Admin stylesheet and navigation
+script through Nginx.
 The listener is explicitly HTTP because Cloudflare Tunnel terminates HTTPS at
 the edge; `proxy_params` passes the public HTTPS scheme to Django without a
 redirect loop. Access logs are privacy-safe JSON on container stdout, and

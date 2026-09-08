@@ -16,4 +16,7 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY . .
 RUN uv sync --locked --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
+# Build the immutable static asset set into the release image. Production
+# settings enable the manifest storage; local Compose overrides DEBUG=true.
+RUN DJANGO_DEBUG=false uv run --locked --no-dev python backend/manage.py collectstatic --noinput
 EXPOSE 8000
