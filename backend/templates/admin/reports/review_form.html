@@ -1,0 +1,27 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>Review anonymous report</h1>
+<p><strong>Route:</strong> {{ object.route }}</p>
+<p><strong>Reason:</strong> {{ object.get_reason_display }}</p>
+<p><strong>Message:</strong></p>
+<blockquote>{{ object.message|linebreaks }}</blockquote>
+<p><strong>Status:</strong> {{ object.get_status_display }}</p>
+<form method="post">{% csrf_token %}
+  <fieldset class="module aligned">
+    <div class="form-row"><label for="id_decision">Decision</label>
+      <select id="id_decision" name="decision" required>
+        <option value="in_review">Start review</option>
+        <option value="accept">Accept</option>
+        <option value="reject">Reject</option>
+        <option value="duplicate">Mark duplicate</option>
+        <option value="close">Close without action</option>
+      </select>
+    </div>
+    <div class="form-row"><label for="id_reason">Reason</label>
+      <textarea id="id_reason" name="reason" required rows="5" cols="80"></textarea>
+    </div>
+  </fieldset>
+  <input type="submit" value="Save workflow" class="default">
+  <a href="{% url 'owner_admin:reports_report_change' object.pk %}">Cancel</a>
+</form>
+{% endblock %}

@@ -146,6 +146,40 @@ def _severity(result: dict[str, Any], rule: dict[str, Any] | None) -> float:
         return 0.0
 
 
+def _location(result: dict[str, Any]) -> dict[str, str]:
+    """Return the first useful SARIF artifact and region location."""
+
+    locations = result.get("locations")
+    if not isinstance(locations, list):
+        return {}
+    for item in locations:
+        if not isinstance(item, dict):
+            continue
+        physical = item.get("physicalLocation")
+        if not isinstance(physical, dict):
+            continue
+        artifact = physical.get("artifactLocation")
+        region = physical.get("region")
+        finding: dict[str, str] = {}
+        if isinstance(artifact, dict) and isinstance(artifact.get("uri"), str):
+            finding["file"] = artifact["uri"]
+        if isinstance(region, dict):
+            parts: list[str] = []
+            if isinstance(region.get("startLine"), int):
+                parts.append(f"line {region['startLine']}")
+            if isinstance(region.get("startColumn"), int):
+                parts.append(f"column {region['startColumn']}")
+            if isinstance(region.get("endLine"), int):
+                parts.append(f"end line {region['endLine']}")
+            if isinstance(region.get("endColumn"), int):
+                parts.append(f"end column {region['endColumn']}")
+            if parts:
+                finding["location"] = ", ".join(parts)
+        if finding:
+            return finding
+    return {}
+
+
 def actionable_findings(document: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(document, dict) or not isinstance(document.get("runs"), list):
         raise ValueError("SARIF document must contain a runs array")
@@ -161,13 +195,13 @@ def actionable_findings(document: dict[str, Any]) -> list[dict[str, Any]]:
             # Unknown or ambiguous rule metadata is actionable: silently
             # treating it as low severity would make the gate fail open.
             if result.get("level") == "error" or unresolved or severity >= 7:
-                findings.append(
-                    {
-                        "ruleId": rule_id,
-                        "level": result.get("level"),
-                        "severity": severity if not unresolved else None,
-                    }
-                )
+                finding = {
+                    "ruleId": rule_id,
+                    "level": result.get("level"),
+                    "severity": severity if not unresolved else None,
+                }
+                finding.update(_location(result))
+                findings.append(finding)
     return findings
 
 
@@ -190,8 +224,11 @@ def main(argv: list[str]) -> int:
     if findings:
         print("Actionable CodeQL findings:")
         for finding in findings:
+            file = finding.get("file", "unknown file")
+            location = finding.get("location", "unknown location")
             print(
-                f"- {finding['ruleId']} (level={finding['level']}, severity={finding['severity']})"
+                f"- {finding['ruleId']} (level={finding['level']}, severity={finding['severity']}, "
+                f"file={file}, location={location})"
             )
         return 1
     print("No actionable CodeQL findings")

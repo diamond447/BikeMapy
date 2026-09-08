@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+BACKUP_DIR=/srv/bikemapy/backup
+case "${SSH_ORIGINAL_COMMAND:-}" in
+  "find ${BACKUP_DIR}"*) exec /usr/bin/find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'db-*.dump' -o -name 'gpx-*.tar.gz' -o -name 'manifest-*.json' \) -printf '%f\n' ;;
+  "cat ${BACKUP_DIR}/"*) file="${SSH_ORIGINAL_COMMAND#cat $BACKUP_DIR/}"; [[ "$file" =~ ^[A-Za-z0-9_.-]+$ ]] || exit 1; exec /usr/bin/cat "$BACKUP_DIR/$file" ;;
+  *) echo 'command not permitted' >&2; exit 126 ;;
+esac

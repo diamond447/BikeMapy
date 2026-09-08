@@ -56,6 +56,47 @@ def test_codeql_gate_joins_results_to_driver_rule_severity(tmp_path: Path) -> No
     assert "py/ssrf" in result.stdout
 
 
+def test_codeql_gate_reports_result_file_and_location(tmp_path: Path) -> None:
+    sarif = {
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "rules": [{"id": "js/example", "properties": {"security-severity": "7"}}]
+                    }
+                },
+                "results": [
+                    {
+                        "ruleIndex": 0,
+                        "level": "warning",
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {"uri": "frontend/src/App.tsx"},
+                                    "region": {"startLine": 428, "startColumn": 7},
+                                }
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    path = tmp_path / "results.sarif"
+    path.write_text(json.dumps(sarif))
+
+    result = subprocess.run(
+        [sys.executable, "scripts/check_codeql_sarif.py", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "file=frontend/src/App.tsx" in result.stdout
+    assert "location=line 428, column 7" in result.stdout
+
+
 def test_codeql_gate_resolves_extension_component_and_duplicate_rule_ids() -> None:
     findings = actionable_findings(
         {

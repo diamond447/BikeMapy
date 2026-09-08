@@ -1,0 +1,7 @@
+2026-09-06T13:20:00Z  Created disposable PostGIS source container bikemapy-issue18-restore-source-4812 (postgis/postgis:17-3.5).
+2026-09-06T13:20:00Z  Created synthetic catalogue_route rows 101, 102, 103 and dumped db-20260906T132000Z.dump.
+2026-09-06T13:20:00Z  Created synthetic gpx-20260906T132000Z.tar.gz with route.gpx.
+2026-09-06T13:20:00Z  Wrote manifest-20260906T132000Z.json with SHA-256 values retained in this directory.
+2026-09-06T13:21:59Z  BACKUP_DIR=/tmp/bikemapy-restore-issue18.SyVgZl POSTGRES_USER=bikemapy ./deploy/restore-drill.sh 20260906T132000Z
+2026-09-06T13:21:59Z  Drill passed: restored route_count=3, verified database and GPX hashes, and listed the GPX archive.
+2026-09-06T13:22:00Z  Disposable source container removed; dump inputs remain only in the ephemeral /tmp drill directory and are not committed. Manifest and drill output are retained as evidence.

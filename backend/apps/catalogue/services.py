@@ -11,18 +11,20 @@ from typing import Any
 
 from django.core.exceptions import ValidationError
 from django.core.files.storage import default_storage
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
 from .fields import _GIS_AVAILABLE
 from .models import (
+    Category,
     ForumPost,
     LoopStatus,
     ModerationDecision,
     PayloadDeletionRequest,
     ProcessingStatus,
     Route,
+    RouteCategory,
     RouteLifecycle,
     RouteSource,
     RouteSourceMerge,
@@ -35,6 +37,95 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _route_state(route: Route) -> dict[str, Any]:
+    """Serialize moderation-relevant state for an append-only audit record."""
+
+    return {
+        "route_id": str(route.pk),
+        "lifecycle": route.lifecycle,
+        "deleted_at": route.deleted_at.isoformat() if route.deleted_at else None,
+        "quarantine_reason": route.quarantine_reason,
+        "current_approved_version_id": (
+            str(route.current_approved_version_id) if route.current_approved_version_id else None
+        ),
+        "reviewed_at": route.reviewed_at.isoformat() if route.reviewed_at else None,
+        "display_title": route.display_title,
+        "generated_title": route.generated_title,
+        "title_provenance": route.title_provenance,
+        "admin_title_override": route.admin_title_override,
+        "sources": [
+            {
+                "id": source.pk,
+                "url": source.mapy_url,
+                "status": source.source_status,
+            }
+            for source in route.sources.all().order_by("pk")
+        ],
+        "merged_sources": [
+            {
+                "id": link.pk,
+                "source_id": link.source_id,
+                "active": link.active,
+            }
+            for link in route.merged_source_links.all().order_by("pk")
+        ],
+        "denylist": [
+            {
+                "id": entry.pk,
+                "source_url": entry.source_url,
+                "active": entry.active,
+                "restored_at": entry.restored_at.isoformat() if entry.restored_at else None,
+            }
+            for entry in SourceDenylistEntry.objects.filter(route_source__route=route).order_by(
+                "pk"
+            )
+        ],
+        "payload_deletions": [
+            {
+                "id": request.pk,
+                "version_id": request.version_id,
+                "storage_key_snapshot": request.storage_key_snapshot,
+                "status": request.status,
+            }
+            for request in PayloadDeletionRequest.objects.filter(
+                version__source__route=route
+            ).order_by("pk")
+        ],
+    }
+
+
+def _source_state(source: RouteSource) -> dict[str, Any]:
+    return {
+        "source_id": source.pk,
+        "source_url": source.mapy_url,
+        "source_status": source.source_status,
+        "last_checked_at": source.last_checked_at.isoformat() if source.last_checked_at else None,
+        "last_error": source.last_error,
+    }
+
+
+def _relationship_state(relationship: SimilarityRelationship | None) -> dict[str, Any]:
+    if relationship is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "id": relationship.pk,
+        "relationship_type": relationship.relationship_type,
+        "reason": relationship.decision_reason,
+        "decided_at": relationship.decided_at.isoformat() if relationship.decided_at else None,
+        "similarity_score": str(relationship.similarity_score)
+        if relationship.similarity_score is not None
+        else None,
+        "evidence": relationship.evidence,
+    }
+
+
+def _audit_metadata(
+    before: dict[str, Any], after: dict[str, Any], **metadata: Any
+) -> dict[str, Any]:
+    return {"before": before, "after": after, **metadata}
 
 
 def _refresh_spatial_products(route: Route, version: RouteVersion | None = None) -> None:
@@ -160,6 +251,207 @@ def apply_generated_title(route: Route, context: TitleContext, *, source_title: 
 
 
 @transaction.atomic
+def update_route_metadata(
+    route: Route,
+    *,
+    reason: str,
+    actor: Any = None,
+    admin_title_override: str | None = None,
+) -> Route:
+    """Update owner-curated metadata without allowing lifecycle bypasses."""
+
+    if not reason.strip():
+        raise ValidationError("A metadata update reason is required.")
+    route = Route.objects.select_for_update().get(pk=route.pk)
+    before = _route_state(route)
+    route.admin_title_override = (admin_title_override or "").strip()
+    if len(route.admin_title_override) > 500:
+        raise ValidationError("A curated title cannot exceed 500 characters.")
+    if route.admin_title_override:
+        route.display_title = route.admin_title_override
+        route.title_provenance = TitleProvenance.ADMIN_OVERRIDE
+    else:
+        route.display_title = route.generated_title
+        prior_provenance = None
+        for prior_decision in ModerationDecision.objects.filter(
+            route=route, action=ModerationDecision.Action.ROUTE_METADATA
+        ).order_by("-created_at", "-pk"):
+            candidate = (prior_decision.metadata or {}).get("before", {}).get("title_provenance")
+            if (
+                candidate in {value for value, _ in TitleProvenance.choices}
+                and candidate != TitleProvenance.ADMIN_OVERRIDE
+            ):
+                prior_provenance = candidate
+                break
+        route.title_provenance = (
+            prior_provenance
+            if prior_provenance in {value for value, _ in TitleProvenance.choices}
+            and prior_provenance != TitleProvenance.ADMIN_OVERRIDE
+            else TitleProvenance.ROUTE_ID
+        )
+    route.full_clean()
+    route.save(
+        update_fields=["admin_title_override", "display_title", "title_provenance", "updated_at"]
+    )
+    ModerationDecision.objects.create(
+        route=route,
+        action=ModerationDecision.Action.ROUTE_METADATA,
+        reason=reason,
+        metadata=_audit_metadata(before, _route_state(route)),
+        actor=actor,
+    )
+    return route
+
+
+@transaction.atomic
+def create_category(
+    *, name: str, slug: str, description: str = "", reason: str, actor: Any = None
+) -> Category:
+    name, slug, description = name.strip(), slug.strip(), description.strip()
+    if not reason.strip():
+        raise ValidationError("A category reason is required.")
+    if not name or not slug:
+        raise ValidationError("A category name and slug are required.")
+    category = Category(name=name, slug=slug, description=description)
+    try:
+        with transaction.atomic():
+            category.full_clean()
+            category.save()
+    except IntegrityError as exc:
+        raise ValidationError("A category with this slug already exists.") from exc
+    ModerationDecision.objects.create(
+        route=None,
+        action=ModerationDecision.Action.CATEGORY_CREATE,
+        reason=reason,
+        metadata={
+            "before": {"category_id": None, "exists": False},
+            "after": {
+                "category_id": category.pk,
+                "name": name,
+                "slug": slug,
+                "description": description,
+            },
+        },
+        actor=actor,
+    )
+    return category
+
+
+@transaction.atomic
+def update_category(
+    category: Category,
+    *,
+    name: str,
+    slug: str,
+    description: str = "",
+    reason: str,
+    actor: Any = None,
+) -> Category:
+    name, slug, description = name.strip(), slug.strip(), description.strip()
+    if not reason.strip():
+        raise ValidationError("A category reason is required.")
+    if not name or not slug:
+        raise ValidationError("A category name and slug are required.")
+    category = Category.objects.select_for_update().get(pk=category.pk)
+    before = {
+        "category_id": category.pk,
+        "name": category.name,
+        "slug": category.slug,
+        "description": category.description,
+    }
+    category.name, category.slug, category.description = name, slug, description
+    try:
+        with transaction.atomic():
+            category.full_clean()
+            category.save(update_fields=["name", "slug", "description"])
+    except IntegrityError as exc:
+        raise ValidationError("A category with this slug already exists.") from exc
+    ModerationDecision.objects.create(
+        route=None,
+        action=ModerationDecision.Action.CATEGORY_UPDATE,
+        reason=reason,
+        metadata=_audit_metadata(
+            before, {**before, "name": name, "slug": slug, "description": description}
+        ),
+        actor=actor,
+    )
+    return category
+
+
+@transaction.atomic
+def delete_category(category: Category, *, reason: str, actor: Any = None) -> None:
+    if not reason.strip():
+        raise ValidationError("A category reason is required.")
+    category = Category.objects.select_for_update().get(pk=category.pk)
+    if RouteCategory.objects.filter(category=category).exists():
+        raise ValidationError("Remove category assignments before deleting the category.")
+    before = {
+        "category_id": category.pk,
+        "name": category.name,
+        "slug": category.slug,
+        "description": category.description,
+    }
+    category.delete()
+    ModerationDecision.objects.create(
+        route=None,
+        action=ModerationDecision.Action.CATEGORY_DELETE,
+        reason=reason,
+        metadata=_audit_metadata(before, {"category_id": before["category_id"], "deleted": True}),
+        actor=actor,
+    )
+
+
+@transaction.atomic
+def assign_route_category(
+    route: Route, category: Category, *, reason: str, actor: Any = None
+) -> RouteCategory:
+    if not reason.strip():
+        raise ValidationError("A category assignment reason is required.")
+    route = Route.objects.select_for_update().get(pk=route.pk)
+    category = Category.objects.get(pk=category.pk)
+    link, created = RouteCategory.objects.get_or_create(
+        route=route, category=category, defaults={"assigned_by": actor}
+    )
+    if not created:
+        raise ValidationError("This category is already assigned to the route.")
+    ModerationDecision.objects.create(
+        route=route,
+        action=ModerationDecision.Action.CATEGORY_ASSIGN,
+        reason=reason,
+        metadata=_audit_metadata(
+            {"category_id": category.pk, "assigned": False},
+            {"category_id": category.pk, "assigned": True, "link_id": link.pk},
+        ),
+        actor=actor,
+    )
+    return link
+
+
+@transaction.atomic
+def remove_route_category(
+    route: Route, category: Category, *, reason: str, actor: Any = None
+) -> None:
+    if not reason.strip():
+        raise ValidationError("A category removal reason is required.")
+    route = Route.objects.select_for_update().get(pk=route.pk)
+    link = RouteCategory.objects.select_for_update().filter(route=route, category=category).first()
+    if link is None:
+        raise ValidationError("This category is not assigned to the route.")
+    before = {"category_id": category.pk, "assigned": True, "link_id": link.pk}
+    link.delete()
+    ModerationDecision.objects.create(
+        route=route,
+        action=ModerationDecision.Action.CATEGORY_UNASSIGN,
+        reason=reason,
+        metadata=_audit_metadata(
+            before,
+            {"category_id": category.pk, "assigned": False},
+        ),
+        actor=actor,
+    )
+
+
+@transaction.atomic
 def register_source(
     *, route: Route, post: ForumPost, mapy_url: str, source_title: str = ""
 ) -> tuple[RouteSource, bool]:
@@ -194,6 +486,7 @@ def record_route_version(
     distance_m: Any = None,
     ascent_m: Any = None,
     descent_m: Any = None,
+    elevation_profile: list[dict[str, float]] | None = None,
     loop_status: str = LoopStatus.UNKNOWN,
     technical_status: str = ProcessingStatus.VALID,
     validation_error: str = "",
@@ -232,6 +525,7 @@ def record_route_version(
         distance_m=distance_m,
         ascent_m=ascent_m,
         descent_m=descent_m,
+        elevation_profile=elevation_profile or [],
         loop_status=loop_status,
         technical_status=technical_status,
         validation_error=validation_error,
@@ -261,7 +555,12 @@ def _mark_source_success(source: RouteSource, *, technical_status: str, error: s
 
 
 @transaction.atomic
-def approve_version(version: RouteVersion, *, actor: Any = None) -> Route:
+def approve_version(
+    version: RouteVersion,
+    *,
+    actor: Any = None,
+    reason: str = "Technically valid route version approved for publication.",
+) -> Route:
     """Make a technically valid version the route's public approved version.
 
     Lock acquisition is deliberately ordered route, source, then version to
@@ -269,6 +568,8 @@ def approve_version(version: RouteVersion, *, actor: Any = None) -> Route:
     """
 
     version_ref = RouteVersion.objects.get(pk=version.pk)
+    if not reason.strip():
+        raise ValidationError("A version selection reason is required.")
     source_ref = RouteSource.objects.get(pk=version_ref.source_id)
     route = Route.objects.select_for_update().get(pk=source_ref.route_id)
     _ = RouteSource.objects.select_for_update().get(pk=source_ref.pk)
@@ -281,6 +582,8 @@ def approve_version(version: RouteVersion, *, actor: Any = None) -> Route:
         raise ValidationError(
             "A quarantined route requires an explicit restore before publication."
         )
+    before = _route_state(route)
+    previous_version_id = route.current_approved_version_id
     now = timezone.now()
     version.approved_at = version.approved_at or now
     version.save(update_fields=["approved_at"])
@@ -300,27 +603,65 @@ def approve_version(version: RouteVersion, *, actor: Any = None) -> Route:
     ModerationDecision.objects.create(
         route=route,
         version=version,
-        action=ModerationDecision.Action.PUBLISH,
-        reason="Technically valid route version approved for publication.",
+        action=(
+            ModerationDecision.Action.SELECT_VERSION
+            if previous_version_id and previous_version_id != version.pk
+            else ModerationDecision.Action.PUBLISH
+        ),
+        reason=reason,
+        metadata=_audit_metadata(
+            before,
+            _route_state(route),
+            previous_approved_version_id=(
+                str(previous_version_id) if previous_version_id else None
+            ),
+        ),
         actor=actor,
     )
     _refresh_spatial_products(route, version)
     return route
 
 
+# Explicit names used by moderation callers when switching between historical
+# immutable versions.  The same transactional guard as initial publication is
+# intentionally reused.
+select_approved_version = approve_version
+select_route_version = approve_version
+
+
 @transaction.atomic
-def review_route(route: Route, *, reason: str, actor: Any = None) -> Route:
-    """Record a human suitability/technical review independently of publication."""
+def review_route(
+    route: Route,
+    *,
+    reason: str,
+    actor: Any = None,
+    technical_validity: bool = False,
+    source_context: bool = False,
+    content_suitability: bool = False,
+) -> Route:
+    """Record review evidence independently of publication.
+
+    The public badge requires all three explicit checks. A timestamp alone is
+    intentionally not enough, preserving the distinction between review and a
+    safety, passability, or legal-access claim.
+    """
 
     if not reason.strip():
         raise ValidationError("A review reason is required.")
     route = Route.objects.select_for_update().get(pk=route.pk)
+    before = _route_state(route)
     route.reviewed_at = timezone.now()
     route.save(update_fields=["reviewed_at", "updated_at"])
     ModerationDecision.objects.create(
         route=route,
         action=ModerationDecision.Action.REVIEW,
         reason=reason,
+        metadata={
+            **_audit_metadata(before, _route_state(route)),
+            "technical_validity": technical_validity,
+            "source_context": source_context,
+            "content_suitability": content_suitability,
+        },
         actor=actor,
     )
     return route
@@ -337,6 +678,7 @@ def quarantine_route(
     if not reason.strip():
         raise ValidationError("A quarantine reason is required.")
     route = Route.objects.select_for_update().get(pk=route.pk)
+    before = _route_state(route)
     route.lifecycle = RouteLifecycle.QUARANTINED
     route.quarantine_reason = reason
     route.save(update_fields=["lifecycle", "quarantine_reason", "updated_at"])
@@ -346,7 +688,7 @@ def quarantine_route(
         route=route,
         action=ModerationDecision.Action.QUARANTINE,
         reason=reason,
-        metadata=metadata or {},
+        metadata=_audit_metadata(before, _route_state(route), **(metadata or {})),
         actor=actor,
     )
     _refresh_spatial_products(route)
@@ -358,6 +700,7 @@ def soft_delete_route(route: Route, *, reason: str, actor: Any = None) -> Route:
     if not reason.strip():
         raise ValidationError("A removal reason is required.")
     route = Route.objects.select_for_update().get(pk=route.pk)
+    before = _route_state(route)
     now = timezone.now()
     route.lifecycle = RouteLifecycle.SOFT_DELETED
     route.deleted_at = now
@@ -375,17 +718,29 @@ def soft_delete_route(route: Route, *, reason: str, actor: Any = None) -> Route:
             },
         )
     ModerationDecision.objects.create(
-        route=route, action=ModerationDecision.Action.REMOVE, reason=reason, actor=actor
+        route=route,
+        action=ModerationDecision.Action.REMOVE,
+        reason=reason,
+        metadata=_audit_metadata(before, _route_state(route)),
+        actor=actor,
     )
     _refresh_spatial_products(route)
     return route
 
 
 @transaction.atomic
-def restore_route(route: Route, *, actor: Any = None) -> Route:
+def restore_route(
+    route: Route,
+    *,
+    reason: str = "Route restored by administrator.",
+    actor: Any = None,
+) -> Route:
+    if not reason.strip():
+        raise ValidationError("A restoration reason is required.")
     route = Route.objects.select_for_update().get(pk=route.pk)
     if route.lifecycle not in {RouteLifecycle.SOFT_DELETED, RouteLifecycle.QUARANTINED}:
         raise ValidationError("Only soft-deleted or quarantined routes can be restored.")
+    before = _route_state(route)
     was_soft_deleted = route.lifecycle == RouteLifecycle.SOFT_DELETED
     if not route.current_approved_version_id:
         # Automatic duplicate quarantine happens before publication, so an
@@ -429,11 +784,57 @@ def restore_route(route: Route, *, actor: Any = None) -> Route:
     ModerationDecision.objects.create(
         route=route,
         action=ModerationDecision.Action.RESTORE,
-        reason="Route restored by administrator.",
+        reason=reason,
+        metadata=_audit_metadata(before, _route_state(route), denylist_restored=was_soft_deleted),
         actor=actor,
     )
     _refresh_spatial_products(route)
     return route
+
+
+@transaction.atomic
+def restore_denylist_entry(
+    entry: SourceDenylistEntry, *, reason: str, actor: Any = None
+) -> SourceDenylistEntry:
+    """Explicitly release a source URL so automatic imports may resume."""
+
+    if not reason.strip():
+        raise ValidationError("A denylist restoration reason is required.")
+    entry_ref = SourceDenylistEntry.objects.values("pk", "route_source_id").get(pk=entry.pk)
+    route_source_id = entry_ref["route_source_id"]
+    if not route_source_id:
+        raise ValidationError("Only denylist entries associated with a route can be restored.")
+    route_id = RouteSource.objects.values_list("route_id", flat=True).get(pk=route_source_id)
+    # Lifecycle lock order is route, then entry. Resolve foreign keys before
+    # acquiring either lock so restoration cannot deadlock with route actions.
+    route = Route.objects.select_for_update().get(pk=route_id)
+    entry = SourceDenylistEntry.objects.select_for_update().get(pk=entry.pk)
+    if not entry.active:
+        raise ValidationError("This denylist entry has already been restored.")
+    if entry.route_source_id != route_source_id:
+        raise ValidationError("Only denylist entries associated with a route can be restored.")
+    if not RouteSource.objects.filter(pk=entry.route_source_id, route_id=route.pk).exists():
+        raise ValidationError("The denylist entry source no longer belongs to its route.")
+    before = {
+        "active": entry.active,
+        "source_url": entry.source_url,
+        "restored_at": None,
+    }
+    now = timezone.now()
+    entry.active = False
+    entry.restored_at = now
+    entry.save(update_fields=["active", "restored_at"])
+    ModerationDecision.objects.create(
+        route=route,
+        action=ModerationDecision.Action.DENYLIST_RESTORE,
+        reason=reason,
+        metadata=_audit_metadata(
+            before,
+            {"active": False, "source_url": entry.source_url, "restored_at": now.isoformat()},
+        ),
+        actor=actor,
+    )
+    return entry
 
 
 @transaction.atomic
@@ -454,6 +855,12 @@ def keep_both_routes(
     first, second = sorted([route_a.pk, route_b.pk], key=str)
     first_route = Route.objects.select_for_update().get(pk=first)
     second_route = Route.objects.select_for_update().get(pk=second)
+    before_states = {
+        str(selected.pk): _route_state(selected) for selected in (first_route, second_route)
+    }
+    relationship_before = _relationship_state(
+        SimilarityRelationship.objects.filter(route_a_id=first, route_b_id=second).first()
+    )
     for selected in (first_route, second_route):
         if selected.lifecycle == RouteLifecycle.QUARANTINED:
             restore_route(selected, actor=actor)
@@ -488,11 +895,18 @@ def keep_both_routes(
         update_fields=["relationship_type", "decision_reason", "decided_at", "evidence"]
     )
     for route in (first, second):
+        relationship_after = _relationship_state(relationship)
         ModerationDecision.objects.create(
             route_id=route,
             action=ModerationDecision.Action.KEEP_BOTH,
             reason=reason,
             metadata={
+                **_audit_metadata(
+                    before_states[str(route)],
+                    _route_state(Route.objects.get(pk=route)),
+                ),
+                "relationship_before": relationship_before,
+                "relationship_after": relationship_after,
                 "related_route_id": str(second if route == first else first),
                 **(evidence or {}),
             },
@@ -518,6 +932,12 @@ def merge_route_sources(
     first, second = sorted([canonical_route.pk, duplicate_route.pk], key=str)
     Route.objects.select_for_update().get(pk=first)
     Route.objects.select_for_update().get(pk=second)
+    before_states = {
+        str(route_id): _route_state(Route.objects.get(pk=route_id)) for route_id in (first, second)
+    }
+    relationship_before = _relationship_state(
+        SimilarityRelationship.objects.filter(route_a_id=first, route_b_id=second).first()
+    )
     links: list[RouteSourceMerge] = []
     for source in RouteSource.objects.filter(route_id=duplicate_route.pk).order_by("pk"):
         existing = RouteSourceMerge.objects.filter(
@@ -576,19 +996,29 @@ def merge_route_sources(
     metadata = {
         "canonical_route_id": str(canonical_route.pk),
         "merged_source_ids": [link.source_id for link in links],
+        "relationship_before": relationship_before,
+        "relationship_after": _relationship_state(relationship),
     }
     ModerationDecision.objects.create(
         route=canonical_route,
         action=ModerationDecision.Action.MERGE_SOURCES,
         reason=reason,
-        metadata=metadata,
+        metadata=_audit_metadata(
+            before_states[str(canonical_route.pk)],
+            _route_state(Route.objects.get(pk=canonical_route.pk)),
+            **metadata,
+        ),
         actor=actor,
     )
     ModerationDecision.objects.create(
         route=duplicate_route,
         action=ModerationDecision.Action.MERGE_SOURCES,
         reason=reason,
-        metadata=metadata,
+        metadata=_audit_metadata(
+            before_states[str(duplicate_route.pk)],
+            _route_state(Route.objects.get(pk=duplicate_route.pk)),
+            **metadata,
+        ),
         actor=actor,
     )
     return links
@@ -626,24 +1056,45 @@ quarantine_duplicate = quarantine_suspected_duplicate
 
 
 @transaction.atomic
-def mark_source_unavailable(source: RouteSource, *, error: str = "") -> RouteSource:
+def mark_source_unavailable(
+    source: RouteSource, *, error: str = "", actor: Any = None, reason: str | None = None
+) -> RouteSource:
     """Record a failed source check without hiding its route."""
 
+    if actor is not None and not (reason or "").strip():
+        raise ValidationError("A source-unavailable reason is required.")
     Route.objects.select_for_update().get(pk=source.route_id)
     source = RouteSource.objects.select_for_update().get(pk=source.pk)
+    before = _source_state(source)
     source.source_status = SourceStatus.UNAVAILABLE
     source.last_checked_at = timezone.now()
     source.last_error = error
     source.save(update_fields=["source_status", "last_checked_at", "last_error"])
+    ModerationDecision.objects.create(
+        route_id=source.route_id,
+        action=ModerationDecision.Action.SOURCE_UNAVAILABLE,
+        reason=(reason or error or "Source check failed.").strip(),
+        metadata=_audit_metadata(before, _source_state(source)),
+        actor=actor,
+    )
     return source
 
 
 @transaction.atomic
-def mark_source_available(source: RouteSource, *, error: str = "") -> RouteSource:
+def mark_source_available(
+    source: RouteSource,
+    *,
+    error: str = "",
+    actor: Any = None,
+    reason: str | None = None,
+) -> RouteSource:
     """Record a successful source check without changing route visibility."""
 
+    if actor is not None and not (reason or "").strip():
+        raise ValidationError("A source-available reason is required.")
     Route.objects.select_for_update().get(pk=source.route_id)
     source = RouteSource.objects.select_for_update().get(pk=source.pk)
+    before = _source_state(source)
     now = timezone.now()
     source.source_status = SourceStatus.AVAILABLE
     source.last_checked_at = now
@@ -651,6 +1102,13 @@ def mark_source_available(source: RouteSource, *, error: str = "") -> RouteSourc
     source.last_error = error
     source.save(
         update_fields=["source_status", "last_checked_at", "last_successful_check_at", "last_error"]
+    )
+    ModerationDecision.objects.create(
+        route_id=source.route_id,
+        action=ModerationDecision.Action.SOURCE_AVAILABLE,
+        reason=(reason or error or "Source check succeeded.").strip(),
+        metadata=_audit_metadata(before, _source_state(source)),
+        actor=actor,
     )
     return source
 
