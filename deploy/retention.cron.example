@@ -1,0 +1,4 @@
+# Host retention: keep 30 daily verified snapshots.
+45 4 * * * cd /srv/bikemapy && BACKUP_DIR=/srv/bikemapy/backup KEEP_SNAPSHOTS=30 ./deploy/retention.sh >> /var/log/bikemapy-retention.log 2>&1
+# Laptop retention: keep 90 encrypted snapshots on the encrypted disk.
+0 5 * * * BACKUP_DIR=/mnt/encrypted/bikemapy-backup KEEP_SNAPSHOTS=90 /srv/bikemapy/deploy/retention.sh >> /var/log/bikemapy-laptop-retention.log 2>&1

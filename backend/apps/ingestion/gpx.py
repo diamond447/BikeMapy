@@ -529,6 +529,23 @@ def parse_gpx(
     )
 
 
+def _elevation_profile(parsed: ParsedGpx, *, max_points: int = 500) -> list[dict[str, float]]:
+    """Return a bounded distance/elevation series for the public detail view."""
+
+    coordinates = parsed.geometry["coordinates"]
+    points: list[dict[str, float]] = []
+    distance_m = 0.0
+    for index, elevation in enumerate(parsed.elevations):
+        if index:
+            distance_m += _distance(tuple(coordinates[index - 1]), tuple(coordinates[index]))
+        if elevation is not None and math.isfinite(elevation):
+            points.append({"distance_m": round(distance_m, 2), "elevation_m": round(elevation, 2)})
+    if len(points) <= max_points:
+        return points
+    stride = (len(points) - 1) / (max_points - 1)
+    return [points[round(index * stride)] for index in range(max_points)]
+
+
 def _export(adapter: object, source_url: str) -> ExportedGpx:
     fetch = getattr(adapter, "fetch_gpx", None) or getattr(adapter, "export", None)
     if fetch is None and callable(adapter):
@@ -673,6 +690,7 @@ def extract_gpx(source_id: int, *, adapter: object | None = None) -> dict[str, A
                 distance_m=parsed.distance_m,
                 ascent_m=parsed.ascent_m,
                 descent_m=parsed.descent_m,
+                elevation_profile=_elevation_profile(parsed),
                 loop_status=parsed.loop_status,
             )
             route = source.route
