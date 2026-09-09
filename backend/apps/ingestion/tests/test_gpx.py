@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -136,6 +137,23 @@ def test_changed_payload_creates_immutable_new_version() -> None:
     second = extract_gpx(route_source.pk, adapter=lambda _: ExportedGpx(changed))
     assert first["created"] is True and second["created"] is True
     assert [version.version_number for version in RouteVersion.objects.all()] == [1, 2]
+
+
+def test_new_gpx_storage_keys_include_immutable_attempt_identity() -> None:
+    route_source = source()
+    changed = GPX.replace(b"49.001000", b"49.002000")
+    with patch(
+        "apps.ingestion.gpx.default_storage.save", side_effect=lambda name, _content: name
+    ) as save:
+        first = extract_gpx(route_source.pk, adapter=lambda _: GPX)
+        second = extract_gpx(route_source.pk, adapter=lambda _: ExportedGpx(changed))
+
+    assert first["created"] is True and second["created"] is True
+    names = [call.args[0] for call in save.call_args_list]
+    attempts = list(ExtractionAttempt.objects.order_by("pk").values_list("pk", flat=True))
+    assert names[0].endswith(f"-{attempts[0]}.gpx")
+    assert names[1].endswith(f"-{attempts[1]}.gpx")
+    assert names[0] != names[1]
 
 
 def test_failed_extraction_is_isolated_and_diagnostic_is_retained() -> None:
@@ -503,6 +521,11 @@ def test_orphan_reconciliation_prioritizes_pending_over_old_failed_rows() -> Non
         attempt=attempt,
         storage_key="gpx/new-pending.gpx",
     )
+    from apps.ingestion.models import OrphanPayloadReconciliationState
+
+    cursor, _ = OrphanPayloadReconciliationState.objects.get_or_create(pk=1)
+    cursor.last_selected_bucket = OrphanPayloadReconciliationState.Bucket.FAILED
+    cursor.save(update_fields=["last_selected_bucket", "updated_at"])
     from apps.ingestion.gpx import reconcile_orphan_payloads
 
     with patch("apps.ingestion.gpx.default_storage.delete") as delete:
@@ -514,6 +537,61 @@ def test_orphan_reconciliation_prioritizes_pending_over_old_failed_rows() -> Non
     assert pending.status == OrphanPayloadStatus.COMPLETED
     assert old_failed.status == OrphanPayloadStatus.FAILED
     delete.assert_called_once_with("gpx/new-pending.gpx")
+
+
+@override_settings(GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS=0)
+def test_orphan_reconciliation_interleaves_pending_and_failed_limit_one() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    old_failed = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/interleave-failed.gpx",
+        status=OrphanPayloadStatus.FAILED,
+        last_error="temporary",
+    )
+    pending = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/interleave-pending.gpx",
+    )
+    from apps.ingestion.models import OrphanPayloadReconciliationState
+
+    cursor, _ = OrphanPayloadReconciliationState.objects.get_or_create(pk=1)
+    cursor.last_selected_bucket = OrphanPayloadReconciliationState.Bucket.FAILED
+    cursor.save(update_fields=["last_selected_bucket", "updated_at"])
+    from apps.ingestion.gpx import reconcile_orphan_payloads
+
+    def delete(key: str) -> None:
+        if key == old_failed.storage_key:
+            raise OSError("temporary")
+
+    with patch("apps.ingestion.gpx.default_storage.delete", side_effect=delete) as storage_delete:
+        first = reconcile_orphan_payloads(limit=1)
+        new_pending = OrphanPayloadCleanup.objects.create(
+            source=route_source,
+            attempt=attempt,
+            storage_key="gpx/interleave-new-pending.gpx",
+        )
+        second = reconcile_orphan_payloads(limit=1)
+        third = reconcile_orphan_payloads(limit=1)
+
+    pending.refresh_from_db()
+    old_failed.refresh_from_db()
+    new_pending.refresh_from_db()
+    assert first["completed"] == 1
+    assert second["failed"] == 1
+    assert third["completed"] == 1
+    assert pending.status == OrphanPayloadStatus.COMPLETED
+    assert old_failed.status == OrphanPayloadStatus.FAILED
+    assert new_pending.status == OrphanPayloadStatus.COMPLETED
+    assert [call.args[0] for call in storage_delete.call_args_list] == [
+        "gpx/interleave-pending.gpx",
+        "gpx/interleave-failed.gpx",
+        "gpx/interleave-new-pending.gpx",
+    ]
 
 
 def test_orphan_cleanup_protects_a_live_payload_reference() -> None:
@@ -541,6 +619,35 @@ def test_orphan_cleanup_protects_a_live_payload_reference() -> None:
     assert result["status"] == OrphanPayloadStatus.COMPLETED
     assert result["protected"] is True
     assert version.original_gpx_storage_key == "gpx/reused.gpx"
+    delete.assert_not_called()
+
+
+def test_expired_orphan_claim_cannot_delete_a_later_live_payload() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    from apps.catalogue.services import record_route_version
+    from apps.ingestion.gpx import _claim_orphan_payload, cleanup_orphan_payload
+
+    storage_key = f"gpx/routes/{route_source.route_id}/legacy-1.gpx"
+    orphan = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key=storage_key,
+    )
+    token, _, claim_result = _claim_orphan_payload(orphan.pk, respect_backoff=False)
+    assert token is not None and claim_result is None
+    orphan.refresh_from_db()
+    orphan.claimed_until = timezone.now() - timedelta(seconds=1)
+    orphan.save(update_fields=["claimed_until"])
+    record_route_version(source=route_source, checksum="legacy-reused", storage_key=storage_key)
+
+    with patch("apps.ingestion.gpx.default_storage.delete") as delete:
+        result = cleanup_orphan_payload(orphan.pk)
+
+    assert result["status"] == OrphanPayloadStatus.COMPLETED
+    assert result["protected"] is True
     delete.assert_not_called()
 
 

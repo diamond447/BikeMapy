@@ -28,7 +28,7 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
-from django.db.models import Case, IntegerField, Q, Value, When
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.catalogue.deduplication import classify_version, normalize_geometry
@@ -39,6 +39,7 @@ from .models import (
     ExtractionAttempt,
     ExtractionStatus,
     OrphanPayloadCleanup,
+    OrphanPayloadReconciliationState,
     OrphanPayloadStatus,
 )
 
@@ -746,8 +747,14 @@ def extract_gpx(
             existing = RouteVersion.objects.filter(source=source, checksum=checksum).first()
             storage_key = ""
             if existing is None and route.lifecycle == RouteLifecycle.PUBLISHED:
+                # Keep the checksum visible for diagnostics, but include the
+                # immutable extraction attempt identity so a stale orphan can
+                # never delete a future import that reuses the same checksum.
                 filename = PurePosixPath(
-                    "gpx", "routes", str(source.route_id), f"{checksum}.gpx"
+                    "gpx",
+                    "routes",
+                    str(source.route_id),
+                    f"{checksum}-{attempt.pk}.gpx",
                 ).as_posix()
                 storage_key = default_storage.save(filename, ContentFile(exported.content))
                 saved_storage_key = storage_key
@@ -1013,6 +1020,60 @@ def cleanup_orphan_payload(orphan_id: int, *, respect_backoff: bool = False) -> 
     return _complete_orphan_payload(orphan_id, token)
 
 
+def _select_orphan_reconciliation_candidates(*, limit: int, now: Any) -> list[OrphanPayloadCleanup]:
+    """Select a bounded, round-robin batch of pending and due failed work."""
+
+    common = Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=now)
+    available = Q(claimed_until__isnull=True) | Q(claimed_until__lte=now)
+    with transaction.atomic():
+        cursor, _ = OrphanPayloadReconciliationState.objects.select_for_update().get_or_create(pk=1)
+        pending = list(
+            OrphanPayloadCleanup.objects.filter(status=OrphanPayloadStatus.PENDING)
+            .filter(common)
+            .filter(available)
+            .order_by("created_at", "pk")[:limit]
+        )
+        failed = list(
+            OrphanPayloadCleanup.objects.filter(status=OrphanPayloadStatus.FAILED)
+            .filter(common)
+            .filter(available)
+            .order_by("next_retry_at", "created_at", "pk")[:limit]
+        )
+        if not pending and not failed:
+            return []
+        if limit == 1:
+            preferred = (
+                OrphanPayloadReconciliationState.Bucket.PENDING
+                if cursor.last_selected_bucket == OrphanPayloadReconciliationState.Bucket.FAILED
+                else OrphanPayloadReconciliationState.Bucket.FAILED
+            )
+            if preferred == OrphanPayloadReconciliationState.Bucket.PENDING and pending:
+                selected = [pending[0]]
+            elif preferred == OrphanPayloadReconciliationState.Bucket.FAILED and failed:
+                selected = [failed[0]]
+            elif pending:
+                selected = [pending[0]]
+            else:
+                selected = [failed[0]]
+        else:
+            pending_budget = min(len(pending), (limit + 1) // 2)
+            failed_budget = min(len(failed), limit // 2)
+            selected = [*pending[:pending_budget], *failed[:failed_budget]]
+            remaining = limit - len(selected)
+            if remaining and len(pending) > pending_budget:
+                selected.extend(pending[pending_budget : pending_budget + remaining])
+                remaining = limit - len(selected)
+            if remaining and len(failed) > failed_budget:
+                selected.extend(failed[failed_budget : failed_budget + remaining])
+        cursor.last_selected_bucket = (
+            OrphanPayloadReconciliationState.Bucket.PENDING
+            if selected[-1].status == OrphanPayloadStatus.PENDING
+            else OrphanPayloadReconciliationState.Bucket.FAILED
+        )
+        cursor.save(update_fields=["last_selected_bucket", "updated_at"])
+        return selected
+
+
 def reconcile_orphan_payloads(*, limit: int = 100) -> dict[str, int]:
     """Process a bounded batch of pending and retryable orphan payloads.
 
@@ -1023,22 +1084,7 @@ def reconcile_orphan_payloads(*, limit: int = 100) -> dict[str, int]:
 
     limit = max(1, int(limit))
     now = timezone.now()
-    candidates = list(
-        OrphanPayloadCleanup.objects.filter(
-            status__in=[OrphanPayloadStatus.PENDING, OrphanPayloadStatus.FAILED]
-        )
-        .filter(Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=now))
-        .filter(Q(claimed_until__isnull=True) | Q(claimed_until__lte=now))
-        .order_by(
-            Case(
-                When(status=OrphanPayloadStatus.PENDING, then=Value(0)),
-                default=Value(1),
-                output_field=IntegerField(),
-            ),
-            "created_at",
-            "pk",
-        )[:limit]
-    )
+    candidates = _select_orphan_reconciliation_candidates(limit=limit, now=now)
     processed = completed = failed = exhausted = skipped = retried = 0
     for candidate in candidates:
         retried += int(candidate.attempts > 0)

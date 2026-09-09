@@ -229,3 +229,19 @@ class OrphanPayloadCleanup(models.Model):
 
     def __str__(self) -> str:
         return f"{self.status}: {self.storage_key}"
+
+
+class OrphanPayloadReconciliationState(models.Model):
+    """Durable round-robin cursor preventing one cleanup class from starving."""
+
+    class Bucket(models.TextChoices):
+        PENDING = OrphanPayloadStatus.PENDING, "Pending"
+        FAILED = OrphanPayloadStatus.FAILED, "Failed"
+
+    last_selected_bucket = models.CharField(
+        max_length=20, choices=Bucket.choices, default=Bucket.FAILED
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"orphan cleanup cursor: {self.last_selected_bucket}"

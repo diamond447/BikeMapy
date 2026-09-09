@@ -49,6 +49,9 @@ claims are leased, retries use bounded exponential backoff, and records become
 (`GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS`). Exhausted records remain visible in the
 owner admin for manual investigation; retry delay and lease duration are
 configurable with the `GPX_ORPHAN_CLEANUP_*` settings.
+New GPX payload keys retain the checksum for diagnostics and add the immutable
+extraction-attempt ID, preventing stale cleanup from colliding with a later
+import; existing stored keys remain readable and removable.
 
 ## Daily snapshots
 
