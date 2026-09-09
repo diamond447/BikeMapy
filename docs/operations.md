@@ -26,10 +26,18 @@ per file, five files locally, and fourteen in production). This is bounded
 diagnostic storage, not an audit log.
 
 Set `SENTRY_DSN` only in the host-only production environment. The integration
-uses `send_default_pii=false` and a `before_send` scrubber that removes request
-headers, request bodies, environment data, user email, IP addresses, and
-secret-like values. The scrubber is covered by
-`backend/config/tests/test_observability.py`. Set the Sentry project retention
+uses `send_default_pii=false`, disables local-variable capture, and a
+`before_send` scrubber with explicit allow-lists. It drops request and user
+payloads, exception values and frame locals/source context, breadcrumb
+messages/data, custom contexts, and arbitrary extras. It retains only
+typed event IDs/timestamps, finite levels, fixed platform metadata, exception
+type/mechanism and line/column markers,
+validated breadcrumb timestamps and finite type/category/level values, and
+structurally validated trace IDs and span IDs. Transaction events use the same
+boundary and drop their names and spans. The scrubber is covered by the
+ordinary-discovery regression
+in `backend/tests/test_sentry_privacy.py` (with lower-level cases in
+`backend/config/tests/test_observability.py`). Set the Sentry project retention
 to exactly 30 days; settings reject any other `SENTRY_RETENTION_DAYS` value,
 but the SDK cannot enforce account-level retention. Record dashboard or Sentry
 API evidence of the 30-day project setting during deployment; the application
