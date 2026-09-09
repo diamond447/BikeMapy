@@ -192,6 +192,7 @@ class OrphanPayloadStatus(models.TextChoices):
     PENDING = "pending", "Pending"
     FAILED = "failed", "Failed"
     COMPLETED = "completed", "Completed"
+    EXHAUSTED = "exhausted", "Retry limit exhausted"
 
 
 class OrphanPayloadCleanup(models.Model):
@@ -209,6 +210,9 @@ class OrphanPayloadCleanup(models.Model):
     )
     attempts = models.PositiveIntegerField(default=0)
     last_error = models.TextField(blank=True)
+    next_retry_at = models.DateTimeField(blank=True, null=True)
+    claim_token = models.CharField(max_length=64, blank=True)
+    claimed_until = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now)
     last_attempt_at = models.DateTimeField(blank=True, null=True)
     completed_at = models.DateTimeField(blank=True, null=True)
@@ -216,8 +220,28 @@ class OrphanPayloadCleanup(models.Model):
     class Meta:
         ordering = ["created_at", "pk"]
         indexes = [
-            models.Index(fields=["status", "created_at"], name="ing_orphan_status_created_idx")
+            models.Index(fields=["status", "created_at"], name="ing_orphan_status_created_idx"),
+            models.Index(
+                fields=["status", "next_retry_at", "created_at"],
+                name="ing_orphan_reconcile_idx",
+            ),
         ]
 
     def __str__(self) -> str:
         return f"{self.status}: {self.storage_key}"
+
+
+class OrphanPayloadReconciliationState(models.Model):
+    """Durable round-robin cursor preventing one cleanup class from starving."""
+
+    class Bucket(models.TextChoices):
+        PENDING = OrphanPayloadStatus.PENDING, "Pending"
+        FAILED = OrphanPayloadStatus.FAILED, "Failed"
+
+    last_selected_bucket = models.CharField(
+        max_length=20, choices=Bucket.choices, default=Bucket.FAILED
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"orphan cleanup cursor: {self.last_selected_bucket}"

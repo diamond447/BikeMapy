@@ -12,7 +12,11 @@ from apps.catalogue.services import process_payload_deletion, retry_payload_dele
 
 from .crawler import run_crawl
 from .dispatch import block_extraction_attempt, extraction_gate_reason, reconcile_extraction_queue
-from .gpx import GpxExtractionTaskFailure, cleanup_orphan_payload
+from .gpx import (
+    GpxExtractionTaskFailure,
+    cleanup_orphan_payload,
+    reconcile_orphan_payloads,
+)
 from .gpx import extract_gpx as run_gpx_extraction
 from .models import CrawlTask, ExtractionStatus
 
@@ -126,6 +130,13 @@ def cleanup_orphan_gpx(orphan_id: int) -> dict[str, Any]:
     """Retry a durable payload cleanup item after storage outages."""
 
     return cleanup_orphan_payload(orphan_id)
+
+
+@shared_task(name="bikemapy.ingestion.reconcile_orphan_gpx")  # type: ignore[untyped-decorator]
+def reconcile_orphan_gpx(limit: int = 100) -> dict[str, Any]:
+    """Process a bounded batch of pending and failed orphan cleanups."""
+
+    return reconcile_orphan_payloads(limit=max(1, limit))
 
 
 @shared_task(name="bikemapy.ingestion.process_payload_deletion")  # type: ignore[untyped-decorator]

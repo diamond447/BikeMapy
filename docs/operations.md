@@ -43,6 +43,16 @@ but the SDK cannot enforce account-level retention. Record dashboard or Sentry
 API evidence of the 30-day project setting during deployment; the application
 setting and test alone are not proof of the hosted retention policy.
 
+Celery Beat reconciles orphaned GPX payload cleanup every 15 minutes. Cleanup
+claims are leased, retries use bounded exponential backoff, and records become
+`exhausted` after five attempts by default
+(`GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS`). Exhausted records remain visible in the
+owner admin for manual investigation; retry delay and lease duration are
+configurable with the `GPX_ORPHAN_CLEANUP_*` settings.
+New GPX payload keys retain the checksum for diagnostics and add the immutable
+extraction-attempt ID, preventing stale cleanup from colliding with a later
+import; existing stored keys remain readable and removable.
+
 ## Daily snapshots
 
 Create a restricted backup directory owned by the deployment operator and run

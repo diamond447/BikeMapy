@@ -275,6 +275,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.ingestion.reconcile_extractions",
         "schedule": 900,
     },
+    "reconcile-orphan-gpx": {
+        "task": "bikemapy.ingestion.reconcile_orphan_gpx",
+        "schedule": 900,
+    },
     "retry-route-payload-deletions": {
         "task": "bikemapy.ingestion.retry_payload_deletions",
         "schedule": 900,
@@ -357,6 +361,17 @@ GPX_LEGAL_APPROVED = env_bool("GPX_LEGAL_APPROVED", False)
 GPX_MAX_ATTEMPTS = int(os.getenv("GPX_MAX_ATTEMPTS", "3"))
 GPX_DISPATCH_TIMEOUT = int(os.getenv("GPX_DISPATCH_TIMEOUT", "900"))
 GPX_PROCESSING_TIMEOUT = int(os.getenv("GPX_PROCESSING_TIMEOUT", "1800"))
+# Orphan payload cleanup is retried with bounded exponential backoff.  A
+# cleanup that remains unavailable after the limit is retained as exhausted
+# operational evidence and is never retried automatically again.
+GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS = int(os.getenv("GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS", "5"))
+GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS = int(
+    os.getenv("GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS", "60")
+)
+GPX_ORPHAN_CLEANUP_RETRY_MAX_SECONDS = int(
+    os.getenv("GPX_ORPHAN_CLEANUP_RETRY_MAX_SECONDS", "3600")
+)
+GPX_ORPHAN_CLEANUP_LEASE_SECONDS = int(os.getenv("GPX_ORPHAN_CLEANUP_LEASE_SECONDS", "900"))
 # Direct Django deployments keep the streaming fallback. The production
 # Nginx stack enables the internal X-Accel-Redirect handoff.
 GPX_INTERNAL_REDIRECT = env_bool("GPX_INTERNAL_REDIRECT", False)

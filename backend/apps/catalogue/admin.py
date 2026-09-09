@@ -13,6 +13,7 @@ from django.urls import path, reverse
 from django.utils.html import format_html
 
 from apps.accounts.admin import owner_admin_site
+from apps.ingestion.models import OrphanPayloadCleanup
 
 from .models import (
     Category,
@@ -734,6 +735,26 @@ class ModerationDecisionAdmin(OwnerModelAdmin):
 
     def has_delete_permission(self, request: HttpRequest, obj: Any = None) -> bool:
         return False
+
+
+@admin.register(OrphanPayloadCleanup, site=owner_admin_site)
+class OrphanPayloadCleanupAdmin(OwnerModelAdmin):
+    """Read-only operational visibility for failed GPX payload cleanup."""
+
+    list_display = (
+        "storage_key",
+        "status",
+        "attempts",
+        "last_error",
+        "next_retry_at",
+        "claimed_until",
+        "created_at",
+        "last_attempt_at",
+        "completed_at",
+    )
+    list_filter = ("status", "created_at", "last_attempt_at")
+    search_fields = ("storage_key", "last_error", "source__mapy_url", "attempt__source_url")
+    readonly_fields = tuple(field.name for field in OrphanPayloadCleanup._meta.fields)
 
 
 for model in (

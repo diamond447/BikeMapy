@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import logging
 import math
 import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 from urllib.parse import urlparse
+from uuid import uuid4
 from xml.etree.ElementTree import Element
 
 import httpx
@@ -25,6 +28,8 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
+from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.catalogue.deduplication import classify_version, normalize_geometry
@@ -35,8 +40,11 @@ from .models import (
     ExtractionAttempt,
     ExtractionStatus,
     OrphanPayloadCleanup,
+    OrphanPayloadReconciliationState,
     OrphanPayloadStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GpxExtractionError(Exception):
@@ -740,8 +748,14 @@ def extract_gpx(
             existing = RouteVersion.objects.filter(source=source, checksum=checksum).first()
             storage_key = ""
             if existing is None and route.lifecycle == RouteLifecycle.PUBLISHED:
+                # Keep the checksum visible for diagnostics, but include the
+                # immutable extraction attempt identity so a stale orphan can
+                # never delete a future import that reuses the same checksum.
                 filename = PurePosixPath(
-                    "gpx", "routes", str(source.route_id), f"{checksum}.gpx"
+                    "gpx",
+                    "routes",
+                    str(source.route_id),
+                    f"{checksum}-{attempt.pk}.gpx",
                 ).as_posix()
                 storage_key = default_storage.save(filename, ContentFile(exported.content))
                 saved_storage_key = storage_key
@@ -861,32 +875,257 @@ def extract_gpx(
         return _failure(source_id, attempt.pk, exc, diagnostics=diagnostics)
 
 
-def cleanup_orphan_payload(orphan_id: int) -> dict[str, Any]:
-    """Retry deletion of a payload left by a failed import transaction."""
+def _orphan_setting(name: str, default: int) -> int:
+    return int(getattr(settings, name, default))
+
+
+def _orphan_result(orphan: OrphanPayloadCleanup, **extra: Any) -> dict[str, Any]:
+    return {"status": orphan.status, "orphan_id": orphan.pk, **extra}
+
+
+def _orphan_retry_delay(attempts: int) -> int:
+    base = max(0, _orphan_setting("GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS", 60))
+    cap = max(base, _orphan_setting("GPX_ORPHAN_CLEANUP_RETRY_MAX_SECONDS", 3600))
+    delay = base
+    for _ in range(max(0, attempts - 1)):
+        if delay >= cap:
+            break
+        delay = min(cap, delay * 2)
+    return delay
+
+
+def _claim_orphan_payload(
+    orphan_id: int, *, respect_backoff: bool
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Claim one cleanup row before doing external storage I/O."""
 
     with transaction.atomic():
         orphan = OrphanPayloadCleanup.objects.select_for_update().get(pk=orphan_id)
-        if orphan.status == OrphanPayloadStatus.COMPLETED:
-            return {"status": orphan.status, "orphan_id": orphan.pk}
+        if orphan.status in [OrphanPayloadStatus.COMPLETED, OrphanPayloadStatus.EXHAUSTED]:
+            return None, None, _orphan_result(orphan)
+        now = timezone.now()
+        if orphan.claimed_until is not None and orphan.claimed_until > now:
+            return None, None, _orphan_result(orphan, claimed=True)
+        if respect_backoff and orphan.next_retry_at is not None and orphan.next_retry_at > now:
+            return None, None, _orphan_result(orphan, deferred=True)
+        max_attempts = max(1, _orphan_setting("GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS", 5))
+        if orphan.attempts >= max_attempts:
+            orphan.status = OrphanPayloadStatus.EXHAUSTED
+            orphan.last_error = orphan.last_error or "Orphan payload cleanup retry limit exhausted."
+            orphan.next_retry_at = None
+            orphan.claim_token = ""
+            orphan.claimed_until = None
+            orphan.save(
+                update_fields=[
+                    "status",
+                    "last_error",
+                    "next_retry_at",
+                    "claim_token",
+                    "claimed_until",
+                ]
+            )
+            return None, None, _orphan_result(orphan)
+        token = uuid4().hex
         orphan.attempts += 1
-        orphan.last_attempt_at = timezone.now()
-        orphan.save(update_fields=["attempts", "last_attempt_at"])
+        orphan.last_attempt_at = now
+        orphan.claim_token = token
+        orphan.claimed_until = now + timedelta(
+            seconds=max(1, _orphan_setting("GPX_ORPHAN_CLEANUP_LEASE_SECONDS", 900))
+        )
+        orphan.save(update_fields=["attempts", "last_attempt_at", "claim_token", "claimed_until"])
+        return token, orphan.storage_key, None
+
+
+def _complete_orphan_payload(orphan_id: int, token: str, **extra: Any) -> dict[str, Any]:
+    with transaction.atomic():
+        orphan = OrphanPayloadCleanup.objects.select_for_update().get(pk=orphan_id)
+        if orphan.status in [OrphanPayloadStatus.COMPLETED, OrphanPayloadStatus.EXHAUSTED]:
+            return _orphan_result(orphan, **extra)
+        if orphan.claim_token != token:
+            return _orphan_result(orphan, claimed=True, **extra)
+        orphan.status = OrphanPayloadStatus.COMPLETED
+        orphan.completed_at = timezone.now()
+        orphan.last_error = ""
+        orphan.next_retry_at = None
+        orphan.claim_token = ""
+        orphan.claimed_until = None
+        orphan.save(
+            update_fields=[
+                "status",
+                "completed_at",
+                "last_error",
+                "next_retry_at",
+                "claim_token",
+                "claimed_until",
+            ]
+        )
+        return _orphan_result(orphan, **extra)
+
+
+def _fail_orphan_payload(orphan_id: int, token: str, error: str) -> dict[str, Any]:
+    with transaction.atomic():
+        orphan = OrphanPayloadCleanup.objects.select_for_update().get(pk=orphan_id)
+        if orphan.status in [OrphanPayloadStatus.COMPLETED, OrphanPayloadStatus.EXHAUSTED]:
+            return _orphan_result(orphan)
+        if orphan.claim_token != token:
+            return _orphan_result(orphan, claimed=True)
+        now = timezone.now()
+        max_attempts = max(1, _orphan_setting("GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS", 5))
+        orphan.last_error = error
+        if orphan.attempts >= max_attempts:
+            orphan.status = OrphanPayloadStatus.EXHAUSTED
+            orphan.next_retry_at = None
+        else:
+            orphan.status = OrphanPayloadStatus.FAILED
+            orphan.next_retry_at = now + timedelta(seconds=_orphan_retry_delay(orphan.attempts))
+        orphan.claim_token = ""
+        orphan.claimed_until = None
+        orphan.save(
+            update_fields=[
+                "status",
+                "last_error",
+                "next_retry_at",
+                "claim_token",
+                "claimed_until",
+            ]
+        )
+        return _orphan_result(orphan, error=orphan.last_error)
+
+
+def cleanup_orphan_payload(orphan_id: int, *, respect_backoff: bool = False) -> dict[str, Any]:
+    """Retry deletion of a payload left by a failed import transaction."""
+
+    token, storage_key, result = _claim_orphan_payload(orphan_id, respect_backoff=respect_backoff)
+    if result is not None:
+        return result
+    assert token is not None and storage_key is not None
     try:
-        default_storage.delete(orphan.storage_key)
+        # RouteVersion rows are immutable, so an orphan must never remove a
+        # key that has since become a live payload.  This check also handles a
+        # worker crash after claiming the orphan and before its retry runs.
+        if RouteVersion.objects.filter(original_gpx_storage_key=storage_key).exists():
+            return _complete_orphan_payload(orphan_id, token, protected=True)
+        # Storage deletion is intentionally idempotent.  Most Django storage
+        # backends already treat a missing key as success; a backend that
+        # raises FileNotFoundError gets the same treatment here.  The key is
+        # always the durable snapshot from the failed import, so a retry can
+        # never target a newer payload.
+        default_storage.delete(storage_key)
+    except FileNotFoundError:
+        return _complete_orphan_payload(orphan_id, token)
     except Exception as exc:
-        orphan.status = OrphanPayloadStatus.FAILED
-        orphan.last_error = str(exc)[:4000]
-        orphan.save(update_fields=["status", "last_error"])
-        return {
-            "status": orphan.status,
-            "orphan_id": orphan.pk,
-            "error": orphan.last_error,
-        }
-    orphan.status = OrphanPayloadStatus.COMPLETED
-    orphan.completed_at = timezone.now()
-    orphan.last_error = ""
-    orphan.save(update_fields=["status", "completed_at", "last_error"])
-    return {"status": orphan.status, "orphan_id": orphan.pk}
+        message = str(exc)[:4000]
+        result = _fail_orphan_payload(orphan_id, token, message)
+        logger.warning("Orphan payload cleanup failed for record %s: %s", orphan_id, message)
+        return result
+    return _complete_orphan_payload(orphan_id, token)
+
+
+def _select_orphan_reconciliation_candidates(*, limit: int, now: Any) -> list[OrphanPayloadCleanup]:
+    """Select a bounded, round-robin batch of pending and due failed work."""
+
+    common = Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=now)
+    available = Q(claimed_until__isnull=True) | Q(claimed_until__lte=now)
+    with transaction.atomic():
+        cursor, _ = OrphanPayloadReconciliationState.objects.select_for_update().get_or_create(pk=1)
+        pending = list(
+            OrphanPayloadCleanup.objects.filter(status=OrphanPayloadStatus.PENDING)
+            .filter(common)
+            .filter(available)
+            .order_by("created_at", "pk")[:limit]
+        )
+        failed = list(
+            OrphanPayloadCleanup.objects.filter(status=OrphanPayloadStatus.FAILED)
+            .filter(common)
+            .filter(available)
+            .order_by(
+                Coalesce("next_retry_at", "created_at"),
+                "created_at",
+                "pk",
+            )[:limit]
+        )
+        if not pending and not failed:
+            return []
+        if limit == 1:
+            preferred = (
+                OrphanPayloadReconciliationState.Bucket.PENDING
+                if cursor.last_selected_bucket == OrphanPayloadReconciliationState.Bucket.FAILED
+                else OrphanPayloadReconciliationState.Bucket.FAILED
+            )
+            if preferred == OrphanPayloadReconciliationState.Bucket.PENDING and pending:
+                selected = [pending[0]]
+            elif preferred == OrphanPayloadReconciliationState.Bucket.FAILED and failed:
+                selected = [failed[0]]
+            elif pending:
+                selected = [pending[0]]
+            else:
+                selected = [failed[0]]
+        else:
+            pending_budget = min(len(pending), (limit + 1) // 2)
+            failed_budget = min(len(failed), limit // 2)
+            selected = [*pending[:pending_budget], *failed[:failed_budget]]
+            remaining = limit - len(selected)
+            if remaining and len(pending) > pending_budget:
+                selected.extend(pending[pending_budget : pending_budget + remaining])
+                remaining = limit - len(selected)
+            if remaining and len(failed) > failed_budget:
+                selected.extend(failed[failed_budget : failed_budget + remaining])
+        cursor.last_selected_bucket = (
+            OrphanPayloadReconciliationState.Bucket.PENDING
+            if selected[-1].status == OrphanPayloadStatus.PENDING
+            else OrphanPayloadReconciliationState.Bucket.FAILED
+        )
+        cursor.save(update_fields=["last_selected_bucket", "updated_at"])
+        return selected
+
+
+def reconcile_orphan_payloads(*, limit: int = 100) -> dict[str, int]:
+    """Process a bounded batch of pending and retryable orphan payloads.
+
+    Candidate IDs are selected before external storage I/O.  Each item is
+    finalized independently, so one temporary storage outage cannot prevent
+    the rest of the batch from being attempted.
+    """
+
+    limit = max(1, int(limit))
+    now = timezone.now()
+    candidates = _select_orphan_reconciliation_candidates(limit=limit, now=now)
+    processed = completed = failed = exhausted = skipped = retried = 0
+    for candidate in candidates:
+        retried += int(candidate.attempts > 0)
+        try:
+            result = cleanup_orphan_payload(candidate.pk, respect_backoff=True)
+        except OrphanPayloadCleanup.DoesNotExist:
+            # Another reconciler may have finalized and removed an operational
+            # record between selection and processing.
+            skipped += 1
+            continue
+        if result.get("claimed") or result.get("deferred"):
+            skipped += 1
+            continue
+        processed += 1
+        if result["status"] == OrphanPayloadStatus.COMPLETED:
+            completed += 1
+        elif result["status"] == OrphanPayloadStatus.FAILED:
+            failed += 1
+        elif result["status"] == OrphanPayloadStatus.EXHAUSTED:
+            exhausted += 1
+    if failed or exhausted:
+        logger.warning(
+            "Orphan payload reconciliation left %s failed and %s exhausted record(s) "
+            "after processing %s",
+            failed,
+            exhausted,
+            processed,
+        )
+    return {
+        "processed": processed,
+        "completed": completed,
+        "failed": failed,
+        "exhausted": exhausted,
+        "retried": retried,
+        "skipped": skipped,
+    }
 
 
 # Descriptive aliases keep the service easy to discover for callers.
