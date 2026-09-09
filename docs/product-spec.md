@@ -385,8 +385,10 @@ provides fast local checks for formatting, linting, secrets, file hygiene, and
 commit-message conventions; CI remains authoritative.
 
 Common `make` targets such as `make lint`, `make typecheck`, `make test`, and
-`make check` provide a consistent local and CI interface. The target coverage
-floor is 80% for backend and frontend, coverage must not decrease in a pull
+`make check` provide a consistent local and CI interface. The backend coverage
+denominator is production modules under `backend/apps` and `backend/config`,
+excluding test modules. The target coverage floor is 80% for backend and
+frontend, coverage must not decrease in a pull
 request, and high-risk logic receives focused tests beyond a global number.
 Critical examples include parser behavior, idempotent imports, spatial
 deduplication, versioning, moderation, permissions, report protection, and

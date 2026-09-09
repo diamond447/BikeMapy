@@ -95,7 +95,7 @@ through that locked environment:
 ```sh
 make lint       # Ruff, ESLint, and Prettier checks
 make typecheck  # mypy with django-stubs and TypeScript
-make test       # pytest and Vitest (80% coverage floor)
+make test       # pytest and Vitest (80% production-code coverage floor)
 make check      # all of the above
 ```
 
