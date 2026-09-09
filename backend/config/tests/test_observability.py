@@ -1,4 +1,3 @@
-import ipaddress
 import json
 import logging
 import os
@@ -53,23 +52,43 @@ def test_sentry_scrubbing_removes_request_pii() -> None:
             "data": {"message": "a report"},
         },
         "user": {"ip_address": "192.0.2.4", "email": "reporter@example.test"},
-        "extra": {
-            "token": "secret",
-            "message": "failed",
-            "client_ip": ipaddress.ip_address("2001:db8::2"),
+        "extra": {"token": "secret", "message": "failed"},
+        "contexts": {
+            "report": {"message": "private report"},
+            "trace": {
+                "trace_id": "private report",
+                "span_id": "person@example.test",
+            },
         },
+        "breadcrumbs": {
+            "values": [{"message": "private report", "data": {"email": "person@example.test"}}]
+        },
+        "exception": {
+            "values": [
+                {
+                    "type": "RuntimeError",
+                    "value": "private report",
+                    "stacktrace": {"frames": [{"vars": {"report": "private report"}}]},
+                }
+            ]
+        },
+        "threads": {"values": [{"name": "private report", "stacktrace": {"frames": []}}]},
     }
     scrubbed = scrub_event(event)
-    assert "headers" not in scrubbed["request"]
-    assert "data" not in scrubbed["request"]
-    assert "env" not in scrubbed["request"]
-    assert scrubbed["user"] == {}
-    assert scrubbed["extra"]["token"] == "[REDACTED]"
-    assert scrubbed["extra"]["client_ip"] == "[REDACTED]"
+    assert "request" not in scrubbed
+    assert "user" not in scrubbed
+    assert "extra" not in scrubbed
+    assert scrubbed["contexts"] == {}
+    assert scrubbed["breadcrumbs"] == {"values": [{}]}
+    assert scrubbed["threads"] == {"values": [{"stacktrace": {"frames": []}}]}
+    assert scrubbed["exception"] == {
+        "values": [{"type": "RuntimeError", "stacktrace": {"frames": [{}]}}]
+    }
 
 
 def test_configured_sentry_capture_runs_before_send_scrubber() -> None:
     captured: list[dict[str, object]] = []
+    previous_client = getattr(sentry_sdk.get_global_scope(), "client", None)
 
     class MemoryTransport(Transport):
         def capture_envelope(self, envelope: Envelope) -> None:
@@ -82,13 +101,17 @@ def test_configured_sentry_capture_runs_before_send_scrubber() -> None:
         transport=MemoryTransport,
         before_send=scrub_event,
         send_default_pii=False,
+        include_local_variables=False,
     )
-    scope = sentry_sdk.Scope()
-    scope.set_user({"ip_address": "2001:db8::1", "email": "person@example.test"})
-    scope.set_extra("Authorization", "Bearer top-secret")
-    sentry_sdk.capture_message("report processing failed", scope=scope)
-    sentry_sdk.flush()
-    sentry_sdk.get_client().close()
+    try:
+        scope = sentry_sdk.Scope()
+        scope.set_user({"ip_address": "2001:db8::1", "email": "person@example.test"})
+        scope.set_extra("Authorization", "Bearer top-secret")
+        sentry_sdk.capture_message("report processing failed", scope=scope)
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.get_client().close()
+        sentry_sdk.get_global_scope().set_client(previous_client)
 
     assert captured
     event = captured[0]

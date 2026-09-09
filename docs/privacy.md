@@ -95,11 +95,15 @@ uses an HMAC-derived identifier held in Redis for at most 24 hours. Access
 logs are intentionally privacy-safe. Production Docker logging keeps at most
 14 rotated files of 10 MiB per service; this is a size/count cap, not a
 14-day guarantee, so elapsed retention depends on traffic and is currently
-unknown. Optional Sentry events are
-scrubbed of request headers, bodies, query strings, IP addresses, email, and
-secret-like values and must be configured for exactly 30 days. Hosted Sentry
-retention and the actual elapsed proxy/log retention still require operational
-evidence.
+unknown. Optional Sentry events are scrubbed of request and user payloads,
+exception values and frame locals/source context, breadcrumb messages/data,
+custom contexts, arbitrary extras, transaction names, and spans. Only
+typed event metadata and explicitly allow-listed exception fields, finite
+allow-listed breadcrumb metadata, and structurally validated trace/span IDs
+are retained;
+local-variable capture is disabled at the SDK. Sentry must be configured for
+exactly 30 days. Hosted Sentry retention and the actual elapsed proxy/log
+retention still require operational evidence.
 
 Closed reports retain their optional email for 90 days after closure. Report
 message and decision details are anonymized after 365 days; the daily Celery
