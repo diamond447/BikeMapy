@@ -506,6 +506,36 @@ describe('BikeMapy route discovery', () => {
     expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
   })
 
+  it('normalizes a lower initial count without claiming completion', async () => {
+    vi.restoreAllMocks()
+    mockRoutePages(() => ({
+      count: 1,
+      next: null,
+      previous: null,
+      results: [route, secondRoute],
+    }))
+    render(<App />)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByText('2 of 2 routes loaded')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
+  it('normalizes a lower later-page count without claiming completion', async () => {
+    const pageTwo = '/api/v1/routes/?page=2&page_size=100'
+    vi.restoreAllMocks()
+    mockRoutePages((query) =>
+      query.page === '2'
+        ? { count: 1, next: null, previous: null, results: [secondRoute] }
+        : { count: 3, next: pageTwo, previous: null, results: [route] },
+    )
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByText('2 of 2 routes loaded')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
   it('tracks detail and source interactions, resets on close, and keeps GPX disabled', async () => {
     vi.restoreAllMocks()
     mockApi(true)

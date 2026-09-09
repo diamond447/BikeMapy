@@ -788,21 +788,25 @@ function useRouteList(
         if (!active || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
         const routes = uniqueRoutes(data.results)
+        const count = Math.max(data.count, routes.length)
         let next = data.next ?? null
         let loadMoreError: string | null = null
-        if (next) {
+        if (data.count < routes.length) {
+          next = null
+          loadMoreError = copy.incompleteResults
+        } else if (next) {
           try {
             nextRouteRequest(next)
           } catch {
             next = null
             loadMoreError = copy.incompleteResults
           }
-        } else if (routes.length < data.count) {
+        } else if (routes.length < count) {
           loadMoreError = copy.incompleteResults
         }
         setState({
           routes,
-          count: data.count,
+          count,
           next,
           loading: false,
           loadingMore: false,
@@ -896,6 +900,8 @@ function useRouteList(
           }
         }
         const loaded = current.routes.length + appended.length
+        const count = Math.max(data.count, loaded)
+        if (data.count < loaded) structuralError = true
         if (!next && loaded < data.count) structuralError = true
         pagination.inFlight = false
         pagination.visited.add(nextRequest.key)
@@ -903,7 +909,7 @@ function useRouteList(
           setState({
             ...current,
             routes: [...current.routes, ...appended],
-            count: data.count,
+            count,
             next: null,
             loadingMore: false,
             loadMoreError: copy.incompleteResults,
@@ -914,7 +920,7 @@ function useRouteList(
         setState({
           ...current,
           routes: [...current.routes, ...appended],
-          count: data.count,
+          count,
           next,
           loadingMore: false,
           loadMoreError: null,
