@@ -80,6 +80,25 @@ def _latest_attempt(source_id: int) -> ExtractionAttempt | None:
     )
 
 
+def _provider_attempt_count(source_id: int) -> int:
+    """Count attempts that actually reached the provider boundary.
+
+    Gate-blocked rows are administrative deferrals, not provider retries. They
+    remain in the monotonic attempt history but must not exhaust the retry
+    budget when a deployment is toggled off and on again.
+    """
+
+    return ExtractionAttempt.objects.filter(
+        source_id=source_id,
+        status__in=[
+            ExtractionStatus.PROCESSING,
+            ExtractionStatus.SUCCEEDED,
+            ExtractionStatus.FAILED,
+            ExtractionStatus.SUPERSEDED,
+        ],
+    ).count()
+
+
 def _send_attempt(attempt_id: int) -> None:
     """Submit one committed attempt and record broker metadata.
 
@@ -230,7 +249,7 @@ def dispatch_source_extraction(source_id: int, *, force: bool = False) -> Extrac
                 return latest
             if latest.status == ExtractionStatus.SUCCEEDED and not force:
                 return latest
-            if latest.attempt_number >= _max_attempts():
+            if _provider_attempt_count(source.pk) >= _max_attempts():
                 return latest
         attempt = ExtractionAttempt.objects.create(
             source=source,

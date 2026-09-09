@@ -232,6 +232,37 @@ def test_execution_gate_blocks_queued_celery_work_without_provider_access() -> N
     GPX_EXTRACTION_ENABLED=True,
     GPX_PROVIDER_AUTHORIZED=True,
     GPX_LEGAL_APPROVED=True,
+    GPX_MAX_ATTEMPTS=1,
+)
+def test_reenabled_gate_does_not_spend_retry_budget_on_blocked_history(
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    source = make_source()
+    source.processing_status = "blocked"
+    source.save(update_fields=["processing_status"])
+    blocked = ExtractionAttempt.objects.create(
+        source=source,
+        source_url=source.mapy_url,
+        status=ExtractionStatus.BLOCKED,
+        attempt_number=7,
+        error="provider authorization was disabled",
+        finished_at=timezone.now(),
+    )
+    with patch("apps.ingestion.tasks.extract_gpx_route.delay") as delay:
+        with django_capture_on_commit_callbacks(execute=True):
+            retry = dispatch_source_extraction(source.pk)
+
+    assert retry is not None
+    assert retry.pk != blocked.pk
+    assert retry.attempt_number == 8
+    assert retry.status == ExtractionStatus.QUEUED
+    delay.assert_called_once_with(source.pk, retry.pk)
+
+
+@override_settings(
+    GPX_EXTRACTION_ENABLED=True,
+    GPX_PROVIDER_AUTHORIZED=True,
+    GPX_LEGAL_APPROVED=True,
 )
 def test_failed_extraction_is_reconciled_as_a_new_retry(
     django_capture_on_commit_callbacks: Any,
