@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from scripts.rehearse_launch import runtime_env
 
 
 @pytest.mark.parametrize("public_host", ["api.example.invalid", "staging.example.invalid"])
@@ -93,3 +94,10 @@ def test_production_compose_requires_explicit_debug_false(tmp_path: Path) -> Non
     )
     assert result.returncode != 0
     assert "DJANGO_DEBUG" in result.stderr
+
+
+def test_launch_rehearsal_runtime_env_disables_debug(tmp_path: Path) -> None:
+    env_file = tmp_path / "runtime.env"
+    runtime_env(env_file, "bikemapy-rehearsal:test")
+
+    assert "DJANGO_DEBUG=false\n" in env_file.read_text()
