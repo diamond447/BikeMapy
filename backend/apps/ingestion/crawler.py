@@ -1096,6 +1096,7 @@ def run_crawl(
     parser = parser or BeautifulSoupBikeForumParser()
     source_checker = source_checker or HttpxSourceChecker()
     total = ImportResult()
+    total_extractions_queued = 0
     page_errors: list[str] = []
     try:
         for _ in range(max_pages):
@@ -1125,6 +1126,7 @@ def run_crawl(
                     else []
                 )
                 extraction_dispatch = dispatch_sources(page_result.source_ids)
+                total_extractions_queued += extraction_dispatch.get("queued", 0)
                 page_errors.extend(page_result.errors + source_errors)
                 total.threads += page_result.threads
                 total.posts += page_result.posts
@@ -1259,9 +1261,7 @@ def run_crawl(
         "errors": all_errors,
         "next_url": checkpoint.next_url,
         "frontier_remaining": remaining,
-        "extractions_queued": extraction_dispatch.get("queued", 0)
-        if "extraction_dispatch" in locals()
-        else 0,
+        "extractions_queued": total_extractions_queued,
     }
 
 

@@ -13,15 +13,15 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from functools import partial
-from typing import Any
+from uuid import uuid4
 
-from celery.result import AsyncResult  # type: ignore[import-untyped]
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
 from apps.catalogue.models import (
     ProcessingStatus,
+    Route,
     RouteLifecycle,
     RouteSource,
     SourceDenylistEntry,
@@ -92,20 +92,39 @@ def _send_attempt(attempt_id: int) -> None:
         attempt = ExtractionAttempt.objects.select_for_update().get(pk=attempt_id)
         if attempt.status != ExtractionStatus.QUEUED:
             return
+        now = timezone.now()
+        if attempt.dispatch_claimed_until and attempt.dispatch_claimed_until > now:
+            return
+        claim_token = uuid4().hex
         attempt.dispatch_attempts += 1
         attempt.dispatch_error = ""
-        attempt.save(update_fields=["dispatch_attempts", "dispatch_error"])
+        attempt.dispatch_claim_token = claim_token
+        attempt.dispatch_claimed_until = now + timedelta(seconds=_dispatch_timeout())
+        attempt.save(
+            update_fields=[
+                "dispatch_attempts",
+                "dispatch_error",
+                "dispatch_claim_token",
+                "dispatch_claimed_until",
+            ]
+        )
         source_id = attempt.source_id
 
     try:
         from .tasks import extract_gpx_route
 
-        result: AsyncResult[Any] = extract_gpx_route.delay(source_id, attempt_id)
+        result = extract_gpx_route.delay(source_id, attempt_id)
         task_id = str(getattr(result, "id", "") or "")
     except Exception as exc:  # broker outages are durable and retryable
         message = str(exc)[:4000]
-        ExtractionAttempt.objects.filter(pk=attempt_id, status=ExtractionStatus.QUEUED).update(
-            dispatch_error=message
+        ExtractionAttempt.objects.filter(
+            pk=attempt_id,
+            status=ExtractionStatus.QUEUED,
+            dispatch_claim_token=claim_token,
+        ).update(
+            dispatch_error=message,
+            dispatch_claim_token="",
+            dispatch_claimed_until=None,
         )
         logger.warning("Could not dispatch GPX extraction attempt %s", attempt_id, exc_info=True)
         return
@@ -113,7 +132,82 @@ def _send_attempt(attempt_id: int) -> None:
     ExtractionAttempt.objects.filter(
         pk=attempt_id,
         status=ExtractionStatus.QUEUED,
-    ).update(dispatched_at=timezone.now(), dispatch_task_id=task_id, dispatch_error="")
+        dispatch_claim_token=claim_token,
+    ).update(
+        dispatched_at=timezone.now(),
+        dispatch_task_id=task_id,
+        dispatch_error="",
+        dispatch_claim_token="",
+        dispatch_claimed_until=None,
+    )
+
+
+def block_extraction_attempt(
+    source_id: int, *, attempt_id: int | None, reason: str
+) -> dict[str, int | str | None]:
+    """Fence queued work when execution gates are disabled.
+
+    A blocked attempt remains durable and is picked up by reconciliation once
+    the gates are enabled.  A completed source is left untouched when a
+    manually invoked task is rejected by the gate.
+    """
+
+    with transaction.atomic():
+        route_id = RouteSource.objects.values_list("route_id", flat=True).get(pk=source_id)
+        Route.objects.select_for_update().get(pk=route_id)
+        source = RouteSource.objects.select_for_update().select_related("route").get(pk=source_id)
+        attempt = None
+        if attempt_id is not None:
+            attempt = ExtractionAttempt.objects.select_for_update().get(pk=attempt_id)
+            if attempt.source_id != source.pk:
+                raise ValueError("Extraction attempt belongs to another source")
+        else:
+            latest = _latest_attempt(source.pk)
+            if latest is not None and latest.status == ExtractionStatus.SUCCEEDED:
+                return {
+                    "status": ExtractionStatus.BLOCKED,
+                    "source_id": source_id,
+                    "attempt_id": latest.pk,
+                    "error": reason,
+                }
+            attempt = latest
+        if attempt is None:
+            attempt = ExtractionAttempt.objects.create(
+                source=source,
+                source_url=source.mapy_url,
+                status=ExtractionStatus.BLOCKED,
+                attempt_number=1,
+                diagnostics={"activation_gate": reason},
+                error=reason,
+                finished_at=timezone.now(),
+            )
+        elif attempt.status in {ExtractionStatus.QUEUED, ExtractionStatus.PROCESSING}:
+            attempt.status = ExtractionStatus.BLOCKED
+            attempt.error = reason
+            attempt.diagnostics = {**attempt.diagnostics, "activation_gate": reason}
+            attempt.finished_at = timezone.now()
+            attempt.dispatch_claim_token = ""
+            attempt.dispatch_claimed_until = None
+            attempt.save(
+                update_fields=[
+                    "status",
+                    "error",
+                    "diagnostics",
+                    "finished_at",
+                    "dispatch_claim_token",
+                    "dispatch_claimed_until",
+                ]
+            )
+        if source.processing_status in {ProcessingStatus.DISCOVERED, ProcessingStatus.PROCESSING}:
+            source.processing_status = ProcessingStatus.BLOCKED
+            source.last_error = reason
+            source.save(update_fields=["processing_status", "last_error"])
+        return {
+            "status": ExtractionStatus.BLOCKED,
+            "source_id": source_id,
+            "attempt_id": attempt.pk,
+            "error": reason,
+        }
 
 
 def dispatch_source_extraction(source_id: int, *, force: bool = False) -> ExtractionAttempt | None:
@@ -194,6 +288,13 @@ def reconcile_extraction_queue(*, limit: int = 100) -> dict[str, int | str]:
     ).order_by("started_at", "pk")[:limit]
     for stale_attempt in stale_processing:
         with transaction.atomic():
+            source_id, route_id = (
+                ExtractionAttempt.objects.filter(pk=stale_attempt.pk)
+                .values_list("source_id", "source__route_id")
+                .get()
+            )
+            Route.objects.select_for_update().get(pk=route_id)
+            source = RouteSource.objects.select_for_update().get(pk=source_id)
             attempt = ExtractionAttempt.objects.select_for_update().get(pk=stale_attempt.pk)
             if attempt.status != ExtractionStatus.PROCESSING:
                 continue
@@ -202,8 +303,17 @@ def reconcile_extraction_queue(*, limit: int = 100) -> dict[str, int | str]:
             attempt.status = ExtractionStatus.FAILED
             attempt.error = message
             attempt.finished_at = now
-            attempt.save(update_fields=["status", "error", "finished_at"])
-            source = RouteSource.objects.select_for_update().get(pk=attempt.source_id)
+            attempt.dispatch_claim_token = ""
+            attempt.dispatch_claimed_until = None
+            attempt.save(
+                update_fields=[
+                    "status",
+                    "error",
+                    "finished_at",
+                    "dispatch_claim_token",
+                    "dispatch_claimed_until",
+                ]
+            )
             if source.processing_status == ProcessingStatus.PROCESSING:
                 source.processing_status = ProcessingStatus.FAILED
                 source.processed_at = now
@@ -232,7 +342,13 @@ def reconcile_extraction_queue(*, limit: int = 100) -> dict[str, int | str]:
     if remaining:
         candidates = (
             RouteSource.objects.select_related("route")
-            .filter(processing_status__in=[ProcessingStatus.DISCOVERED, ProcessingStatus.FAILED])
+            .filter(
+                processing_status__in=[
+                    ProcessingStatus.DISCOVERED,
+                    ProcessingStatus.FAILED,
+                    ProcessingStatus.BLOCKED,
+                ]
+            )
             .exclude(extraction_attempts__status=ExtractionStatus.QUEUED)
             .exclude(extraction_attempts__status=ExtractionStatus.PROCESSING)
             .order_by("discovered_at", "pk")[:remaining]

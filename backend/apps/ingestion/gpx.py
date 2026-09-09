@@ -585,11 +585,30 @@ def _failure(
         Route.objects.select_for_update().get(pk=route_id)
         source = RouteSource.objects.select_for_update().get(pk=source_id)
         attempt = ExtractionAttempt.objects.select_for_update().get(pk=attempt_id)
+        if attempt.status not in {ExtractionStatus.PROCESSING, ExtractionStatus.QUEUED}:
+            return {
+                "status": attempt.status,
+                "source_id": source_id,
+                "attempt_id": attempt_id,
+                "error": attempt.error,
+                "diagnostics": attempt.diagnostics,
+            }
         attempt.status = ExtractionStatus.FAILED
         attempt.error = message
         attempt.diagnostics = diagnostics
         attempt.finished_at = now
-        attempt.save(update_fields=["status", "error", "diagnostics", "finished_at"])
+        attempt.dispatch_claim_token = ""
+        attempt.dispatch_claimed_until = None
+        attempt.save(
+            update_fields=[
+                "status",
+                "error",
+                "diagnostics",
+                "finished_at",
+                "dispatch_claim_token",
+                "dispatch_claimed_until",
+            ]
+        )
         latest_id = (
             ExtractionAttempt.objects.filter(source_id=source_id)
             .order_by("-pk")
@@ -628,6 +647,13 @@ def extract_gpx(
 
     from apps.catalogue.models import Route, RouteSource, SourceDenylistEntry
 
+    if attempt_id is not None:
+        from .dispatch import block_extraction_attempt, extraction_gate_reason
+
+        gate_reason = extraction_gate_reason()
+        if gate_reason is not None:
+            return block_extraction_attempt(source_id, attempt_id=attempt_id, reason=gate_reason)
+
     with transaction.atomic():
         source = RouteSource.objects.get(pk=source_id)
         route = Route.objects.select_for_update().get(pk=source.route_id)
@@ -657,7 +683,16 @@ def extract_gpx(
                 raise GpxExtractionError(f"Extraction attempt is not queued: {attempt.status}")
             attempt.status = ExtractionStatus.PROCESSING
             attempt.started_at = timezone.now()
-            attempt.save(update_fields=["status", "started_at"])
+            attempt.dispatch_claim_token = ""
+            attempt.dispatch_claimed_until = None
+            attempt.save(
+                update_fields=[
+                    "status",
+                    "started_at",
+                    "dispatch_claim_token",
+                    "dispatch_claimed_until",
+                ]
+            )
         source.processing_status = ProcessingStatus.PROCESSING
         source.last_error = ""
         source.save(update_fields=["processing_status", "last_error"])
@@ -697,6 +732,11 @@ def extract_gpx(
             )
             if latest_attempt_id != attempt.pk:
                 raise GpxExtractionError("Extraction attempt was superseded by a newer attempt")
+            attempt = ExtractionAttempt.objects.select_for_update().get(pk=attempt.pk)
+            if attempt.status != ExtractionStatus.PROCESSING:
+                raise GpxExtractionError(
+                    f"Extraction attempt is no longer processing: {attempt.status}"
+                )
             existing = RouteVersion.objects.filter(source=source, checksum=checksum).first()
             storage_key = ""
             if existing is None and route.lifecycle == RouteLifecycle.PUBLISHED:
@@ -773,8 +813,18 @@ def extract_gpx(
             attempt.diagnostics = diagnostics
             attempt.checksum = checksum
             attempt.version = version
+            attempt.dispatch_claim_token = ""
+            attempt.dispatch_claimed_until = None
             attempt.save(
-                update_fields=["status", "finished_at", "diagnostics", "checksum", "version"]
+                update_fields=[
+                    "status",
+                    "finished_at",
+                    "diagnostics",
+                    "checksum",
+                    "version",
+                    "dispatch_claim_token",
+                    "dispatch_claimed_until",
+                ]
             )
         return {
             "status": ExtractionStatus.SUCCEEDED,
