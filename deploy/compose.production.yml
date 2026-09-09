@@ -4,6 +4,9 @@ services:
   backend:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
+    environment:
+      BIKEMAPY_DEPLOYMENT_MODE: production
+      DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
     command: uv run --locked --no-dev gunicorn config.wsgi:application --logger-class config.gunicorn.JsonGunicornLogger --bind 0.0.0.0:8000 --workers ${WEB_WORKERS:-3} --error-logfile -
     volumes:
       - gpx_data:/app/storage
@@ -32,6 +35,9 @@ services:
   worker:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
+    environment:
+      BIKEMAPY_DEPLOYMENT_MODE: production
+      DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
     command: uv run --locked --no-dev celery -A config worker --loglevel=INFO
     volumes:
       - gpx_data:/app/storage
@@ -43,6 +49,9 @@ services:
   beat:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
+    environment:
+      BIKEMAPY_DEPLOYMENT_MODE: production
+      DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
     command: uv run --locked --no-dev celery -A config beat --loglevel=INFO
     depends_on:
       db: { condition: service_healthy }

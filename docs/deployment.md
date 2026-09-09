@@ -104,7 +104,9 @@ logs at 10 MiB with fourteen files per service.
 Production startup fails if secure session/CSRF cookies, the HTTPS redirect,
 HSTS, or the trusted HTTPS proxy header are weakened. The production settings
 also make both cookies `Secure`, so owner authentication cannot establish a
-cookie over an insecure request.
+cookie over an insecure request. Production Compose requires an explicit
+`DJANGO_DEBUG=false` value and sets its deployment mode; it refuses to render
+when that value is absent, and Django refuses to start if it is true.
 
 The repository does not assume a homeserver exists. When one is available,
 install `cloudflared` on that host and route a named tunnel to the local Nginx

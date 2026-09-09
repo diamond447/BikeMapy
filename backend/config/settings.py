@@ -17,7 +17,14 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "local-development-key-do-not-use-in-production")
+DEPLOYMENT_MODE = os.getenv("BIKEMAPY_DEPLOYMENT_MODE", "local").lower()
+if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
+    raise ImproperlyConfigured(
+        "DJANGO_DEBUG must be explicitly set to false in production deployments"
+    )
 DEBUG = env_bool("DJANGO_DEBUG", True)
+if DEPLOYMENT_MODE == "production" and DEBUG:
+    raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")
 ALLOWED_HOSTS = [
     host for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host

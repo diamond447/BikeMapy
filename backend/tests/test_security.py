@@ -54,6 +54,27 @@ def test_production_transport_settings_enable_secure_cookies_and_hsts() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_production_mode_rejects_missing_debug_setting() -> None:
+    environment = os.environ.copy()
+    environment.pop("DJANGO_DEBUG", None)
+    environment.update(
+        {
+            "BIKEMAPY_DEPLOYMENT_MODE": "production",
+            "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "PYTHONPATH": "backend",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", "import config.settings"],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "DJANGO_DEBUG must be explicitly set to false" in result.stderr
+
+
 def test_production_transport_validation_rejects_insecure_cookie(monkeypatch: Any) -> None:
     monkeypatch.setattr(project_settings, "DEBUG", False)
     monkeypatch.setattr(project_settings, "SESSION_COOKIE_SECURE", False)
