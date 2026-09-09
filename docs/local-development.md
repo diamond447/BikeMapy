@@ -112,8 +112,10 @@ out of the initial skeleton until the API contract is established.
 `.env.example` and `frontend/.env.example` contain placeholders only. Copy
 them locally; never commit `.env`, credentials, OAuth secrets, or production
 configuration. A production deployment must provide a strong secret key and
-explicit hosts, database credentials, allowed origins, and secure cookie/TLS
-settings through its environment.
+explicit hosts, database credentials, and allowed origins. With
+`DJANGO_DEBUG=false`, the application enforces secure cookies and its
+production TLS settings; the deployment edge must still provide HTTPS and
+forward the public scheme as described in the deployment runbook.
 
 Anonymous reporting also requires `REPORT_TURNSTILE_SECRET_KEY` and the public
 frontend `VITE_TURNSTILE_SITE_KEY` for the Cloudflare challenge.

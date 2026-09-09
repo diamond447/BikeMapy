@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from django.core.exceptions import ImproperlyConfigured
+
 from .logging import LOGGING as LOGGING_CONFIG_VALUE
 from .observability import init_sentry
 
@@ -163,6 +165,51 @@ READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
 CORS_ALLOWED_ORIGIN_REGEXES = [READ_ONLY_PREVIEW_ORIGIN_REGEX]
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = env_bool("USE_X_FORWARDED_HOST", False)
+
+# The public edge terminates TLS and proxy_params preserves that scheme for
+# Django. Production therefore redirects any request that reaches Django
+# without the HTTPS scheme and emits a one-year HSTS policy. Secure cookies
+# must never be relaxed in production: an insecure first request must not be
+# able to establish an owner session or CSRF cookie over cleartext transport.
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_SSL_REDIRECT = not DEBUG
+SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+SECURE_HSTS_PRELOAD = not DEBUG
+
+
+def validate_production_security_settings() -> None:
+    """Fail startup when production transport protections are weakened."""
+
+    if DEBUG:
+        return
+
+    invalid = [
+        name
+        for name, valid in (
+            ("SESSION_COOKIE_SECURE", SESSION_COOKIE_SECURE),
+            ("CSRF_COOKIE_SECURE", CSRF_COOKIE_SECURE),
+            ("SECURE_SSL_REDIRECT", SECURE_SSL_REDIRECT),
+            ("SECURE_HSTS_SECONDS", SECURE_HSTS_SECONDS >= 31536000),
+            ("SECURE_HSTS_INCLUDE_SUBDOMAINS", SECURE_HSTS_INCLUDE_SUBDOMAINS),
+            ("SECURE_HSTS_PRELOAD", SECURE_HSTS_PRELOAD),
+            (
+                "SECURE_PROXY_SSL_HEADER",
+                SECURE_PROXY_SSL_HEADER == ("HTTP_X_FORWARDED_PROTO", "https"),
+            ),
+        )
+        if not valid
+    ]
+    if invalid:
+        names = ", ".join(invalid)
+        raise ImproperlyConfigured(
+            f"Production transport security settings are not enabled: {names}"
+        )
+
+
+validate_production_security_settings()
+
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],

@@ -1,13 +1,18 @@
 """Regression checks for the application's security defaults."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from scripts.check_codeql_sarif import actionable_findings
+
+from config import settings as project_settings
 
 
 def test_public_api_has_bounded_anonymous_and_authenticated_rates() -> None:
@@ -19,6 +24,42 @@ def test_public_api_has_bounded_anonymous_and_authenticated_rates() -> None:
     assert "rest_framework.throttling.UserRateThrottle" in throttle_classes
     assert rates["anon"]
     assert rates["user"]
+
+
+def test_production_transport_settings_enable_secure_cookies_and_hsts() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from config import settings; "
+                "assert settings.SESSION_COOKIE_SECURE is True; "
+                "assert settings.CSRF_COOKIE_SECURE is True; "
+                "assert settings.SECURE_SSL_REDIRECT is True; "
+                "assert settings.SECURE_HSTS_SECONDS >= 31536000; "
+                "assert settings.SECURE_HSTS_INCLUDE_SUBDOMAINS is True; "
+                "assert settings.SECURE_HSTS_PRELOAD is True"
+            ),
+        ],
+        env={
+            **os.environ,
+            "DJANGO_DEBUG": "false",
+            "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "PYTHONPATH": "backend",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_production_transport_validation_rejects_insecure_cookie(monkeypatch: Any) -> None:
+    monkeypatch.setattr(project_settings, "DEBUG", False)
+    monkeypatch.setattr(project_settings, "SESSION_COOKIE_SECURE", False)
+
+    with pytest.raises(ImproperlyConfigured, match="SESSION_COOKIE_SECURE"):
+        project_settings.validate_production_security_settings()
 
 
 def test_forum_responses_have_a_parser_byte_cap() -> None:
