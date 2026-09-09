@@ -19,8 +19,10 @@ def test_production_compose_readiness_and_proxy_survive_public_host_change(
 
     root = Path(__file__).parents[3]
     compose_file = root / "deploy" / "compose.production.yml"
+    example_file = root / "deploy" / ".env.production.example"
+    assert example_file.is_file(), "tracked production environment example is required"
     env_file = tmp_path / ".env.production"
-    example = (root / "deploy" / ".env.production.example").read_text()
+    example = example_file.read_text()
     env_file.write_text(
         f"BIKEMAPY_ENV_FILE={env_file}\n{example.replace('api.example.invalid', public_host)}"
     )
@@ -64,8 +66,10 @@ def test_production_compose_requires_explicit_debug_false(tmp_path: Path) -> Non
 
     root = Path(__file__).parents[3]
     compose_file = root / "deploy" / "compose.production.yml"
+    example_file = root / "deploy" / ".env.production.example"
+    assert example_file.is_file(), "tracked production environment example is required"
     env_file = tmp_path / ".env.production"
-    example = (root / "deploy" / ".env.production.example").read_text()
+    example = example_file.read_text()
     env_file.write_text(
         f"BIKEMAPY_ENV_FILE={env_file}\n{example.replace('DJANGO_DEBUG=false\n', '')}"
     )

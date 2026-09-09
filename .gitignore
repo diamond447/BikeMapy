@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+!deploy/.env.production.example
 frontend/.env
 frontend/node_modules/
 frontend/dist/
