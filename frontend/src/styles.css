@@ -423,7 +423,8 @@ h1 {
   cursor: pointer;
   font-family: inherit;
   font-size: inherit;
-  padding: 2px 0;
+  min-height: 40px;
+  padding: 9px 4px;
   text-align: left;
   text-decoration: underline;
   text-underline-offset: 3px;

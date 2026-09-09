@@ -174,6 +174,27 @@ function mockApi(success = false) {
   }) as never)
 }
 
+function mockRoutePages(handler: (query: Record<string, string>) => unknown) {
+  return vi.spyOn(apiClient, 'GET').mockImplementation(((path: string, options?: unknown) => {
+    if (path === '/api/v1/routes/') {
+      const query =
+        (options as { params?: { query?: Record<string, string> } })?.params?.query ?? {}
+      return Promise.resolve({ data: handler(query), error: undefined }) as never
+    }
+    if (path.includes('/geometry/'))
+      return Promise.resolve({
+        data: { id: route.id, slug: route.slug, title: route.title, geometry },
+        error: undefined,
+      }) as never
+    if (path.includes('/viewport/'))
+      return Promise.resolve({
+        data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+        error: undefined,
+      }) as never
+    return Promise.resolve({ data: remoteRoute, error: undefined }) as never
+  }) as never)
+}
+
 describe('BikeMapy route discovery', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -424,6 +445,65 @@ describe('BikeMapy route discovery', () => {
         screen.queryByRole('button', { name: /remote route outside page/i }),
       ).not.toBeInTheDocument(),
     )
+  })
+
+  it('deduplicates a page and stops when its next link repeats', async () => {
+    const pageTwo = '/api/v1/routes/?page=2&page_size=100'
+    vi.restoreAllMocks()
+    mockRoutePages((query) =>
+      query.page === '2'
+        ? { count: 3, next: pageTwo, previous: null, results: [secondRoute, secondRoute] }
+        : { count: 3, next: pageTwo, previous: null, results: [route] },
+    )
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(screen.getAllByRole('button', { name: /north ridge loop/i })).toHaveLength(1)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more routes/i })).not.toBeInTheDocument()
+  })
+
+  it('stops a later page when its next link forms a cycle', async () => {
+    const pageTwo = '/api/v1/routes/?page=2&page_size=100'
+    const pageThree = '/api/v1/routes/?page=3&page_size=100'
+    vi.restoreAllMocks()
+    mockRoutePages((query) => {
+      if (query.page === '2')
+        return { count: 3, next: pageThree, previous: null, results: [secondRoute] }
+      if (query.page === '3') return { count: 3, next: pageTwo, previous: null, results: [] }
+      return { count: 3, next: pageTwo, previous: null, results: [route] }
+    })
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
+  it('rejects a malformed next link without a pagination cursor', async () => {
+    vi.restoreAllMocks()
+    mockRoutePages(() => ({
+      count: 2,
+      next: '/api/v1/routes/?page_size=100',
+      previous: null,
+      results: [route],
+    }))
+    render(<App />)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more routes/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
+  it('does not claim completion when the API count exceeds the loaded routes', async () => {
+    vi.restoreAllMocks()
+    mockRoutePages(() => ({ count: 2, next: null, previous: null, results: [route] }))
+    render(<App />)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByText('1 of 2 routes loaded')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
   })
 
   it('tracks detail and source interactions, resets on close, and keeps GPX disabled', async () => {
