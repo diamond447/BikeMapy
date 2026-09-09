@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import logging
 import math
 import socket
 import time
@@ -37,6 +38,8 @@ from .models import (
     OrphanPayloadCleanup,
     OrphanPayloadStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GpxExtractionError(Exception):
@@ -871,22 +874,86 @@ def cleanup_orphan_payload(orphan_id: int) -> dict[str, Any]:
         orphan.attempts += 1
         orphan.last_attempt_at = timezone.now()
         orphan.save(update_fields=["attempts", "last_attempt_at"])
+        storage_key = orphan.storage_key
     try:
-        default_storage.delete(orphan.storage_key)
+        # Storage deletion is intentionally idempotent.  Most Django storage
+        # backends already treat a missing key as success; a backend that
+        # raises FileNotFoundError gets the same treatment here.  The key is
+        # always the durable snapshot from the failed import, so a retry can
+        # never target a newer payload.
+        default_storage.delete(storage_key)
+    except FileNotFoundError:
+        pass
     except Exception as exc:
-        orphan.status = OrphanPayloadStatus.FAILED
-        orphan.last_error = str(exc)[:4000]
-        orphan.save(update_fields=["status", "last_error"])
-        return {
-            "status": orphan.status,
-            "orphan_id": orphan.pk,
-            "error": orphan.last_error,
-        }
-    orphan.status = OrphanPayloadStatus.COMPLETED
-    orphan.completed_at = timezone.now()
-    orphan.last_error = ""
-    orphan.save(update_fields=["status", "completed_at", "last_error"])
-    return {"status": orphan.status, "orphan_id": orphan.pk}
+        message = str(exc)[:4000]
+        with transaction.atomic():
+            current = OrphanPayloadCleanup.objects.select_for_update().get(pk=orphan_id)
+            if current.status == OrphanPayloadStatus.COMPLETED:
+                return {"status": current.status, "orphan_id": current.pk}
+            current.status = OrphanPayloadStatus.FAILED
+            current.last_error = message
+            current.save(update_fields=["status", "last_error"])
+            result = {
+                "status": current.status,
+                "orphan_id": current.pk,
+                "error": current.last_error,
+            }
+        logger.warning("Orphan payload cleanup failed for record %s: %s", orphan_id, message)
+        return result
+
+    with transaction.atomic():
+        current = OrphanPayloadCleanup.objects.select_for_update().get(pk=orphan_id)
+        if current.status == OrphanPayloadStatus.COMPLETED:
+            return {"status": current.status, "orphan_id": current.pk}
+        current.status = OrphanPayloadStatus.COMPLETED
+        current.completed_at = timezone.now()
+        current.last_error = ""
+        current.save(update_fields=["status", "completed_at", "last_error"])
+        return {"status": current.status, "orphan_id": current.pk}
+
+
+def reconcile_orphan_payloads(*, limit: int = 100) -> dict[str, int]:
+    """Process a bounded batch of pending and retryable orphan payloads.
+
+    Candidate IDs are selected before external storage I/O.  Each item is
+    finalized independently, so one temporary storage outage cannot prevent
+    the rest of the batch from being attempted.
+    """
+
+    limit = max(1, int(limit))
+    candidates = list(
+        OrphanPayloadCleanup.objects.filter(
+            status__in=[OrphanPayloadStatus.PENDING, OrphanPayloadStatus.FAILED]
+        ).order_by("created_at", "pk")[:limit]
+    )
+    processed = completed = failed = skipped = retried = 0
+    for candidate in candidates:
+        retried += int(candidate.attempts > 0)
+        try:
+            result = cleanup_orphan_payload(candidate.pk)
+        except OrphanPayloadCleanup.DoesNotExist:
+            # Another reconciler may have finalized and removed an operational
+            # record between selection and processing.
+            skipped += 1
+            continue
+        processed += 1
+        if result["status"] == OrphanPayloadStatus.COMPLETED:
+            completed += 1
+        elif result["status"] == OrphanPayloadStatus.FAILED:
+            failed += 1
+    if failed:
+        logger.warning(
+            "Orphan payload reconciliation left %s failed record(s) after processing %s",
+            failed,
+            processed,
+        )
+    return {
+        "processed": processed,
+        "completed": completed,
+        "failed": failed,
+        "retried": retried,
+        "skipped": skipped,
+    }
 
 
 # Descriptive aliases keep the service easy to discover for callers.

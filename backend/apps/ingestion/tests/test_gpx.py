@@ -389,6 +389,69 @@ def test_failed_storage_cleanup_is_durable_and_retryable() -> None:
     assert orphan.completed_at is not None
 
 
+def test_orphan_reconciliation_retries_failures_and_handles_missing_payloads() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    retryable = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/retry.gpx",
+        status=OrphanPayloadStatus.PENDING,
+    )
+    already_deleted = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/already-deleted.gpx",
+        status=OrphanPayloadStatus.PENDING,
+    )
+
+    calls: list[str] = []
+
+    def delete(key: str) -> None:
+        calls.append(key)
+        if key == retryable.storage_key and calls.count(key) == 1:
+            raise OSError("storage offline")
+        if key == already_deleted.storage_key:
+            raise FileNotFoundError(key)
+
+    from apps.ingestion.gpx import reconcile_orphan_payloads
+
+    with patch("apps.ingestion.gpx.default_storage.delete", side_effect=delete):
+        first = reconcile_orphan_payloads(limit=2)
+        retry = reconcile_orphan_payloads(limit=1)
+
+    retryable.refresh_from_db()
+    already_deleted.refresh_from_db()
+    assert first == {"processed": 2, "completed": 1, "failed": 1, "retried": 0, "skipped": 0}
+    assert retry == {"processed": 1, "completed": 1, "failed": 0, "retried": 1, "skipped": 0}
+    assert retryable.status == OrphanPayloadStatus.COMPLETED
+    assert retryable.attempts == 2
+    assert already_deleted.status == OrphanPayloadStatus.COMPLETED
+    assert already_deleted.attempts == 1
+
+
+def test_repeated_completed_orphan_cleanup_is_idempotent() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    orphan = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/repeated.gpx",
+    )
+    from apps.ingestion.gpx import cleanup_orphan_payload
+
+    with patch("apps.ingestion.gpx.default_storage.delete") as delete:
+        first = cleanup_orphan_payload(orphan.pk)
+        second = cleanup_orphan_payload(orphan.pk)
+
+    assert first["status"] == second["status"] == OrphanPayloadStatus.COMPLETED
+    delete.assert_called_once_with("gpx/repeated.gpx")
+
+
 @override_settings(GPX_DNS_CHECK=False)
 def test_local_export_uses_generated_content_metadata() -> None:
     from mapy_gpx_exporter import RouteParams  # type: ignore[import-untyped]

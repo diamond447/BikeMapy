@@ -275,6 +275,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.ingestion.reconcile_extractions",
         "schedule": 900,
     },
+    "reconcile-orphan-gpx": {
+        "task": "bikemapy.ingestion.reconcile_orphan_gpx",
+        "schedule": 900,
+    },
     "retry-route-payload-deletions": {
         "task": "bikemapy.ingestion.retry_payload_deletions",
         "schedule": 900,
