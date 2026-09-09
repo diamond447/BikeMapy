@@ -271,6 +271,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.ingestion.incremental_bikeforum_crawl",
         "schedule": 86400,
     },
+    "reconcile-route-extractions": {
+        "task": "bikemapy.ingestion.reconcile_extractions",
+        "schedule": 900,
+    },
     "retry-route-payload-deletions": {
         "task": "bikemapy.ingestion.retry_payload_deletions",
         "schedule": 900,
@@ -345,6 +349,14 @@ GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)
 # Legal/terms review is an explicit deployment gate. Keep downloads off by
 # default even when an imported payload remains in local storage.
 GPX_REDISTRIBUTION_APPROVED = env_bool("GPX_REDISTRIBUTION_APPROVED", False)
+# Extraction activation is deliberately independent from redistribution.  All
+# three gates must be enabled before a discovered source can reach Mapy.
+GPX_EXTRACTION_ENABLED = env_bool("GPX_EXTRACTION_ENABLED", False)
+GPX_PROVIDER_AUTHORIZED = env_bool("GPX_PROVIDER_AUTHORIZED", False)
+GPX_LEGAL_APPROVED = env_bool("GPX_LEGAL_APPROVED", False)
+GPX_MAX_ATTEMPTS = int(os.getenv("GPX_MAX_ATTEMPTS", "3"))
+GPX_DISPATCH_TIMEOUT = int(os.getenv("GPX_DISPATCH_TIMEOUT", "900"))
+GPX_PROCESSING_TIMEOUT = int(os.getenv("GPX_PROCESSING_TIMEOUT", "1800"))
 # Direct Django deployments keep the streaming fallback. The production
 # Nginx stack enables the internal X-Accel-Redirect handoff.
 GPX_INTERNAL_REDIRECT = env_bool("GPX_INTERNAL_REDIRECT", False)

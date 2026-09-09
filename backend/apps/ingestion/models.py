@@ -29,6 +29,7 @@ class ExtractionStatus(models.TextChoices):
     PROCESSING = "processing", "Processing"
     SUCCEEDED = "succeeded", "Succeeded"
     FAILED = "failed", "Failed"
+    BLOCKED = "blocked", "Blocked by activation gate"
     SUPERSEDED = "superseded", "Superseded"
 
 
@@ -161,6 +162,12 @@ class ExtractionAttempt(models.Model):
     diagnostics = models.JSONField(default=dict, blank=True)
     error = models.TextField(blank=True)
     checksum = models.CharField(max_length=128, blank=True)
+    dispatch_attempts = models.PositiveIntegerField(default=0)
+    dispatched_at = models.DateTimeField(blank=True, null=True)
+    dispatch_task_id = models.CharField(max_length=255, blank=True)
+    dispatch_error = models.TextField(blank=True)
+    dispatch_claim_token = models.CharField(max_length=64, blank=True)
+    dispatch_claimed_until = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now)
     started_at = models.DateTimeField(blank=True, null=True)
     finished_at = models.DateTimeField(blank=True, null=True)

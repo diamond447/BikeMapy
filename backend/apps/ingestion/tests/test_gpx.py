@@ -408,6 +408,11 @@ def test_local_export_uses_generated_content_metadata() -> None:
     export.assert_called_once()
 
 
+@override_settings(
+    GPX_EXTRACTION_ENABLED=True,
+    GPX_PROVIDER_AUTHORIZED=True,
+    GPX_LEGAL_APPROVED=True,
+)
 def test_celery_task_marks_domain_failure_as_failed() -> None:
     with patch(
         "apps.ingestion.tasks.run_gpx_extraction",

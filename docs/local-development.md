@@ -57,9 +57,14 @@ docker compose exec backend uv run --locked --no-dev python -c \
 ```
 
 Compose runs a dedicated `beat` service alongside the worker. It dispatches
-the scheduled crawl and retries durable quarantined-payload deletions every
-15 minutes; the post-commit dispatch from moderation is therefore safe to
-retry after a broker or storage outage.
+the scheduled crawl, reconciles bounded route-extraction work, and retries
+durable quarantined-payload deletions every 15 minutes. A discovered source is
+handed to extraction only after its database transaction commits; queued and
+failed attempts retain their history for reconciliation after a broker outage.
+Route extraction remains off by default and requires all three independent
+deployment gates: `GPX_EXTRACTION_ENABLED`, `GPX_PROVIDER_AUTHORIZED`, and
+`GPX_LEGAL_APPROVED`. Keep them disabled in local and preview environments
+unless a synthetic adapter is being used.
 
 Historical work must always have an explicit page bound:
 
