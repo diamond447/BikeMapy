@@ -746,6 +746,8 @@ class OrphanPayloadCleanupAdmin(OwnerModelAdmin):
         "status",
         "attempts",
         "last_error",
+        "next_retry_at",
+        "claimed_until",
         "created_at",
         "last_attempt_at",
         "completed_at",

@@ -7,6 +7,7 @@ import httpx
 import pytest
 from django.core.exceptions import ValidationError
 from django.test import override_settings
+from django.utils import timezone
 
 from apps.catalogue.models import (
     ForumPost,
@@ -389,6 +390,7 @@ def test_failed_storage_cleanup_is_durable_and_retryable() -> None:
     assert orphan.completed_at is not None
 
 
+@override_settings(GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS=60)
 def test_orphan_reconciliation_retries_failures_and_handles_missing_payloads() -> None:
     route_source = source()
     attempt = ExtractionAttempt.objects.create(
@@ -420,16 +422,156 @@ def test_orphan_reconciliation_retries_failures_and_handles_missing_payloads() -
 
     with patch("apps.ingestion.gpx.default_storage.delete", side_effect=delete):
         first = reconcile_orphan_payloads(limit=2)
+        retryable.refresh_from_db()
+        assert retryable.status == OrphanPayloadStatus.FAILED
+        assert retryable.next_retry_at is not None
+        retryable.next_retry_at = timezone.now()
+        retryable.save(update_fields=["next_retry_at"])
         retry = reconcile_orphan_payloads(limit=1)
 
     retryable.refresh_from_db()
     already_deleted.refresh_from_db()
-    assert first == {"processed": 2, "completed": 1, "failed": 1, "retried": 0, "skipped": 0}
-    assert retry == {"processed": 1, "completed": 1, "failed": 0, "retried": 1, "skipped": 0}
+    assert first == {
+        "processed": 2,
+        "completed": 1,
+        "failed": 1,
+        "exhausted": 0,
+        "retried": 0,
+        "skipped": 0,
+    }
+    assert retry == {
+        "processed": 1,
+        "completed": 1,
+        "failed": 0,
+        "exhausted": 0,
+        "retried": 1,
+        "skipped": 0,
+    }
     assert retryable.status == OrphanPayloadStatus.COMPLETED
     assert retryable.attempts == 2
     assert already_deleted.status == OrphanPayloadStatus.COMPLETED
     assert already_deleted.attempts == 1
+
+
+@override_settings(
+    GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS=2,
+    GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS=0,
+)
+def test_orphan_reconciliation_exhausts_permanent_storage_failures() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    orphan = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/permanent.gpx",
+    )
+    from apps.ingestion.gpx import reconcile_orphan_payloads
+
+    with patch(
+        "apps.ingestion.gpx.default_storage.delete", side_effect=OSError("storage offline")
+    ) as delete:
+        first = reconcile_orphan_payloads(limit=1)
+        second = reconcile_orphan_payloads(limit=1)
+        third = reconcile_orphan_payloads(limit=1)
+
+    orphan.refresh_from_db()
+    assert first["failed"] == 1 and first["exhausted"] == 0
+    assert second["failed"] == 0 and second["exhausted"] == 1
+    assert third["processed"] == 0
+    assert orphan.status == OrphanPayloadStatus.EXHAUSTED
+    assert orphan.attempts == 2
+    assert orphan.next_retry_at is None
+    assert delete.call_count == 2
+
+
+def test_orphan_reconciliation_prioritizes_pending_over_old_failed_rows() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    old_failed = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/old-failed.gpx",
+        status=OrphanPayloadStatus.FAILED,
+        last_error="still unavailable",
+    )
+    pending = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/new-pending.gpx",
+    )
+    from apps.ingestion.gpx import reconcile_orphan_payloads
+
+    with patch("apps.ingestion.gpx.default_storage.delete") as delete:
+        result = reconcile_orphan_payloads(limit=1)
+
+    old_failed.refresh_from_db()
+    pending.refresh_from_db()
+    assert result["completed"] == 1
+    assert pending.status == OrphanPayloadStatus.COMPLETED
+    assert old_failed.status == OrphanPayloadStatus.FAILED
+    delete.assert_called_once_with("gpx/new-pending.gpx")
+
+
+def test_orphan_cleanup_protects_a_live_payload_reference() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    from apps.catalogue.services import record_route_version
+
+    version, _ = record_route_version(
+        source=route_source, checksum="live-reference", storage_key="gpx/reused.gpx"
+    )
+    orphan = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/reused.gpx",
+    )
+    from apps.ingestion.gpx import cleanup_orphan_payload
+
+    with patch("apps.ingestion.gpx.default_storage.delete") as delete:
+        result = cleanup_orphan_payload(orphan.pk)
+
+    version.refresh_from_db()
+    orphan.refresh_from_db()
+    assert result["status"] == OrphanPayloadStatus.COMPLETED
+    assert result["protected"] is True
+    assert version.original_gpx_storage_key == "gpx/reused.gpx"
+    delete.assert_not_called()
+
+
+def test_orphan_cleanup_claim_prevents_concurrent_storage_deletes() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    orphan = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/claimed.gpx",
+    )
+    from apps.ingestion.gpx import _claim_orphan_payload, cleanup_orphan_payload
+
+    calls = 0
+    concurrent: dict[str, object] = {}
+
+    def delete(_key: str) -> None:
+        nonlocal calls
+        calls += 1
+        claim_result = _claim_orphan_payload(orphan.pk, respect_backoff=False)[2]
+        assert claim_result is not None
+        concurrent.update(claim_result)
+
+    with patch("apps.ingestion.gpx.default_storage.delete", side_effect=delete):
+        result = cleanup_orphan_payload(orphan.pk)
+
+    assert result["status"] == OrphanPayloadStatus.COMPLETED
+    assert concurrent["claimed"] is True
+    assert calls == 1
 
 
 def test_repeated_completed_orphan_cleanup_is_idempotent() -> None:
