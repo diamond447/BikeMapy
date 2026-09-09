@@ -93,9 +93,20 @@ and verifies HTTP 200 responses for the Admin stylesheet and navigation
 script through Nginx.
 The listener is explicitly HTTP because Cloudflare Tunnel terminates HTTPS at
 the edge; `proxy_params` passes the public HTTPS scheme to Django without a
-redirect loop. Access logs are privacy-safe JSON on container stdout, and
-production Compose rotates Docker logs at 10 MiB with fourteen files per
-service.
+redirect loop. Django enforces the HTTPS redirect and emits one year of HSTS
+in production, using that forwarded scheme. The Cloudflare edge remains
+responsible for redirecting every public HTTP request to HTTPS before it enters
+the tunnel, and for preserving the forwarded scheme. Do not expose the Nginx
+listener directly or remove the `X-Forwarded-Proto` setting. Access logs are
+privacy-safe JSON on container stdout, and production Compose rotates Docker
+logs at 10 MiB with fourteen files per service.
+
+Production startup fails if secure session/CSRF cookies, the HTTPS redirect,
+HSTS, or the trusted HTTPS proxy header are weakened. The production settings
+also make both cookies `Secure`, so owner authentication cannot establish a
+cookie over an insecure request. Production Compose requires an explicit
+`DJANGO_DEBUG=false` value and sets its deployment mode; it refuses to render
+when that value is absent, and Django refuses to start if it is true.
 
 The repository does not assume a homeserver exists. When one is available,
 install `cloudflared` on that host and route a named tunnel to the local Nginx

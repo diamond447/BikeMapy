@@ -20,7 +20,7 @@ import time
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_COMPOSE = ROOT / "deploy" / "compose.production.yml"
@@ -115,6 +115,7 @@ def runtime_env(path: Path, image: str, *, forum_port: int | None = None) -> Non
         "POSTGRES_PASSWORD": "rehearsal-only",
         "DJANGO_DATABASE_ENGINE": "django.contrib.gis.db.backends.postgis",
         "DJANGO_SETTINGS_MODULE": "config.settings",
+        "DJANGO_DEBUG": "false",
         "DJANGO_SECRET_KEY": "launch-rehearsal-only",
         "DJANGO_ALLOWED_HOSTS": "localhost,127.0.0.1,backend",
         "DJANGO_CACHE_URL": "redis://redis:6379/1",
@@ -185,10 +186,13 @@ def wait_for(url: str, *, timeout: float = 90) -> dict[str, Any]:
     last_error = ""
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=3) as response:
+            # Rehearsal publishes the backend port directly instead of using
+            # Nginx, so preserve the HTTPS scheme the trusted proxy provides.
+            request = urllib.request.Request(url, headers={"X-Forwarded-Proto": "https"})
+            with urllib.request.urlopen(request, timeout=3) as response:
                 if response.status != 200:
                     raise RuntimeError(f"HTTP {response.status}")
-                return json.loads(response.read())
+                return cast(dict[str, Any], json.loads(response.read()))
         except Exception as exc:  # noqa: BLE001 - retry until service readiness deadline
             last_error = str(exc)
             time.sleep(1)
@@ -196,10 +200,11 @@ def wait_for(url: str, *, timeout: float = 90) -> dict[str, Any]:
 
 
 def api_json(base: str, path: str) -> dict[str, Any]:
-    with urllib.request.urlopen(f"{base}{path}", timeout=5) as response:
+    request = urllib.request.Request(f"{base}{path}", headers={"X-Forwarded-Proto": "https"})
+    with urllib.request.urlopen(request, timeout=5) as response:
         if response.status != 200:
             raise RuntimeError(f"HTTP {response.status} for {path}")
-        return json.loads(response.read())
+        return cast(dict[str, Any], json.loads(response.read()))
 
 
 def exec_backend(stack: Stack, *command: str, capture: bool = False) -> str:
@@ -321,7 +326,7 @@ def state(stack: Stack) -> dict[str, Any]:
         code,
         capture=True,
     )
-    return json.loads(output.splitlines()[-1])
+    return cast(dict[str, Any], json.loads(output.splitlines()[-1]))
 
 
 def dispatch(stack: Stack, url: str) -> None:
