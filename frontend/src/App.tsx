@@ -95,6 +95,12 @@ const translations = {
     searchRoutes: 'Search routes',
     atlasKicker: 'Cycling atlas · Czechia and beyond',
     resultHeading: 'Routes in this view',
+    resultsProgress: (loaded: number, total: number) => `${loaded} of ${total} routes loaded`,
+    allResultsLoaded: 'All matching routes are loaded.',
+    loadMore: 'Load more routes',
+    loadingMore: 'Loading more routes…',
+    loadMoreFailed: 'More routes could not be loaded.',
+    retryLoadMore: 'Retry loading routes',
     backToResults: 'Back to results',
     mapView: 'Map view',
     listView: 'List view',
@@ -229,6 +235,12 @@ const translations = {
     searchRoutes: 'Hledat trasy',
     atlasKicker: 'Cykloatlas · Česko a okolí',
     resultHeading: 'Trasy v tomto výřezu',
+    resultsProgress: (loaded: number, total: number) => `Načteno ${loaded} z ${total} tras`,
+    allResultsLoaded: 'Všechny odpovídající trasy jsou načtené.',
+    loadMore: 'Načíst další trasy',
+    loadingMore: 'Načítám další trasy…',
+    loadMoreFailed: 'Další trasy se nepodařilo načíst.',
+    retryLoadMore: 'Zkusit načíst trasy znovu',
     backToResults: 'Zpět na výsledky',
     mapView: 'Zobrazení mapy',
     listView: 'Zobrazení seznamu',
@@ -676,6 +688,21 @@ function setCanonical(href: string) {
   link.href = href
 }
 
+type RouteListState = {
+  routes: Route[]
+  count: number
+  next: string | null
+  loading: boolean
+  loadingMore: boolean
+  error: string | null
+  loadMoreError: string | null
+}
+
+function nextRouteQuery(next: string): Record<string, string> {
+  const url = new URL(next, window.location.origin)
+  return Object.fromEntries(url.searchParams.entries())
+}
+
 function useRouteList(
   filters: Filters,
   view: ViewState,
@@ -683,12 +710,16 @@ function useRouteList(
   retryToken: number,
   copy: Copy,
 ) {
-  const [state, setState] = useState<{
-    routes: Route[]
-    count: number
-    loading: boolean
-    error: string | null
-  }>({ routes: [], count: 0, loading: true, error: null })
+  const [state, setState] = useState<RouteListState>({
+    routes: [],
+    count: 0,
+    next: null,
+    loading: true,
+    loadingMore: false,
+    error: null,
+    loadMoreError: null,
+  })
+  const requestIdRef = useRef(0)
   const query = useMemo(() => {
     const params = new URLSearchParams({ page_size: '100' })
     Object.entries(filters).forEach(([key, value]) => {
@@ -703,30 +734,92 @@ function useRouteList(
     return params.toString()
   }, [filters, view.bounds, viewportOnly])
   useEffect(() => {
+    const requestId = ++requestIdRef.current
     let active = true
-    setState((current) => ({ ...current, loading: true, error: null }))
+    setState({
+      routes: [],
+      count: 0,
+      next: null,
+      loading: true,
+      loadingMore: false,
+      error: null,
+      loadMoreError: null,
+    })
     apiClient
       .GET('/api/v1/routes/', {
         params: { query: Object.fromEntries(new URLSearchParams(query)) } as never,
       })
       .then(({ data, error }) => {
-        if (!active) return
+        if (!active || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
-        setState({ routes: data.results, count: data.count, loading: false, error: null })
+        setState({
+          routes: data.results,
+          count: data.count,
+          next: data.next ?? null,
+          loading: false,
+          loadingMore: false,
+          error: null,
+          loadMoreError: null,
+        })
       })
       .catch((error: unknown) => {
-        if (active)
-          setState((current) => ({
-            ...current,
+        if (active && requestIdRef.current === requestId)
+          setState({
+            routes: [],
+            count: 0,
+            next: null,
             loading: false,
+            loadingMore: false,
             error: error instanceof Error ? error.message : copy.unavailable,
-          }))
+            loadMoreError: null,
+          })
       })
     return () => {
       active = false
     }
   }, [copy.unavailable, query, retryToken])
-  return state
+  const loadMore = useCallback(() => {
+    if (!state.next || state.loadingMore) return
+    const requestId = requestIdRef.current
+    let queryParams: Record<string, string>
+    try {
+      queryParams = nextRouteQuery(state.next)
+    } catch {
+      setState((current) => ({
+        ...current,
+        loadMoreError: copy.unavailable,
+      }))
+      return
+    }
+    setState((current) => ({ ...current, loadingMore: true, loadMoreError: null }))
+    apiClient
+      .GET('/api/v1/routes/', { params: { query: queryParams } as never })
+      .then(({ data, error }) => {
+        if (requestIdRef.current !== requestId) return
+        if (error || !data) throw new Error(copy.unavailable)
+        setState((current) => {
+          const known = new Set(current.routes.map((route) => route.id))
+          const appended = data.results.filter((route) => !known.has(route.id))
+          return {
+            ...current,
+            routes: [...current.routes, ...appended],
+            count: data.count,
+            next: data.next ?? null,
+            loadingMore: false,
+            loadMoreError: null,
+          }
+        })
+      })
+      .catch((error: unknown) => {
+        if (requestIdRef.current !== requestId) return
+        setState((current) => ({
+          ...current,
+          loadingMore: false,
+          loadMoreError: error instanceof Error ? error.message : copy.unavailable,
+        }))
+      })
+  }, [copy.unavailable, state.loadingMore, state.next])
+  return { ...state, loadMore }
 }
 
 function useViewport(
@@ -846,7 +939,8 @@ function App() {
   const turnstileNode = useRef<HTMLDivElement>(null)
   const turnstileWidget = useRef<string | undefined>(undefined)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const { routes, loading, error } = useRouteList(filters, view, viewportOnly, retryToken, copy)
+  const { routes, count, next, loading, loadingMore, loadMore, loadMoreError, error } =
+    useRouteList(filters, view, viewportOnly, retryToken, copy)
   const viewport = useViewport(view, filters, mapReady, retryToken, copy)
   const selectedRoute = routes.find((route) => route.id === selectedId) ?? selectedRecord
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
@@ -1730,6 +1824,32 @@ function App() {
                 </button>
               ))}
             </nav>
+            {!loading && !error && displayRoutes.length > 0 && (
+              <div className="route-pagination" aria-live="polite">
+                <span className="route-progress" role="status">
+                  {copy.resultsProgress(displayRoutes.length, count)}
+                </span>
+                {loadMoreError ? (
+                  <div className="route-pagination-error">
+                    <span>{copy.loadMoreFailed}</span>
+                    <button type="button" onClick={loadMore} disabled={loadingMore}>
+                      {copy.retryLoadMore}
+                    </button>
+                  </div>
+                ) : next ? (
+                  <button
+                    type="button"
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    aria-busy={loadingMore}
+                  >
+                    {loadingMore ? copy.loadingMore : copy.loadMore}
+                  </button>
+                ) : (
+                  <span className="route-pagination-complete">{copy.allResultsLoaded}</span>
+                )}
+              </div>
+            )}
             {!selectionVisible && (
               <SidebarFooter copy={copy} language={language} onToggleLanguage={toggleLanguage} />
             )}

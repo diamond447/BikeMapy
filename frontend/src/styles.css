@@ -400,6 +400,48 @@ h1 {
   gap: 1px;
   margin: 8px -9px 0;
 }
+.route-pagination {
+  align-items: flex-start;
+  border-top: 1px solid #e2e7de;
+  color: #527a66;
+  display: flex;
+  flex-direction: column;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.59rem;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 11px 0 2px;
+}
+.route-progress {
+  color: #41675a;
+}
+.route-pagination > button,
+.route-pagination-error button {
+  background: transparent;
+  border: 0;
+  color: #b64a35;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 2px 0;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.route-pagination button:disabled {
+  color: #668276;
+  cursor: wait;
+}
+.route-pagination-error {
+  align-items: flex-start;
+  color: #9c3c2e;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.route-pagination-complete {
+  color: #668276;
+}
 .route-card {
   background: transparent;
   border: 0;
