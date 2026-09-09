@@ -29,6 +29,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import transaction
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.catalogue.deduplication import classify_version, normalize_geometry
@@ -1037,7 +1038,11 @@ def _select_orphan_reconciliation_candidates(*, limit: int, now: Any) -> list[Or
             OrphanPayloadCleanup.objects.filter(status=OrphanPayloadStatus.FAILED)
             .filter(common)
             .filter(available)
-            .order_by("next_retry_at", "created_at", "pk")[:limit]
+            .order_by(
+                Coalesce("next_retry_at", "created_at"),
+                "created_at",
+                "pk",
+            )[:limit]
         )
         if not pending and not failed:
             return []

@@ -594,6 +594,42 @@ def test_orphan_reconciliation_interleaves_pending_and_failed_limit_one() -> Non
     ]
 
 
+def test_failed_reconciliation_orders_legacy_null_retry_time_as_oldest() -> None:
+    route_source = source()
+    attempt = ExtractionAttempt.objects.create(
+        source=route_source, source_url=route_source.mapy_url
+    )
+    now = timezone.now()
+    legacy = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/legacy-null-retry.gpx",
+        status=OrphanPayloadStatus.FAILED,
+        last_error="legacy failure",
+        created_at=now - timedelta(hours=2),
+    )
+    newer_due = OrphanPayloadCleanup.objects.create(
+        source=route_source,
+        attempt=attempt,
+        storage_key="gpx/newer-due-retry.gpx",
+        status=OrphanPayloadStatus.FAILED,
+        last_error="newer failure",
+        created_at=now - timedelta(hours=1),
+        next_retry_at=now - timedelta(minutes=30),
+    )
+    from apps.ingestion.gpx import reconcile_orphan_payloads
+
+    with patch("apps.ingestion.gpx.default_storage.delete") as delete:
+        result = reconcile_orphan_payloads(limit=1)
+
+    legacy.refresh_from_db()
+    newer_due.refresh_from_db()
+    assert result["completed"] == 1
+    assert legacy.status == OrphanPayloadStatus.COMPLETED
+    assert newer_due.status == OrphanPayloadStatus.FAILED
+    delete.assert_called_once_with("gpx/legacy-null-retry.gpx")
+
+
 def test_orphan_cleanup_protects_a_live_payload_reference() -> None:
     route_source = source()
     attempt = ExtractionAttempt.objects.create(
