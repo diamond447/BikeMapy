@@ -618,7 +618,12 @@ def _failure(
     }
 
 
-def extract_gpx(source_id: int, *, adapter: object | None = None) -> dict[str, Any]:
+def extract_gpx(
+    source_id: int,
+    *,
+    adapter: object | None = None,
+    attempt_id: int | None = None,
+) -> dict[str, Any]:
     """Extract and import one source, isolating failures to that source."""
 
     from apps.catalogue.models import Route, RouteSource, SourceDenylistEntry
@@ -627,13 +632,32 @@ def extract_gpx(source_id: int, *, adapter: object | None = None) -> dict[str, A
         source = RouteSource.objects.get(pk=source_id)
         route = Route.objects.select_for_update().get(pk=source.route_id)
         source = RouteSource.objects.select_for_update().get(pk=source_id)
-        attempt = ExtractionAttempt.objects.create(
-            source=source,
-            source_url=source.mapy_url,
-            attempt_number=_attempt_number(source.pk),
-            status=ExtractionStatus.PROCESSING,
-            started_at=timezone.now(),
-        )
+        if attempt_id is None:
+            attempt = ExtractionAttempt.objects.create(
+                source=source,
+                source_url=source.mapy_url,
+                attempt_number=_attempt_number(source.pk),
+                status=ExtractionStatus.PROCESSING,
+                started_at=timezone.now(),
+            )
+        else:
+            attempt = ExtractionAttempt.objects.select_for_update().get(pk=attempt_id)
+            if attempt.source_id != source.pk:
+                raise GpxExtractionError("Extraction attempt belongs to another source")
+            if attempt.status == ExtractionStatus.SUCCEEDED:
+                return {
+                    "status": ExtractionStatus.SUCCEEDED,
+                    "source_id": source_id,
+                    "attempt_id": attempt.pk,
+                    "version_id": attempt.version_id,
+                    "created": False,
+                    "published": source.route.current_approved_version_id == attempt.version_id,
+                }
+            if attempt.status != ExtractionStatus.QUEUED:
+                raise GpxExtractionError(f"Extraction attempt is not queued: {attempt.status}")
+            attempt.status = ExtractionStatus.PROCESSING
+            attempt.started_at = timezone.now()
+            attempt.save(update_fields=["status", "started_at"])
         source.processing_status = ProcessingStatus.PROCESSING
         source.last_error = ""
         source.save(update_fields=["processing_status", "last_error"])

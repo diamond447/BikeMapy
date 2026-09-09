@@ -49,6 +49,7 @@ from apps.catalogue.services import (
     register_source,
 )
 
+from .dispatch import dispatch_sources
 from .models import (
     CrawlCheckpoint,
     CrawlPageStatus,
@@ -1123,6 +1124,7 @@ def run_crawl(
                     if getattr(settings, "BIKEFORUM_CHECK_SOURCES", True)
                     else []
                 )
+                extraction_dispatch = dispatch_sources(page_result.source_ids)
                 page_errors.extend(page_result.errors + source_errors)
                 total.threads += page_result.threads
                 total.posts += page_result.posts
@@ -1257,6 +1259,9 @@ def run_crawl(
         "errors": all_errors,
         "next_url": checkpoint.next_url,
         "frontier_remaining": remaining,
+        "extractions_queued": extraction_dispatch.get("queued", 0)
+        if "extraction_dispatch" in locals()
+        else 0,
     }
 
 

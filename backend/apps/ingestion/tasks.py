@@ -10,6 +10,7 @@ from django.conf import settings
 from apps.catalogue.services import process_payload_deletion, retry_payload_deletions
 
 from .crawler import run_crawl
+from .dispatch import reconcile_extraction_queue
 from .gpx import GpxExtractionTaskFailure, cleanup_orphan_payload
 from .gpx import extract_gpx as run_gpx_extraction
 from .models import CrawlTask, ExtractionStatus
@@ -57,6 +58,13 @@ def incremental_bikeforum_crawl() -> dict[str, Any]:
     )
 
 
+@shared_task(name="bikemapy.ingestion.reconcile_extractions")  # type: ignore[untyped-decorator]
+def reconcile_extractions(limit: int = 100) -> dict[str, Any]:
+    """Dispatch bounded pending/failed source work after broker interruptions."""
+
+    return reconcile_extraction_queue(limit=max(1, limit))
+
+
 @shared_task(name="bikemapy.ingestion.backfill_bikeforum")  # type: ignore[untyped-decorator]
 def backfill_bikeforum(start_url: str, max_pages: int = 10) -> dict[str, Any]:
     """Explicitly bounded historical backfill; no unbounded archive walk."""
@@ -73,20 +81,28 @@ def backfill_bikeforum(start_url: str, max_pages: int = 10) -> dict[str, Any]:
 
 
 @shared_task(name="bikemapy.ingestion.extract_gpx")  # type: ignore[untyped-decorator]
-def extract_gpx(source_id: int) -> dict[str, Any]:
+def extract_gpx(source_id: int, attempt_id: int | None = None) -> dict[str, Any]:
     """Extract one source in isolation; terminal failures are persisted then raised."""
 
-    result = run_gpx_extraction(source_id)
+    result = (
+        run_gpx_extraction(source_id, attempt_id=attempt_id)
+        if attempt_id is not None
+        else run_gpx_extraction(source_id)
+    )
     if result.get("status") == ExtractionStatus.FAILED:
         raise GpxExtractionTaskFailure(result.get("error", "GPX extraction failed"))
     return result
 
 
 @shared_task(name="bikemapy.ingestion.extract_gpx_route")  # type: ignore[untyped-decorator]
-def extract_gpx_route(source_id: int) -> dict[str, Any]:
+def extract_gpx_route(source_id: int, attempt_id: int | None = None) -> dict[str, Any]:
     """Compatibility task name for dispatchers using the route terminology."""
 
-    result = run_gpx_extraction(source_id)
+    result = (
+        run_gpx_extraction(source_id, attempt_id=attempt_id)
+        if attempt_id is not None
+        else run_gpx_extraction(source_id)
+    )
     if result.get("status") == ExtractionStatus.FAILED:
         raise GpxExtractionTaskFailure(result.get("error", "GPX extraction failed"))
     return result
