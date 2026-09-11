@@ -972,6 +972,36 @@ describe('BikeMapy route discovery', () => {
     expect(geometryBounds(null)).toBeNull()
   })
 
+  it('frames a single point and ignores malformed coordinates', () => {
+    expect(
+      geometryBounds({
+        type: 'Point',
+        coordinates: [16.5, 49.2],
+      }),
+    ).toEqual([
+      [16.5, 49.2],
+      [16.5, 49.2],
+    ])
+    expect(
+      geometryBounds({
+        type: 'MultiLineString',
+        coordinates: [
+          [],
+          [
+            [16, 49],
+            ['invalid', 50],
+            [Number.NaN, 50],
+          ],
+          null,
+        ],
+      } as never),
+    ).toEqual([
+      [16, 49],
+      [16, 49],
+    ])
+    expect(geometryBounds({ type: 'LineString', coordinates: [] })).toBeNull()
+  })
+
   it('switches and persists Czech copy while updating route metadata', async () => {
     vi.restoreAllMocks()
     mockApi(true)
