@@ -107,10 +107,13 @@ make check      # all of the above
 Playwright's browser binaries are installed separately when end-to-end tests
 are needed: `cd frontend && pnpm exec playwright install --with-deps chromium`.
 
-The OpenAPI client destination is `frontend/src/api/generated/`. Generate it
-after the backend is running with `make api-schema` followed by
-`cd frontend && pnpm api:generate`. Generated output is intentionally kept
-out of the initial skeleton until the API contract is established.
+The checked-in OpenAPI client lives in `frontend/src/api/generated/`. When the
+API contract changes, regenerate it after the backend dependencies are
+installed with `make api-schema`; the target generates a temporary
+`openapi.yaml`, validates it, then runs the frontend generator and formats the
+generated TypeScript output. Keep the generated TypeScript files in sync with
+the backend API contract; `openapi.yaml` is intentionally ignored because it
+is a build artifact.
 
 ## Configuration and secrets
 

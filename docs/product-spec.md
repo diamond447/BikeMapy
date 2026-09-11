@@ -2,17 +2,21 @@
 
 ## Document status
 
-BikeMapy is in specification and early development. This document records the
-current product direction agreed for the first public release. It is a source
-of truth for subsequent implementation issues, while measured results and
-later decisions may refine it through normal project documentation.
+This document records the product direction agreed for the first public
+release. The repository contains a working implementation of the core
+catalogue, map browsing, API, ingestion, moderation, and quality automation;
+this specification remains the source of truth for product requirements and
+for capabilities that are gated, incomplete, or intentionally future-facing.
+Measured results and later decisions may refine it through normal project
+documentation. See the [README](../README.md) for the current implementation
+overview and local entry point.
 
 ## Product intent
 
 BikeMapy helps cyclists discover routes shared in BikeForum discussions. The
 forum contains a valuable historical archive, but route links are scattered
 through long-lived threads and are difficult to search, compare, and revisit.
-BikeMapy will make that material easier to explore without losing the original
+BikeMapy makes that material easier to explore without losing the original
 author, post, and route-source context.
 
 The project has two complementary goals:
@@ -25,10 +29,10 @@ The project has two complementary goals:
 
 The initial success hypothesis is 500 unique visitors during the first 30 days
 after public launch. This is a target for a measured launch experiment, not a
-guarantee. Cloudflare Web Analytics will provide the primary visit measurement,
-supplemented by anonymous aggregate counters for route-detail views, GPX
-download clicks, and original-source clicks. Visits remain the primary metric;
-the product will not use browser fingerprinting.
+guarantee. When configured, Cloudflare Web Analytics provides the primary
+visit measurement, supplemented by anonymous aggregate counters for
+route-detail views, GPX download clicks, and original-source clicks. Visits remain the primary metric;
+the product does not use browser fingerprinting.
 
 The implementation keeps those product counters in day-bucketed, allow-listed
 records with no route, session, user, network address, user-agent, or arbitrary
@@ -56,7 +60,7 @@ unbounded duplicate records or silently replace moderation decisions. Source
 URLs, post identity, processing status, checksums, timestamps, and errors must
 remain traceable.
 
-GPX extraction will use the `mapy-gpx-exporter[frpc]` library behind a BikeMapy
+GPX extraction uses the `mapy-gpx-exporter[frpc]` library behind a BikeMapy
 adapter. This dependency uses unofficial Mapy.com interfaces, so it is an
 explicit operational risk. Extraction failures must be isolated and fail
 safely: the source and failure state remain available for retry or review, and
@@ -214,7 +218,7 @@ the added complexity.
 
 ## Administration and trust
 
-The first release has one owner-admin. Access will use GitHub OAuth 2.0 through
+The first release has one owner-admin. Access uses GitHub OAuth 2.0 through
 `django-allauth` and an allowlist based on the immutable numeric GitHub user
 ID, not a mutable username. Non-allowlisted identities cannot administer the
 application.
@@ -247,7 +251,7 @@ explicit domain boundaries. The frontend is a separate React application.
 This leaves room for later extraction of a component if measurements justify
 it without paying the operational cost of microservices in the MVP.
 
-The planned stack is:
+The current implementation uses the following stack:
 
 - Python 3.13.
 - Django 5.2 LTS, Django REST Framework, GeoDjango, and PostgreSQL/PostGIS.
@@ -296,10 +300,11 @@ must not assume the homeserver already exists.
 
 ### Deployment
 
-Cloudflare Pages provides branch and pull-request frontend previews and
-automatically deploys the frontend from `main`. Previews use production
-read-only API data; report mutations and administration are disabled, and no
-production secrets are embedded in preview builds.
+Cloudflare Pages is the documented target for branch and pull-request
+frontend previews. Previews use production read-only API data; report
+mutations and administration are disabled, and no production secrets are
+embedded in preview builds. Production promotion remains human-controlled as
+described in the deployment runbook.
 
 GitHub Actions builds tested, immutable backend images tagged by commit and
 publishes them to GitHub Container Registry. The initial homeserver deployment
@@ -325,9 +330,9 @@ its resource and maintenance cost.
 
 ### Privacy and retention
 
-Privacy will use data minimization:
+Privacy follows data minimization:
 
-- Rate limiting will use an HMAC-derived identifier in Redis for 24 hours; raw IP
+- Rate limiting uses an HMAC-derived identifier in Redis for 24 hours; raw IP
   addresses are not stored in the application database.
 - Production Docker logging keeps at most fourteen rotated files of 10 MiB per
   service. This is a size/count cap rather than a 14-day period; elapsed
@@ -359,9 +364,10 @@ type checks, and careful handling of archive or parser failures. A
 `SECURITY.md` and a small threat model document supported versions, reporting,
 trust boundaries, and important mitigations.
 
-Quality and security automation is planned through GitHub Actions, including
-CodeQL, Gitleaks, Python and frontend dependency audits, and the project’s
-normal test checks.
+Quality and security automation runs through GitHub Actions, including CodeQL,
+Gitleaks, Python and frontend dependency audits, and the project’s normal test
+checks. These checks are part of the repository’s current delivery workflow;
+they do not constitute a production launch or a legal approval.
 
 The code is intended to use the MIT License. MIT applies to BikeMapy source
 code only. BikeForum content, Mapy.com data or services, OpenFreeMap,
@@ -378,7 +384,7 @@ and links to the original source.
 
 ## Quality direction
 
-The project will use Ruff, mypy with `django-stubs`, pytest and pytest-django for
+The project uses Ruff, mypy with `django-stubs`, pytest and pytest-django for
 the backend, ESLint and Prettier for the frontend, Vitest and Testing Library
 for unit and component tests, and Playwright for end-to-end tests. `pre-commit`
 provides fast local checks for formatting, linting, secrets, file hygiene, and
