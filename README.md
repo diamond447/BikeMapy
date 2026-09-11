@@ -41,7 +41,7 @@ desktop and mobile:
 
 ![BikeMapy desktop route map](docs/screenshots/issue-83-desktop.png)
 
-![BikeMapy mobile route detail](docs/screenshots/issue-83-mobile.png)
+![BikeMapy mobile route detail](docs/screenshots/issue-83-mobile-detail.png)
 
 Additional accessibility and responsive evidence is available in
 [`docs/screenshots/`](docs/screenshots/) and the related end-to-end tests.
