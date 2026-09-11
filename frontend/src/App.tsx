@@ -95,6 +95,13 @@ const translations = {
     searchRoutes: 'Search routes',
     atlasKicker: 'Cycling atlas · Czechia and beyond',
     resultHeading: 'Routes in this view',
+    resultsProgress: (loaded: number, total: number) => `${loaded} of ${total} routes loaded`,
+    allResultsLoaded: 'All matching routes are loaded.',
+    loadMore: 'Load more routes',
+    loadingMore: 'Loading more routes…',
+    loadMoreFailed: 'More routes could not be loaded.',
+    incompleteResults: 'The route results are incomplete.',
+    retryLoadMore: 'Retry loading routes',
     backToResults: 'Back to results',
     mapView: 'Map view',
     listView: 'List view',
@@ -229,6 +236,13 @@ const translations = {
     searchRoutes: 'Hledat trasy',
     atlasKicker: 'Cykloatlas · Česko a okolí',
     resultHeading: 'Trasy v tomto výřezu',
+    resultsProgress: (loaded: number, total: number) => `Načteno ${loaded} z ${total} tras`,
+    allResultsLoaded: 'Všechny odpovídající trasy jsou načtené.',
+    loadMore: 'Načíst další trasy',
+    loadingMore: 'Načítám další trasy…',
+    loadMoreFailed: 'Další trasy se nepodařilo načíst.',
+    incompleteResults: 'Výsledky tras nejsou úplné.',
+    retryLoadMore: 'Zkusit načíst trasy znovu',
     backToResults: 'Zpět na výsledky',
     mapView: 'Zobrazení mapy',
     listView: 'Zobrazení seznamu',
@@ -676,6 +690,40 @@ function setCanonical(href: string) {
   link.href = href
 }
 
+type RouteListState = {
+  routes: Route[]
+  count: number
+  next: string | null
+  loading: boolean
+  loadingMore: boolean
+  error: string | null
+  loadMoreError: string | null
+  loadMoreRetryable: boolean
+}
+
+type RouteNextRequest = {
+  key: string
+  query: Record<string, string>
+}
+
+function nextRouteRequest(next: string): RouteNextRequest {
+  const url = new URL(next, window.location.origin)
+  const query = Object.fromEntries(url.searchParams.entries())
+  const paginationKey = ['page', 'offset', 'cursor'].find((key) => Boolean(query[key]?.trim()))
+  if (!paginationKey) throw new Error('Pagination link has no cursor.')
+  url.searchParams.sort()
+  return { key: `${url.pathname}?${url.searchParams.toString()}`, query }
+}
+
+function uniqueRoutes(routes: Route[]): Route[] {
+  const known = new Set<string>()
+  return routes.filter((route) => {
+    if (known.has(route.id)) return false
+    known.add(route.id)
+    return true
+  })
+}
+
 function useRouteList(
   filters: Filters,
   view: ViewState,
@@ -683,12 +731,23 @@ function useRouteList(
   retryToken: number,
   copy: Copy,
 ) {
-  const [state, setState] = useState<{
-    routes: Route[]
-    count: number
-    loading: boolean
-    error: string | null
-  }>({ routes: [], count: 0, loading: true, error: null })
+  const [state, setState] = useState<RouteListState>({
+    routes: [],
+    count: 0,
+    next: null,
+    loading: true,
+    loadingMore: false,
+    error: null,
+    loadMoreError: null,
+    loadMoreRetryable: false,
+  })
+  const requestIdRef = useRef(0)
+  const paginationRef = useRef<{
+    requestId: number
+    requested: Set<string>
+    visited: Set<string>
+    inFlight: boolean
+  }>({ requestId: 0, requested: new Set(), visited: new Set(), inFlight: false })
   const query = useMemo(() => {
     const params = new URLSearchParams({ page_size: '100' })
     Object.entries(filters).forEach(([key, value]) => {
@@ -703,30 +762,184 @@ function useRouteList(
     return params.toString()
   }, [filters, view.bounds, viewportOnly])
   useEffect(() => {
+    const requestId = ++requestIdRef.current
+    paginationRef.current = {
+      requestId,
+      requested: new Set(),
+      visited: new Set(),
+      inFlight: false,
+    }
     let active = true
-    setState((current) => ({ ...current, loading: true, error: null }))
+    setState({
+      routes: [],
+      count: 0,
+      next: null,
+      loading: true,
+      loadingMore: false,
+      error: null,
+      loadMoreError: null,
+      loadMoreRetryable: false,
+    })
     apiClient
       .GET('/api/v1/routes/', {
         params: { query: Object.fromEntries(new URLSearchParams(query)) } as never,
       })
       .then(({ data, error }) => {
-        if (!active) return
+        if (!active || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
-        setState({ routes: data.results, count: data.count, loading: false, error: null })
+        const routes = uniqueRoutes(data.results)
+        const count = Math.max(data.count, routes.length)
+        let next = data.next ?? null
+        let loadMoreError: string | null = null
+        if (data.count < routes.length) {
+          next = null
+          loadMoreError = copy.incompleteResults
+        } else if (next) {
+          try {
+            nextRouteRequest(next)
+          } catch {
+            next = null
+            loadMoreError = copy.incompleteResults
+          }
+        } else if (routes.length < count) {
+          loadMoreError = copy.incompleteResults
+        }
+        setState({
+          routes,
+          count,
+          next,
+          loading: false,
+          loadingMore: false,
+          error: null,
+          loadMoreError,
+          loadMoreRetryable: false,
+        })
       })
       .catch((error: unknown) => {
-        if (active)
-          setState((current) => ({
-            ...current,
+        if (active && requestIdRef.current === requestId)
+          setState({
+            routes: [],
+            count: 0,
+            next: null,
             loading: false,
+            loadingMore: false,
             error: error instanceof Error ? error.message : copy.unavailable,
-          }))
+            loadMoreError: null,
+            loadMoreRetryable: false,
+          })
       })
     return () => {
       active = false
     }
-  }, [copy.unavailable, query, retryToken])
-  return state
+  }, [copy.incompleteResults, copy.unavailable, query, retryToken])
+  const loadMore = useCallback(() => {
+    const pagination = paginationRef.current
+    if (
+      !state.next ||
+      state.loadingMore ||
+      pagination.inFlight ||
+      pagination.requestId !== requestIdRef.current
+    )
+      return
+    const requestId = requestIdRef.current
+    let nextRequest: RouteNextRequest
+    try {
+      nextRequest = nextRouteRequest(state.next)
+    } catch {
+      setState((current) => ({
+        ...current,
+        next: null,
+        loadingMore: false,
+        loadMoreError: copy.incompleteResults,
+        loadMoreRetryable: false,
+      }))
+      return
+    }
+    if (pagination.requested.has(nextRequest.key) || pagination.visited.has(nextRequest.key)) {
+      setState((current) => ({
+        ...current,
+        next: null,
+        loadingMore: false,
+        loadMoreError: copy.incompleteResults,
+        loadMoreRetryable: false,
+      }))
+      return
+    }
+    pagination.requested.add(nextRequest.key)
+    pagination.inFlight = true
+    setState((current) => ({
+      ...current,
+      loadingMore: true,
+      loadMoreError: null,
+      loadMoreRetryable: false,
+    }))
+    apiClient
+      .GET('/api/v1/routes/', { params: { query: nextRequest.query } as never })
+      .then(({ data, error }) => {
+        if (requestIdRef.current !== requestId) return
+        if (error || !data) throw new Error(copy.unavailable)
+        const incoming = uniqueRoutes(data.results)
+        const current = state
+        const known = new Set(current.routes.map((route) => route.id))
+        const appended = incoming.filter((route) => {
+          if (known.has(route.id)) return false
+          known.add(route.id)
+          return true
+        })
+        let next = data.next ?? null
+        let responseNextRequest: RouteNextRequest | null = null
+        let structuralError = appended.length === 0 && Boolean(next)
+        if (next) {
+          try {
+            responseNextRequest = nextRouteRequest(next)
+            structuralError ||= pagination.requested.has(responseNextRequest.key)
+            structuralError ||= pagination.visited.has(responseNextRequest.key)
+          } catch {
+            next = null
+            structuralError = true
+          }
+        }
+        const loaded = current.routes.length + appended.length
+        const count = Math.max(data.count, loaded)
+        if (data.count < loaded) structuralError = true
+        if (!next && loaded < data.count) structuralError = true
+        pagination.inFlight = false
+        pagination.visited.add(nextRequest.key)
+        if (structuralError) {
+          setState({
+            ...current,
+            routes: [...current.routes, ...appended],
+            count,
+            next: null,
+            loadingMore: false,
+            loadMoreError: copy.incompleteResults,
+            loadMoreRetryable: false,
+          })
+          return
+        }
+        setState({
+          ...current,
+          routes: [...current.routes, ...appended],
+          count,
+          next,
+          loadingMore: false,
+          loadMoreError: null,
+          loadMoreRetryable: false,
+        })
+      })
+      .catch((error: unknown) => {
+        if (requestIdRef.current !== requestId) return
+        pagination.inFlight = false
+        pagination.requested.delete(nextRequest.key)
+        setState((current) => ({
+          ...current,
+          loadingMore: false,
+          loadMoreError: error instanceof Error ? error.message : copy.unavailable,
+          loadMoreRetryable: true,
+        }))
+      })
+  }, [copy.incompleteResults, copy.unavailable, state])
+  return { ...state, loadMore }
 }
 
 function useViewport(
@@ -846,7 +1059,17 @@ function App() {
   const turnstileNode = useRef<HTMLDivElement>(null)
   const turnstileWidget = useRef<string | undefined>(undefined)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const { routes, loading, error } = useRouteList(filters, view, viewportOnly, retryToken, copy)
+  const {
+    routes,
+    count,
+    next,
+    loading,
+    loadingMore,
+    loadMore,
+    loadMoreError,
+    loadMoreRetryable,
+    error,
+  } = useRouteList(filters, view, viewportOnly, retryToken, copy)
   const viewport = useViewport(view, filters, mapReady, retryToken, copy)
   const selectedRoute = routes.find((route) => route.id === selectedId) ?? selectedRecord
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
@@ -1730,6 +1953,36 @@ function App() {
                 </button>
               ))}
             </nav>
+            {!loading && !error && displayRoutes.length > 0 && (
+              <div className="route-pagination" aria-live="polite">
+                <span className="route-progress" role="status">
+                  {copy.resultsProgress(displayRoutes.length, count)}
+                </span>
+                {loadMoreError ? (
+                  <div className="route-pagination-error">
+                    <span>{loadMoreRetryable ? copy.loadMoreFailed : copy.incompleteResults}</span>
+                    {loadMoreRetryable && (
+                      <button type="button" onClick={loadMore} disabled={loadingMore}>
+                        {copy.retryLoadMore}
+                      </button>
+                    )}
+                  </div>
+                ) : next ? (
+                  <button
+                    type="button"
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    aria-busy={loadingMore}
+                  >
+                    {loadingMore ? copy.loadingMore : copy.loadMore}
+                  </button>
+                ) : displayRoutes.length >= count ? (
+                  <span className="route-pagination-complete">{copy.allResultsLoaded}</span>
+                ) : (
+                  <span className="route-pagination-complete">{copy.incompleteResults}</span>
+                )}
+              </div>
+            )}
             {!selectionVisible && (
               <SidebarFooter copy={copy} language={language} onToggleLanguage={toggleLanguage} />
             )}

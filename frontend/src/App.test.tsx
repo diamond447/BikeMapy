@@ -138,6 +138,12 @@ const remoteRoute = {
   slug: 'remote-route',
   title: 'Remote route outside page',
 }
+const thirdRoute = {
+  ...route,
+  id: '44444444-4444-4444-8444-444444444444',
+  slug: 'third-ridge',
+  title: 'Third ridge loop',
+}
 
 function mockApi(success = false) {
   return vi.spyOn(apiClient, 'GET').mockImplementation(((path: string) => {
@@ -165,6 +171,27 @@ function mockApi(success = false) {
       data: { count: 2, next: null, previous: null, results: [route, secondRoute] },
       error: undefined,
     }) as never
+  }) as never)
+}
+
+function mockRoutePages(handler: (query: Record<string, string>) => unknown) {
+  return vi.spyOn(apiClient, 'GET').mockImplementation(((path: string, options?: unknown) => {
+    if (path === '/api/v1/routes/') {
+      const query =
+        (options as { params?: { query?: Record<string, string> } })?.params?.query ?? {}
+      return Promise.resolve({ data: handler(query), error: undefined }) as never
+    }
+    if (path.includes('/geometry/'))
+      return Promise.resolve({
+        data: { id: route.id, slug: route.slug, title: route.title, geometry },
+        error: undefined,
+      }) as never
+    if (path.includes('/viewport/'))
+      return Promise.resolve({
+        data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+        error: undefined,
+      }) as never
+    return Promise.resolve({ data: remoteRoute, error: undefined }) as never
   }) as never)
 }
 
@@ -226,6 +253,287 @@ describe('BikeMapy route discovery', () => {
     expect(apiClient.GET).toHaveBeenCalledWith('/api/v1/routes/{route_id}/geometry/', {
       params: { path: { route_id: route.id } },
     })
+  })
+
+  it('appends API pages through keyboard activation and keeps the selected route', async () => {
+    vi.restoreAllMocks()
+    const routeCalls: Array<Record<string, string>> = []
+    const api = vi.spyOn(apiClient, 'GET').mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path === '/api/v1/routes/') {
+        const query =
+          (options as { params?: { query?: Record<string, string> } })?.params?.query ?? {}
+        routeCalls.push(query)
+        return Promise.resolve({
+          data:
+            query.page === '2'
+              ? { count: 3, next: null, previous: null, results: [secondRoute, thirdRoute] }
+              : {
+                  count: 3,
+                  next: '/api/v1/routes/?page=2&page_size=100',
+                  previous: null,
+                  results: [route],
+                },
+          error: undefined,
+        }) as never
+      }
+      if (path.includes('/geometry/'))
+        return Promise.resolve({
+          data: { id: route.id, slug: route.slug, title: route.title, geometry },
+          error: undefined,
+        }) as never
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({ data: remoteRoute, error: undefined }) as never
+    }) as never)
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    expect(await screen.findByRole('heading', { name: /south ridge loop/i })).toBeInTheDocument()
+    const loadMore = await screen.findByRole('button', { name: /load more routes/i })
+    loadMore.focus()
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /third ridge loop/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /south ridge loop/i })).toBeInTheDocument()
+    expect(window.location.search).toContain(`route=${route.id}`)
+    expect(screen.getByText('3 of 3 routes loaded')).toHaveAttribute('role', 'status')
+    expect(screen.getByText('All matching routes are loaded.')).toBeInTheDocument()
+    expect(routeCalls).toEqual(
+      expect.arrayContaining([expect.objectContaining({ page: '2', page_size: '100' })]),
+    )
+    expect(api).toHaveBeenCalledWith('/api/v1/routes/', {
+      params: { query: { page: '2', page_size: '100' } },
+    })
+  })
+
+  it('shows completion when a later page is empty', async () => {
+    vi.restoreAllMocks()
+    const api = vi.spyOn(apiClient, 'GET').mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path === '/api/v1/routes/') {
+        const query =
+          (options as { params?: { query?: Record<string, string> } })?.params?.query ?? {}
+        return Promise.resolve({
+          data:
+            query.page === '2'
+              ? { count: 1, next: null, previous: null, results: [] }
+              : {
+                  count: 1,
+                  next: '/api/v1/routes/?page=2&page_size=100',
+                  previous: null,
+                  results: [route],
+                },
+          error: undefined,
+        }) as never
+      }
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({ data: remoteRoute, error: undefined }) as never
+    }) as never)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(await screen.findByText('All matching routes are loaded.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more routes/i })).not.toBeInTheDocument()
+    expect(api).toHaveBeenCalledWith('/api/v1/routes/', {
+      params: { query: { page: '2', page_size: '100' } },
+    })
+  })
+
+  it('preserves loaded routes and retries a failed later page', async () => {
+    vi.restoreAllMocks()
+    let laterAttempt = 0
+    vi.spyOn(apiClient, 'GET').mockImplementation(((path: string, options?: unknown) => {
+      if (path === '/api/v1/routes/') {
+        const query =
+          (options as { params?: { query?: Record<string, string> } })?.params?.query ?? {}
+        if (query.page === '2') {
+          laterAttempt += 1
+          return laterAttempt === 1
+            ? Promise.reject(new Error('offline'))
+            : (Promise.resolve({
+                data: { count: 2, next: null, previous: null, results: [secondRoute] },
+                error: undefined,
+              }) as never)
+        }
+        return Promise.resolve({
+          data: {
+            count: 2,
+            next: '/api/v1/routes/?page=2&page_size=100',
+            previous: null,
+            results: [route],
+          },
+          error: undefined,
+        }) as never
+      }
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({ data: remoteRoute, error: undefined }) as never
+    }) as never)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(await screen.findByText('More routes could not be loaded.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /south ridge loop/i })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /retry loading routes/i }))
+    expect(await screen.findByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    expect(laterAttempt).toBe(2)
+  })
+
+  it('ignores a stale later-page response after a filter change', async () => {
+    vi.restoreAllMocks()
+    let resolveLater: ((value: unknown) => void) | undefined
+    vi.spyOn(apiClient, 'GET').mockImplementation(((path: string, options?: unknown) => {
+      if (path === '/api/v1/routes/') {
+        const query =
+          (options as { params?: { query?: Record<string, string> } })?.params?.query ?? {}
+        if (query.page === '2')
+          return new Promise((resolve) => {
+            resolveLater = resolve
+          }) as never
+        if (query.search === 'new')
+          return Promise.resolve({
+            data: { count: 1, next: null, previous: null, results: [secondRoute] },
+            error: undefined,
+          }) as never
+        return Promise.resolve({
+          data: {
+            count: 2,
+            next: '/api/v1/routes/?page=2&page_size=100',
+            previous: null,
+            results: [route],
+          },
+          error: undefined,
+        }) as never
+      }
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({ data: remoteRoute, error: undefined }) as never
+    }) as never)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    fireEvent.change(screen.getByRole('searchbox', { name: /search routes/i }), {
+      target: { value: 'new' },
+    })
+    expect(await screen.findByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    resolveLater?.({
+      data: { count: 2, next: null, previous: null, results: [remoteRoute] },
+      error: undefined,
+    })
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: /remote route outside page/i }),
+      ).not.toBeInTheDocument(),
+    )
+  })
+
+  it('deduplicates a page and stops when its next link repeats', async () => {
+    const pageTwo = '/api/v1/routes/?page=2&page_size=100'
+    vi.restoreAllMocks()
+    mockRoutePages((query) =>
+      query.page === '2'
+        ? { count: 3, next: pageTwo, previous: null, results: [secondRoute, secondRoute] }
+        : { count: 3, next: pageTwo, previous: null, results: [route] },
+    )
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(screen.getAllByRole('button', { name: /north ridge loop/i })).toHaveLength(1)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more routes/i })).not.toBeInTheDocument()
+  })
+
+  it('stops a later page when its next link forms a cycle', async () => {
+    const pageTwo = '/api/v1/routes/?page=2&page_size=100'
+    const pageThree = '/api/v1/routes/?page=3&page_size=100'
+    vi.restoreAllMocks()
+    mockRoutePages((query) => {
+      if (query.page === '2')
+        return { count: 3, next: pageThree, previous: null, results: [secondRoute] }
+      if (query.page === '3') return { count: 3, next: pageTwo, previous: null, results: [] }
+      return { count: 3, next: pageTwo, previous: null, results: [route] }
+    })
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
+  it('rejects a malformed next link without a pagination cursor', async () => {
+    vi.restoreAllMocks()
+    mockRoutePages(() => ({
+      count: 2,
+      next: '/api/v1/routes/?page_size=100',
+      previous: null,
+      results: [route],
+    }))
+    render(<App />)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /load more routes/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
+  it('does not claim completion when the API count exceeds the loaded routes', async () => {
+    vi.restoreAllMocks()
+    mockRoutePages(() => ({ count: 2, next: null, previous: null, results: [route] }))
+    render(<App />)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByText('1 of 2 routes loaded')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
+  it('normalizes a lower initial count without claiming completion', async () => {
+    vi.restoreAllMocks()
+    mockRoutePages(() => ({
+      count: 1,
+      next: null,
+      previous: null,
+      results: [route, secondRoute],
+    }))
+    render(<App />)
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByText('2 of 2 routes loaded')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
+  })
+
+  it('normalizes a lower later-page count without claiming completion', async () => {
+    const pageTwo = '/api/v1/routes/?page=2&page_size=100'
+    vi.restoreAllMocks()
+    mockRoutePages((query) =>
+      query.page === '2'
+        ? { count: 1, next: null, previous: null, results: [secondRoute] }
+        : { count: 3, next: pageTwo, previous: null, results: [route] },
+    )
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    expect(await screen.findByText('The route results are incomplete.')).toBeInTheDocument()
+    expect(screen.getByText('2 of 2 routes loaded')).toBeInTheDocument()
+    expect(screen.queryByText('All matching routes are loaded.')).not.toBeInTheDocument()
   })
 
   it('tracks detail and source interactions, resets on close, and keeps GPX disabled', async () => {
