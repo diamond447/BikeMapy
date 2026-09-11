@@ -4,7 +4,7 @@ BikeMapy is a map-first catalogue of cycling routes shared in BikeForum
 discussions. It combines a searchable route archive with source attribution,
 route geometry, and the context needed to revisit the original post.
 
-This is a public portfolio repository containing a working application and its
+This is a public repository containing a working application and its
 engineering documentation. The source is public; the production service is
 not being claimed as publicly launched. Product, privacy, and legal gates for
 an eventual launch remain documented and explicit.
