@@ -1070,4 +1070,145 @@ describe('BikeMapy route discovery', () => {
       'https://bot.example',
     )
   })
+
+  it('resets consumed Turnstile tokens and allows a duplicate report retry', async () => {
+    vi.restoreAllMocks()
+    vi.stubEnv('VITE_TURNSTILE_SITE_KEY', 'test-site-key')
+    mockApi(true)
+    type MockResponse = {
+      ok: boolean
+      status: number
+      json: () => Promise<Record<string, string>>
+    }
+    let releaseFirstResponse!: (response: MockResponse) => void
+    const firstResponse = new Promise<MockResponse>((resolve) => {
+      releaseFirstResponse = resolve
+    })
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(firstResponse)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        json: async () => ({ detail: 'Report rate limit reached.' }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'received' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const turnstileReset = vi.fn()
+    vi.stubGlobal('turnstile', {
+      render: vi.fn(() => 'test-widget'),
+      reset: turnstileReset,
+    })
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await user.click(await screen.findByRole('button', { name: /report a problem/i }))
+    await waitFor(() => expect(turnstileReset).not.toHaveBeenCalled())
+    const token = document.querySelector<HTMLInputElement>('input[name="turnstile_token"]')!
+    await user.type(
+      screen.getByRole('textbox', { name: /what should we check/i }),
+      'The route needs a review.',
+    )
+    fireEvent.change(token, { target: { value: 'consumed-token' } })
+    const submit = screen.getByRole('button', { name: /send report/i })
+    const submission = user.click(submit)
+    await waitFor(() => expect(submit).toBeDisabled())
+    const outsideFocusTarget = document.createElement('button')
+    document.body.append(outsideFocusTarget)
+    outsideFocusTarget.focus()
+    expect(document.activeElement).toBe(outsideFocusTarget)
+    releaseFirstResponse({
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: 'A matching report was already submitted.' }),
+    })
+    await submission
+    outsideFocusTarget.remove()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already submitted/i)
+    expect(turnstileReset).toHaveBeenCalledWith('test-widget')
+    expect(token).toHaveValue('')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /send report/i }))
+
+    fireEvent.change(token, { target: { value: 'rate-limited-token' } })
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/limit was reached/i)
+    expect(turnstileReset).toHaveBeenCalledTimes(2)
+    expect(token).toHaveValue('')
+
+    fireEvent.change(token, { target: { value: 'fresh-token' } })
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(await screen.findByText(/entered the review queue/i)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string).message).toBe(
+      'The route needs a review.',
+    )
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string).turnstile_token).toBe(
+      'fresh-token',
+    )
+  })
+
+  it('resets Turnstile after verification and network failures while preserving fields', async () => {
+    vi.restoreAllMocks()
+    vi.stubEnv('VITE_TURNSTILE_SITE_KEY', 'test-site-key')
+    mockApi(true)
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: async () => ({ detail: 'Security verification failed.' }),
+      })
+      .mockRejectedValueOnce(new Error('offline'))
+    vi.stubGlobal('fetch', fetchMock)
+    const turnstileReset = vi.fn()
+    vi.stubGlobal('turnstile', {
+      render: vi.fn(() => 'test-widget'),
+      reset: turnstileReset,
+    })
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await user.click(await screen.findByRole('button', { name: /report a problem/i }))
+    const message = screen.getByRole('textbox', { name: /what should we check/i })
+    const token = document.querySelector<HTMLInputElement>('input[name="turnstile_token"]')!
+    await user.type(message, 'Please check this route.')
+    fireEvent.change(token, { target: { value: 'expired-token' } })
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/security verification failed/i)
+    expect(token).toHaveValue('')
+    expect(message).toHaveValue('Please check this route.')
+
+    fireEvent.change(token, { target: { value: 'network-token' } })
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be submitted/i)
+    expect(token).toHaveValue('')
+    expect(message).toHaveValue('Please check this route.')
+    expect(turnstileReset).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports field validation without consuming a valid Turnstile token', async () => {
+    vi.restoreAllMocks()
+    vi.stubEnv('VITE_TURNSTILE_SITE_KEY', 'test-site-key')
+    mockApi(true)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const turnstileReset = vi.fn()
+    vi.stubGlobal('turnstile', {
+      render: vi.fn(() => 'test-widget'),
+      reset: turnstileReset,
+    })
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /south ridge loop/i }))
+    await user.click(await screen.findByRole('button', { name: /report a problem/i }))
+    const token = document.querySelector<HTMLInputElement>('input[name="turnstile_token"]')!
+    fireEvent.change(token, { target: { value: 'still-valid-token' } })
+    await user.click(screen.getByRole('button', { name: /send report/i }))
+    expect(screen.getByRole('alert')).toHaveTextContent(/check the required fields/i)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(turnstileReset).not.toHaveBeenCalled()
+    expect(token).toHaveValue('still-valid-token')
+  })
 })

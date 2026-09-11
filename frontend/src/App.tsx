@@ -201,6 +201,7 @@ const translations = {
     reportRateLimited: 'The report limit was reached. Please try again later.',
     reportVerification:
       'Security verification failed. No report was submitted. Please complete the check again.',
+    reportValidation: 'Please check the required fields and try again.',
     cancel: 'Cancel',
     gpxDownload: 'Download GPX',
     gpxUnavailable: 'GPX download is unavailable until redistribution is legally approved.',
@@ -340,6 +341,7 @@ const translations = {
     reportRateLimited: 'Byl dosažen limit hlášení. Zkuste to později.',
     reportVerification:
       'Bezpečnostní kontrola selhala. Hlášení nebylo odesláno. Dokončete ji znovu.',
+    reportValidation: 'Zkontrolujte povinná pole a zkuste to znovu.',
     cancel: 'Zrušit',
     gpxDownload: 'Stáhnout GPX',
     gpxUnavailable: 'Stažení GPX není dostupné, dokud nebude právně schváleno další šíření.',
@@ -1056,6 +1058,8 @@ function App() {
   const reportMessageNode = useRef<HTMLTextAreaElement>(null)
   const reportTriggerNode = useRef<HTMLButtonElement>(null)
   const reportDialogNode = useRef<HTMLElement>(null)
+  const reportSubmitNode = useRef<HTMLButtonElement>(null)
+  const reportFocusTarget = useRef<HTMLElement | null>(null)
   const turnstileNode = useRef<HTMLDivElement>(null)
   const turnstileWidget = useRef<string | undefined>(undefined)
   const mapRef = useRef<MapLibreMap | null>(null)
@@ -1088,6 +1092,31 @@ function App() {
     ? routeUrl(PUBLIC_SITE_URL, selectedRoute.id, selectedRoute.slug)
     : ''
   const turnstileConfigured = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY)
+  const resetReportVerification = useCallback((destroy = false) => {
+    // A Turnstile token is single-use. Clear it before resetting the widget so
+    // a failed request can never be retried with an already-consumed token.
+    setReportToken('')
+    const widgetId = turnstileWidget.current
+    const turnstile = window.turnstile
+    const focused = document.activeElement as HTMLElement | null
+    const dialog = reportDialogNode.current
+    const focusTarget = focused && dialog?.contains(focused) ? focused : reportFocusTarget.current
+    try {
+      if (widgetId && turnstile) turnstile.reset(widgetId)
+    } finally {
+      if (destroy) turnstileWidget.current = undefined
+      // Resetting the challenge can move focus into its iframe. Restore focus
+      // to the control the user was using so the dialog's focus trap remains
+      // usable with a keyboard.
+      if (
+        focusTarget &&
+        focusTarget.isConnected &&
+        dialog?.contains(focusTarget) &&
+        !(focusTarget instanceof HTMLButtonElement && focusTarget.disabled)
+      )
+        focusTarget.focus()
+    }
+  }, [])
   const panelToggleLabel =
     window.innerWidth <= 700
       ? mobileSheetPosition === 'collapsed'
@@ -1115,7 +1144,7 @@ function App() {
         turnstileWidget.current = window.turnstile.render(turnstileNode.current, {
           sitekey: siteKey,
           callback: setReportToken,
-          'expired-callback': () => setReportToken(''),
+          'expired-callback': resetReportVerification,
         })
       }
     }
@@ -1133,11 +1162,16 @@ function App() {
     }
     return () => {
       disposed = true
-      if (turnstileWidget.current && window.turnstile)
-        window.turnstile.reset(turnstileWidget.current)
-      turnstileWidget.current = undefined
+      resetReportVerification(true)
     }
-  }, [reportOpen])
+  }, [reportOpen, resetReportVerification])
+
+  useEffect(() => {
+    if (reportOutcome !== 'error') return
+    const target = reportFocusTarget.current
+    if (!target || !target.isConnected || !reportDialogNode.current?.contains(target)) return
+    target.focus()
+  }, [reportOutcome])
 
   useEffect(() => {
     if (!reportOpen) return
@@ -2190,13 +2224,23 @@ function App() {
               <p role="status">{copy.reportThanks}</p>
             ) : (
               <form
+                onInvalid={() => {
+                  setReportError(copy.reportValidation)
+                  setReportOutcome('error')
+                }}
                 onSubmit={async (event) => {
                   event.preventDefault()
                   if (reportOutcome === 'sending') return
+                  const active = document.activeElement as HTMLElement | null
+                  reportFocusTarget.current =
+                    active && reportDialogNode.current?.contains(active)
+                      ? active
+                      : reportSubmitNode.current
                   setReportOutcome('sending')
                   setReportError(null)
                   try {
                     if (!reportToken) {
+                      resetReportVerification()
                       setReportError(copy.reportVerification)
                       setReportOutcome('error')
                       return
@@ -2216,17 +2260,33 @@ function App() {
                       },
                     )
                     if (!response.ok) {
-                      const payload = (await response.json().catch(() => ({}))) as {
-                        detail?: string
-                      }
+                      const payload: unknown = await response.json().catch(() => ({}))
+                      const hasFieldErrors =
+                        payload !== null &&
+                        typeof payload === 'object' &&
+                        !Array.isArray(payload) &&
+                        Object.keys(payload).some((key) => key !== 'detail')
+                      const detail =
+                        payload !== null &&
+                        typeof payload === 'object' &&
+                        !Array.isArray(payload) &&
+                        typeof (payload as { detail?: unknown }).detail === 'string'
+                          ? (payload as { detail: string }).detail
+                          : ''
+                      const isProtectionError =
+                        detail === 'Security verification failed.' ||
+                        detail === 'Unable to submit this report.'
+                      resetReportVerification()
                       setReportError(
                         response.status === 409
                           ? copy.reportDuplicate
                           : response.status === 429
                             ? copy.reportRateLimited
-                            : response.status === 400
+                            : response.status === 400 && isProtectionError
                               ? copy.reportVerification
-                              : (payload.detail ?? copy.reportFailure),
+                              : hasFieldErrors
+                                ? copy.reportValidation
+                                : copy.reportFailure,
                       )
                       setReportOutcome('error')
                       return
@@ -2234,6 +2294,7 @@ function App() {
                     setReportSent(true)
                     setReportOutcome('idle')
                   } catch {
+                    resetReportVerification()
                     setReportError(copy.reportFailure)
                     setReportOutcome('error')
                   }
@@ -2307,6 +2368,7 @@ function App() {
                 )}
                 <div className="report-actions">
                   <button
+                    ref={reportSubmitNode}
                     type="submit"
                     aria-label={
                       turnstileConfigured
