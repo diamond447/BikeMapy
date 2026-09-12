@@ -7,6 +7,47 @@ offset, so a route recorded from a different start point remains equivalent.
 The evidence records the selected direction, offset, mean and maximum spatial
 distance, route lengths, and the policy values used for the decision.
 
+## Candidate selection and version authority
+
+Similarity classification uses a bounded candidate scan. PostGIS applies the
+GiST-backed geometry envelope and the `(technical_status, distance_m)` index
+before candidate IDs are selected. The worker then fetches at most
+`ROUTE_DEDUPLICATION_BATCH_SIZE` geometries at a time. Candidate IDs are
+keyset-paged in chunks of at most `ROUTE_DEDUPLICATION_CANDIDATE_PAGE_SIZE`
+(the default is 500), so a dense catalogue is fully evaluated without loading all
+historical geometries or silently dropping a late match. A scan reports
+valid, eligible, candidate, compared, matched, batch, reduction,
+and duration values in its `candidate_scan` evidence. Full-population counts and
+the query plan are collected only by the opt-in benchmark; normal imports leave
+those values null. Keyset paging provides the no-drop invariant.
+
+The authoritative version policy is deterministic:
+
+* If a route has `current_approved_version`, only that valid version is a
+  candidate. It represents the route's current canonical geometry.
+* For a route without an approved version (an unreviewed route), valid
+  historical versions are eligible as a temporary fallback. This keeps a new
+  route import comparable before its first approval without allowing an old
+  version to override an explicitly selected current version.
+* Soft-deleted routes and versions with a non-valid technical status are never
+  candidates.
+
+The final distance-resampled comparison remains authoritative after these
+safe pre-filters. In particular, reversing a point-to-point recording and
+rotating a loop's start point do not change classification. Run the opt-in
+`test_deduplication_candidate_scan_benchmark` with
+`RUN_DEDUPLICATION_BENCHMARK=1` to record representative candidate counts and
+throughput against the local PostGIS service.
+
+The checked-in [issue-79 benchmark evidence](evidence/issue-79-deduplication-benchmark-20260912.json)
+uses 20 routes with four versions each plus unreviewed near, length-mismatched,
+and far routes. It records the authority reduction (2,180 valid versions to
+2,120 eligible versions), separate length and spatial reductions (2,120 to
+1,420 to 720 candidates), bounded top-1 retention across 36 comparison
+batches, elapsed time, and concrete `EXPLAIN ANALYZE BUFFERS` index-plan
+signals. These are measurements from one disposable local run, not a capacity
+guarantee.
+
 The checked-in benchmark fixture contains representative pairs and is run as
 part of the catalogue tests. With the default policy, it measured:
 
