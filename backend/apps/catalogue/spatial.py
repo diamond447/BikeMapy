@@ -389,6 +389,38 @@ def bump_viewport_filter_cache_epoch() -> int:
         return epoch
 
 
+_FILTER_EPOCH_CALLBACK_MARKER = object()
+
+
+class _FilterEpochBatch:
+    def __init__(self) -> None:
+        self.bumped = False
+
+
+class _FilterEpochCallback:
+    _bikemapy_filter_epoch_marker = _FILTER_EPOCH_CALLBACK_MARKER
+
+    def __init__(self, batch: _FilterEpochBatch) -> None:
+        self._batch = batch
+        self._executed = False
+
+    def __call__(self) -> None:
+        if self._executed:
+            return
+        db_connection = transaction.get_connection()
+        if not self._batch.bumped:
+            self._batch.bumped = True
+            bump_viewport_filter_cache_epoch()
+        # ``captureOnCommitCallbacks(execute=True)`` executes callbacks while
+        # leaving them queued. Treat all callbacks from this batch as handled
+        # so a later capture in the same test transaction can start a batch.
+        if any(callback is self for _, callback, _ in db_connection.run_on_commit):
+            for _, callback, _ in db_connection.run_on_commit:
+                if getattr(callback, "_batch", None) is self._batch:
+                    callback._executed = True
+        self._executed = True
+
+
 def schedule_spatial_cache_invalidation() -> None:
     """Advance the shared cache epoch only after the surrounding transaction commits."""
 
@@ -398,21 +430,17 @@ def schedule_spatial_cache_invalidation() -> None:
 def schedule_viewport_filter_cache_invalidation() -> None:
     """Invalidate filtered viewport entries after the surrounding transaction commits."""
 
-    connection_state = connection
-    atomic_blocks = getattr(connection_state, "atomic_blocks", ())
-    transaction_token: object = atomic_blocks[0] if atomic_blocks else object()
-
-    def bump_once() -> None:
-        previous_token = getattr(connection_state, "_bikemapy_filter_epoch_token", None)
-        if previous_token is not transaction_token:
-            bump_viewport_filter_cache_epoch()
-            connection_state._bikemapy_filter_epoch_token = transaction_token  # type: ignore[attr-defined]
-
-    # Register each callback so a callback discarded with an inner savepoint
-    # cannot suppress a later callback that survives in the outer transaction.
-    # All callbacks from one committed outer transaction share a token and
-    # therefore perform one cache bump.
-    transaction.on_commit(bump_once)
+    db_connection = transaction.get_connection()
+    callbacks = [
+        callback
+        for _, callback, _ in db_connection.run_on_commit
+        if getattr(callback, "_bikemapy_filter_epoch_marker", None) is _FILTER_EPOCH_CALLBACK_MARKER
+    ]
+    batch = next(
+        (callback._batch for callback in callbacks if not getattr(callback, "_executed", False)),
+        _FilterEpochBatch(),
+    )
+    transaction.on_commit(_FilterEpochCallback(batch))
 
 
 def _validate_bounds(west: float, south: float, east: float, north: float) -> None:

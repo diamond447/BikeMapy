@@ -368,6 +368,14 @@ def test_cache_epoch_advances_only_after_commit_and_not_after_rollback() -> None
         schedule_viewport_filter_cache_invalidation()
     assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_committed + 2
 
+    @transaction.atomic
+    def decorated_schedule() -> None:
+        schedule_viewport_filter_cache_invalidation()
+
+    decorated_schedule()
+    decorated_schedule()
+    assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_committed + 4
+
 
 def test_cache_epoch_invalidation_does_not_raise_when_redis_is_down() -> None:
     from apps.catalogue.spatial import bump_spatial_cache_epoch
