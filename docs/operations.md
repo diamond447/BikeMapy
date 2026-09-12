@@ -133,8 +133,12 @@ import; existing stored keys remain readable and removable.
 Create a restricted backup directory owned by the deployment operator and run
 `deploy/backup.sh` once per day (for example, from a systemd timer). It writes
 a PostgreSQL custom dump, a GPX volume tarball, a SHA-256 manifest, and a
-failure marker. The script exits non-zero if either artifact is missing or
-empty. Alert on the exit status and run
+failure marker. The GPX archive is rooted at the Docker volume root
+(`/app/storage` in production), so Django's `media/gpx/...` storage paths are
+preserved inside the archive. `deploy/restore.sh` extracts the archive back at
+that same volume root; it never extracts at `/` or creates a nested `data/`
+directory. The script exits non-zero if either artifact is missing or empty.
+Alert on the exit status and run
 `BACKUP_DIR=/srv/bikemapy/backup deploy/check-backup-freshness.sh` at least
 hourly; this detects a silent scheduler or disk failure.
 
@@ -149,6 +153,16 @@ the GPX archive step. The restore drill additionally needs the PostGIS image.
 
 The production Compose database mounts this directory at `/backup`. Keep the
 directory outside Git and never place `.env.production` or credentials in it.
+
+Archives created by older copies of the deployment runbook may contain a
+top-level `data/` directory. They are not compatible with the canonical
+restore command because that would produce `/app/storage/data/...`; do not
+restore one as-is. On an isolated host, unpack the old archive, repack its
+`data/` contents with `tar czf ... -C <unpacked-data> .`, and generate a new
+manifest with `BACKUP_ID=<new-id> BACKUP_DIR=<backup-dir>
+bash deploy/write-backup-manifest.sh`. Backups produced by `deploy/backup.sh` and
+the scheduled restore-drill workflow already use the canonical volume-relative
+layout.
 
 ## Laptop copy
 
