@@ -43,11 +43,18 @@ def approved_references() -> list[list[str]]:
     return [[str(value) for value in row] for row in rows.order_by("id")]
 
 
+def representative_approved_reference() -> list[str]:
+    """Select the stable first public route for representative endpoint checks."""
+
+    references = approved_references()
+    return references[0] if references else []
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--approved", action="store_true")
     args = parser.parse_args(argv[1:])
-    references: Any = approved_references() if args.approved else live_references()
+    references: Any = representative_approved_reference() if args.approved else live_references()
     json.dump(references, sys.stdout, ensure_ascii=True, separators=(",", ":"))
     sys.stdout.write("\n")
     return 0

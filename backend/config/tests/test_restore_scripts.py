@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from django.conf import settings
@@ -36,6 +37,7 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     drill = (root / "deploy" / "restore-drill.sh").read_text()
     manifest = (root / "deploy" / "write-backup-manifest.sh").read_text()
     validator = (root / "deploy" / "validate-gpx-archive.sh").read_text()
+    archive_validator = (root / "scripts" / "validate_gpx_archive.py").read_text()
     workflow = (root / ".github" / "workflows" / "restore-drill.yml").read_text()
 
     assert 'tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part" -C /data .' in backup
@@ -43,7 +45,9 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     assert "media/" in backup
     assert "media/" in restore
     assert "validate-gpx-archive.sh" in drill
-    assert "media/" in validator
+    assert "media/" in archive_validator
+    assert "validate_gpx_archive.py" in validator
+    assert "tarfile" in archive_validator
     assert "write-backup-manifest.sh" in backup
     assert "write-backup-manifest.sh" in workflow
     assert "database_sha256" in manifest
@@ -207,7 +211,10 @@ def test_restore_reference_query_returns_all_rows_and_current_approved_version()
 
     from apps.catalogue.models import ProcessingStatus, Route, RouteSource, RouteVersion
 
-    route = Route.objects.create(display_title="Restore query regression")
+    route = Route.objects.create(
+        id=UUID("00000000-0000-0000-0000-000000000001"),
+        display_title="Restore query regression",
+    )
     source = RouteSource.objects.create(
         route=route, mapy_url="https://mapy.com/s/restore-query-regression"
     )
@@ -227,14 +234,87 @@ def test_restore_reference_query_returns_all_rows_and_current_approved_version()
     )
     route.current_approved_version = approved
     route.save(update_fields=["current_approved_version", "updated_at"])
+    second_route = Route.objects.create(
+        id=UUID("00000000-0000-0000-0000-000000000002"),
+        display_title="Restore query second route",
+    )
+    second_source = RouteSource.objects.create(
+        route=second_route, mapy_url="https://mapy.com/s/restore-query-second"
+    )
+    second_approved = RouteVersion.objects.create(
+        source=second_source,
+        version_number=1,
+        checksum="second-approved-checksum",
+        original_gpx_storage_key="gpx/routes/second-approved.gpx",
+        technical_status=ProcessingStatus.VALID,
+    )
+    second_route.current_approved_version = second_approved
+    second_route.save(update_fields=["current_approved_version", "updated_at"])
 
     references = query.live_references()
     approved_references = query.approved_references()
+    representative = query.representative_approved_reference()
 
-    assert [row[0] for row in references] == [str(historical.pk), str(approved.pk)]
-    assert approved_references == [
-        [str(route.pk), "gpx/routes/approved\nkey.gpx", "approved-checksum"]
+    assert [row[0] for row in references] == [
+        str(historical.pk),
+        str(approved.pk),
+        str(second_approved.pk),
     ]
+    assert approved_references == [
+        [str(route.pk), "gpx/routes/approved\nkey.gpx", "approved-checksum"],
+        [str(second_route.pk), "gpx/routes/second-approved.gpx", "second-approved-checksum"],
+    ]
+    assert representative == approved_references[0]
+
+
+@pytest.mark.django_db
+@pytest.mark.skipif(
+    not settings.DATABASES["default"]["ENGINE"].endswith("sqlite3"),
+    reason="The query-to-validator bridge uses the isolated SQLite backend in the backend CI job",
+)
+def test_restore_query_cli_json_bridges_to_validator(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = Path(__file__).parents[3]
+    query_path = root / "scripts/query_restore_gpx_references.py"
+    validator = root / "scripts/validate_restore_gpx_references.py"
+    spec = importlib.util.spec_from_file_location("query_restore_gpx_references_bridge", query_path)
+    assert spec is not None and spec.loader is not None
+    query = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(query)
+
+    from apps.catalogue.models import ProcessingStatus, Route, RouteSource, RouteVersion
+
+    key = "gpx/routes/bridge\tname\npart.gpx"
+    payload = tmp_path / Path(*key.split("/"))
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes((root / "deploy/restore-drill-fixture.gpx").read_bytes())
+    route = Route.objects.create(display_title="Restore query bridge")
+    source = RouteSource.objects.create(
+        route=route, mapy_url="https://mapy.com/s/restore-query-bridge"
+    )
+    RouteVersion.objects.create(
+        source=source,
+        version_number=1,
+        checksum=_sha256(payload),
+        original_gpx_storage_key=key,
+        technical_status=ProcessingStatus.VALID,
+    )
+
+    assert query.main([str(query_path)]) == 0
+    query_json = capsys.readouterr().out
+    environment = {**os.environ, "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3"}
+    result = subprocess.run(
+        [sys.executable, str(validator), "--storage-root", str(tmp_path)],
+        check=False,
+        input=query_json,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0
+    assert "valid" in result.stdout
 
 
 def _sha256(path: Path) -> str:
@@ -258,29 +338,16 @@ def _run_reference_validator(
 def test_gpx_archive_validation_rejects_corrupt_and_legacy_archives(tmp_path: Path) -> None:
     root = Path(__file__).parents[3]
     validator = root / "deploy" / "validate-gpx-archive.sh"
-    fake_docker = tmp_path / "docker"
-    fake_docker.write_text(
-        """#!/usr/bin/env bash
-set -Eeuo pipefail
-while (($#)); do
-  case "$1" in
-    -v) archive="${2%%:*}"; shift 2 ;;
-    sh) shift; test "$1" = -c; command="$2"; break ;;
-    *) shift ;;
-  esac
-done
-command="${command//\\/backup\\/input.tar.gz/$archive}"
-bash -c "$command"
-"""
-    )
-    fake_docker.chmod(0o755)
-    environment = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     valid = tmp_path / "valid.tar.gz"
     with tarfile.open(valid, "w:gz") as archive:
         payload = tmp_path / "sample.gpx"
         payload.write_text("sample gpx payload\n")
         archive.add(payload, arcname="media/gpx/routes/sample.gpx")
+
+        control_payload = tmp_path / "control.gpx"
+        control_payload.write_text("control gpx payload\n")
+        archive.add(control_payload, arcname="media/gpx/routes/control\tname\npart.gpx")
 
     legacy = tmp_path / "legacy.tar.gz"
     with tarfile.open(legacy, "w:gz") as archive:
@@ -289,16 +356,28 @@ bash -c "$command"
     corrupt = tmp_path / "corrupt.tar.gz"
     corrupt.write_bytes(b"not a tar archive")
 
+    symlink = tmp_path / "symlink.tar.gz"
+    with tarfile.open(symlink, "w:gz") as archive:
+        link = tarfile.TarInfo("media/gpx/routes/link.gpx")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc/passwd"
+        archive.addfile(link)
+
+    traversal = tmp_path / "traversal.tar.gz"
+    with tarfile.open(traversal, "w:gz") as archive:
+        archive.add(payload, arcname="media/../outside.gpx")
+
     def validate(archive: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["bash", str(validator), str(archive)],
             check=False,
             capture_output=True,
             text=True,
-            env=environment,
         )
 
     assert validate(valid).returncode == 0
     assert validate(legacy).returncode != 0
     assert "outside media/" in validate(legacy).stderr
     assert validate(corrupt).returncode != 0
+    assert validate(symlink).returncode != 0
+    assert validate(traversal).returncode != 0

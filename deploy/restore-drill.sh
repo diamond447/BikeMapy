@@ -84,14 +84,14 @@ printf '%s' "$reference_rows" | docker run --rm -i -v "$GPX_VOLUME:/app/storage:
 # Endpoint checks must exercise a currently approved version. Historical
 # versions remain part of the exhaustive validation above, but are not the
 # payload selected by the public route endpoint.
-approved_row="$(docker run --rm --network "$NETWORK" \
+approved_references="$(docker run --rm --network "$NETWORK" \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
   "$APP_IMAGE" python scripts/query_restore_gpx_references.py --approved)"
-test "$(jq -er 'length' <<< "$approved_row")" -eq 1
-route_id="$(jq -er '.[0][0]' <<< "$approved_row")"
-gpx_storage_key_json="$(jq -ec '.[0][1]' <<< "$approved_row")"
-expected_gpx_sha="$(jq -er '.[0][2]' <<< "$approved_row")"
+test "$(jq -er 'length' <<< "$approved_references")" -eq 3
+route_id="$(jq -er '.[0]' <<< "$approved_references")"
+gpx_storage_key_json="$(jq -ec '.[1]' <<< "$approved_references")"
+expected_gpx_sha="$(jq -er '.[2]' <<< "$approved_references")"
 restored_gpx_sha="$expected_gpx_sha"
 
 # Start the real application image against the restored targets. These checks
