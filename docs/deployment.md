@@ -119,6 +119,12 @@ listener directly or remove the `X-Forwarded-Proto` setting. Access logs are
 privacy-safe JSON on container stdout, and production Compose rotates Docker
 logs at 10 MiB with fourteen files per service.
 
+The Nginx boundary strips any client-supplied `X-Forwarded-For` chain before
+passing requests to Django. Django accepts `CF-Connecting-IP` only when its
+direct peer is the configured Nginx address, and generic API throttles use the
+same policy without a fixed proxy-count setting. This keeps an untrusted
+forwarded prefix from changing a throttle identity.
+
 Production startup fails if secure session/CSRF cookies, the HTTPS redirect,
 HSTS, or the trusted HTTPS proxy header are weakened. The production settings
 also make both cookies `Secure`, so owner authentication cannot establish a

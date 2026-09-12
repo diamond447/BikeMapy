@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
-import ipaddress
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -17,9 +15,26 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.catalogue.models import Route
+from config.client_identity import client_ip, rate_limit_identifier
 
 from .models import Report, ReportAudit
 from .turnstile import TurnstileVerifier
+
+__all__ = [
+    "DuplicateReport",
+    "HoneypotTriggered",
+    "RateLimited",
+    "ReportProtectionError",
+    "RateLimitResult",
+    "TurnstileRejected",
+    "check_rate_limits",
+    "client_ip",
+    "derive_rate_limit_identifier",
+    "rate_limit_identifier",
+    "report_fingerprint",
+    "submit_report",
+    "verify_turnstile",
+]
 
 
 class ReportProtectionError(Exception):
@@ -48,51 +63,6 @@ class RateLimited(ReportProtectionError):
 class RateLimitResult:
     allowed: bool
     retry_after: int = 0
-
-
-def client_ip(request: Any) -> str:
-    """Resolve a client IP with explicit, CIDR-scoped Cloudflare trust.
-
-    Direct deployments use ``REMOTE_ADDR``.  Cloudflare Tunnel deployments can
-    opt into ``CF-Connecting-IP`` only when the direct peer is in the configured
-    trusted proxy CIDRs.  A malformed or multi-value header is rejected rather
-    than interpreted, and all fallbacks remain suitable for HMAC rate keys.
-    """
-
-    meta = getattr(request, "META", {})
-
-    def parse(value: Any) -> str | None:
-        value = str(value or "").strip()
-        try:
-            return str(ipaddress.ip_address(value))
-        except ValueError:
-            return None
-
-    peer = parse(meta.get("REMOTE_ADDR"))
-    if peer and str(getattr(settings, "REPORT_CLIENT_IP_MODE", "direct")).lower() == "cloudflare":
-        try:
-            networks = tuple(
-                ipaddress.ip_network(str(cidr).strip(), strict=False)
-                for cidr in getattr(settings, "REPORT_TRUSTED_PROXY_CIDRS", ())
-                if str(cidr).strip()
-            )
-        except ValueError:
-            networks = ()
-        if any(ipaddress.ip_address(peer) in network for network in networks):
-            header = meta.get("HTTP_CF_CONNECTING_IP")
-            if header is not None:
-                return parse(header) or "unknown"
-    return peer or "unknown"
-
-
-def rate_limit_identifier(ip_address: str) -> str:
-    """Return an HMAC identifier suitable for short-lived cache keys."""
-
-    secret = str(
-        getattr(settings, "REPORT_RATE_LIMIT_HMAC_SECRET", "")
-        or getattr(settings, "SECRET_KEY", "local-development-key")
-    ).encode()
-    return hmac.new(secret, ip_address.encode(), hashlib.sha256).hexdigest()
 
 
 # Names used by integration callers and tests that want to inspect the adapter.

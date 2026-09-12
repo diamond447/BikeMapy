@@ -1,6 +1,9 @@
 proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+# Never pass a user-controlled forwarded chain to Django. The application
+# derives the public client identity from CF-Connecting-IP only after checking
+# that this direct Nginx peer is trusted.
+proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Forwarded-Proto https;
 proxy_set_header CF-Connecting-IP $http_cf_connecting_ip;
 proxy_http_version 1.1;

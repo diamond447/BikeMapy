@@ -62,6 +62,7 @@ if DATABASE_ENGINE == "django.db.backends.sqlite3":
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "config.middleware.TrustedProxyClientIdentityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "config.middleware.PreviewReadOnlyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -224,8 +225,8 @@ REST_FRAMEWORK = {
     # client must not be able to consume all API capacity.  Deployments can
     # tune these values without changing the application.
     "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
+        "apps.api.throttling.ApiAnonRateThrottle",
+        "apps.api.throttling.ApiUserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("API_ANON_RATE", "120/minute"),
@@ -301,6 +302,7 @@ REPORT_TURNSTILE_VERIFY_URL = os.getenv(
 )
 REPORT_TURNSTILE_TIMEOUT = float(os.getenv("REPORT_TURNSTILE_TIMEOUT", "5"))
 REPORT_RATE_LIMIT_HMAC_SECRET = os.getenv("REPORT_RATE_LIMIT_HMAC_SECRET", "")
+RATE_LIMIT_HMAC_SECRET = os.getenv("RATE_LIMIT_HMAC_SECRET", "")
 REPORT_RATE_LIMIT_HOURLY = int(os.getenv("REPORT_RATE_LIMIT_HOURLY", "3"))
 REPORT_RATE_LIMIT_DAILY = int(os.getenv("REPORT_RATE_LIMIT_DAILY", "10"))
 REPORT_CLIENT_IP_MODE = os.getenv("REPORT_CLIENT_IP_MODE", "direct").lower()
