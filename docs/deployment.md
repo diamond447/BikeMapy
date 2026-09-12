@@ -181,13 +181,13 @@ backend unhealthy even when the public `PUBLIC_HOST` is correct.
 export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
 export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<selected-digest>"
 export BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-export POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
-mkdir -p backup
+export BACKUP_DIR="$PWD/backup"
 
 # Back up before migrations. Store these files on a separate encrypted disk.
-$COMPOSE exec -T db pg_dump --username="$POSTGRES_USER" --format=custom --file="/backup/db-${BACKUP_ID}.dump" bikemapy
-docker run --rm -v bikemapy_gpx_data:/data:ro -v "$PWD/backup:/backup" alpine \
-  tar czf "/backup/gpx-${BACKUP_ID}.tar.gz" -C / data
+# This writes the canonical volume-relative GPX archive and its checksum
+# manifest, and stops writers for the snapshot window.
+BACKUP_DIR="$BACKUP_DIR" BACKUP_ID="$BACKUP_ID" COMPOSE="$COMPOSE" \
+  ./deploy/backup.sh
 
 # Pull only the selected immutable image, then migrate that image.
 $COMPOSE pull backend worker beat
@@ -229,32 +229,18 @@ stopped and validates the restored database before traffic is reopened:
 export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
 export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<previous-digest>"
 export BACKUP_ID="<selected-backup-id>"
+export BACKUP_DIR="$PWD/backup"
 $COMPOSE pull backend worker beat
 
-# Maintenance mode: stop API workers and prevent new writes while restoring.
-$COMPOSE stop backend worker beat
+# Restore the verified database and GPX volume as one consistent snapshot.
+# restore.sh validates the manifest, preserves the current state, extracts the
+# volume-relative archive under /app/storage, and leaves writers stopped if a
+# recovery step fails.
+BACKUP_DIR="$BACKUP_DIR" BACKUP_ID="$BACKUP_ID" COMPOSE="$COMPOSE" \
+  ./deploy/restore.sh "$BACKUP_ID"
 
-# Restore to the production database only after checking the backup exists.
-test -s "backup/db-${BACKUP_ID}.dump"
-$COMPOSE start db redis
-$COMPOSE exec -T db pg_restore --username="$POSTGRES_USER" --clean --if-exists --no-owner --dbname=bikemapy \
-  "/backup/db-${BACKUP_ID}.dump"
-
-# Preserve the current GPX volume before replacing its contents.
-test -s "backup/gpx-${BACKUP_ID}.tar.gz"
-docker run --rm -e BACKUP_ID="$BACKUP_ID" -v bikemapy_gpx_data:/data:ro \
-  -v "$PWD/backup:/backup" alpine \
-  sh -c 'tar czf "/backup/gpx-before-restore-${BACKUP_ID}.tar.gz" -C / data'
-docker run --rm -e BACKUP_ID="$BACKUP_ID" -v "$PWD/backup:/backup" alpine \
-  sh -c 'tar -tzf "/backup/gpx-${BACKUP_ID}.tar.gz" >/dev/null'
-docker run --rm -v bikemapy_gpx_data:/data alpine sh -c 'rm -rf /data/*'
-docker run --rm -e BACKUP_ID="$BACKUP_ID" -v bikemapy_gpx_data:/data \
-  -v "$PWD/backup:/backup" alpine \
-  sh -c 'tar xzf "/backup/gpx-${BACKUP_ID}.tar.gz" -C / && test -n "$(find /data -type f -print -quit)"'
-test -s "backup/gpx-before-restore-${BACKUP_ID}.tar.gz"
-
-# Start the selected previous image and validate both readiness and data reads.
-$COMPOSE up -d backend worker beat proxy
+# restore.sh starts the selected previous image after a successful restore;
+# validate both readiness and data reads before reopening traffic.
 curl --fail --silent --show-error https://api.example.invalid/health/ready/
 curl --fail --silent --show-error https://api.example.invalid/api/v1/routes/?page_size=1
 ```

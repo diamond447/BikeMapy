@@ -15,6 +15,7 @@ manifest="$BACKUP_DIR/manifest-${BACKUP_ID}.json"
 test -s "$db_file" && test -s "$gpx_file" && test -s "$manifest"
 test "$(jq -r .database_sha256 "$manifest")" = "$(sha256sum "$db_file" | awk '{print $1}')"
 test "$(jq -r .gpx_sha256 "$manifest")" = "$(sha256sum "$gpx_file" | awk '{print $1}')"
+bash "$(dirname "$0")/validate-gpx-archive.sh" "$gpx_file"
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 docker run -d --name "$CONTAINER" -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
@@ -37,7 +38,6 @@ docker exec -i "$CONTAINER" pg_restore --username="$POSTGRES_USER" --clean --if-
   --no-owner --dbname=bikemapy < "$db_file"
 route_count="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
   --tuples-only --no-align --command="SELECT COALESCE((SELECT COUNT(*) FROM catalogue_route), 0)")"
-docker run --rm -v "$gpx_file:/backup/input.tar.gz:ro" alpine tar tzf /backup/input.tar.gz >/dev/null
 evidence="$BACKUP_DIR/restore-drill-${BACKUP_ID}.json"
 printf '{"backup_id":"%s","database_sha256":"%s","gpx_sha256":"%s","route_count":%s,"verified_at":"%s"}\n' \
   "$BACKUP_ID" "$(jq -r .database_sha256 "$manifest")" "$(jq -r .gpx_sha256 "$manifest")" \

@@ -33,22 +33,19 @@ trap on_error ERR
 trap restart_services EXIT
 db_file="$BACKUP_DIR/db-${BACKUP_ID}.dump"
 gpx_file="$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz"
-manifest="$BACKUP_DIR/manifest-${BACKUP_ID}.json"
 services_stopped=1
 $COMPOSE stop backend worker beat
 $COMPOSE exec -T db pg_dump --username="$POSTGRES_USER" --format=custom \
   --file="/backup/db-${BACKUP_ID}.dump.part" "$POSTGRES_DB"
+# The archive root is the volume root (/app/storage in production). Keep
+# media/ in the archive so Django storage keys resolve after extraction.
 docker run --rm -v "${GPX_VOLUME}:/data:ro" -v "$BACKUP_DIR:/backup" alpine \
   tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part" -C /data .
 test -s "$BACKUP_DIR/db-${BACKUP_ID}.dump.part"
 test -s "$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz.part"
 mv -f "$BACKUP_DIR/db-${BACKUP_ID}.dump.part" "$db_file"
 mv -f "$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz.part" "$gpx_file"
-db_sha256="$(sha256sum "$db_file" | awk '{print $1}')"
-gpx_sha256="$(sha256sum "$gpx_file" | awk '{print $1}')"
-created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf '{"backup_id":"%s","created_at":"%s","database":"%s","database_sha256":"%s","gpx":"%s","gpx_sha256":"%s"}\n' \
-  "$BACKUP_ID" "$created_at" "$(basename "$db_file")" "$db_sha256" "$(basename "$gpx_file")" "$gpx_sha256" > "${manifest}.part"
-mv -f "${manifest}.part" "$manifest"
+BACKUP_DIR="$BACKUP_DIR" BACKUP_ID="$BACKUP_ID" \
+  bash "$(dirname "$0")/write-backup-manifest.sh"
 rm -f "$failure_marker"
 echo "Created verified backup $BACKUP_ID in $BACKUP_DIR"

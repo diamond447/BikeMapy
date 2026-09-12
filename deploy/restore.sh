@@ -19,6 +19,12 @@ db_sum="$(jq -r .database_sha256 "$manifest")"
 gpx_sum="$(jq -r .gpx_sha256 "$manifest")"
 test "$db_sum" = "$(sha256sum "$db_file" | awk '{print $1}')"
 test "$gpx_sum" = "$(sha256sum "$gpx_file" | awk '{print $1}')"
+verify_gpx_archive() {
+  # Archives are relative to the volume root and therefore contain media/;
+  # extracting one under /data recreates /app/storage/media exactly.
+  bash "$(dirname "$0")/validate-gpx-archive.sh" "$gpx_file"
+}
+verify_gpx_archive
 
 echo "Stopping writers before restoring backup $BACKUP_ID"
 $COMPOSE stop backend worker beat
