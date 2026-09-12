@@ -160,6 +160,51 @@ def test_viewport_and_selected_queries_are_bounded(published_route: Route) -> No
     assert result["routes"] == []
 
 
+@pytest.mark.skipif(
+    connection.vendor == "postgresql", reason="covers the non-GIS Python bbox fallback"
+)
+@override_settings(SPATIAL_MAX_CANDIDATE_SCAN=5)
+def test_non_gis_viewport_scan_keeps_configured_bound_before_bbox_filter(
+    published_route: Route,
+) -> None:
+    offscreen_geometry = {"type": "LineString", "coordinates": [[0, 0], [0.1, 0]]}
+    matching_geometry = {"type": "LineString", "coordinates": [[16, 49], [16.1, 49]]}
+    routes: list[Route] = []
+    for route_id, geometry in (
+        (1, offscreen_geometry),
+        (2, offscreen_geometry),
+        (100, matching_geometry),
+    ):
+        route = Route(id=UUID(int=route_id), display_title=f"candidate-{route_id}")
+        route.save(force_insert=True)
+        source = RouteSource.objects.create(
+            route=route, mapy_url=f"https://mapy.com/s/candidate-{route_id}"
+        )
+        version = RouteVersion.objects.create(
+            source=source,
+            version_number=1,
+            checksum=f"candidate-{route_id}",
+            normalized_geometry=geometry,
+            simplified_geometry=geometry,
+            technical_status=ProcessingStatus.VALID,
+        )
+        route.current_approved_version = version
+        route.save(update_fields=["current_approved_version", "updated_at"])
+        routes.append(route)
+
+    cache.clear()
+    result = query_viewport(
+        west=15,
+        south=48,
+        east=17,
+        north=50,
+        zoom=12,
+        limits=SpatialQueryLimits(max_routes=1),
+    )
+
+    assert [item["id"] for item in result["routes"]] == [str(routes[-1].pk)]
+
+
 def test_viewport_filter_cache_inputs_are_normalized() -> None:
     assert normalize_filter_inputs(
         {

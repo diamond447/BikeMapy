@@ -354,6 +354,28 @@ def test_viewport_endpoint_applies_catalogue_filters(public_route: Route) -> Non
     assert omitted.json()["routes"] == []
 
 
+def test_filtered_viewport_cache_invalidates_when_match_is_removed(public_route: Route) -> None:
+    client = Client()
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&search=loop"
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+    public_route.display_title = "Brno gravel ride"
+    public_route.save(update_fields=["display_title", "updated_at"])
+
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
+
+
+def test_filtered_viewport_cache_invalidates_when_match_is_added(public_route: Route) -> None:
+    client = Client()
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&search=newly-added"
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
+
+    public_route.display_title = "Newly-added gravel ride"
+    public_route.save(update_fields=["display_title", "updated_at"])
+
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+
 def _create_dense_viewport_catalogue(public_route: Route, count: int) -> list[Route]:
     """Create public route rows without evaluating a filtered route queryset."""
 
@@ -453,9 +475,12 @@ def test_filtered_viewport_http_cold_cache_benchmark(public_route: Route) -> Non
     p95 = ordered[-1]
     print(
         f"filtered_viewport_http_cold_cache_ms_median={ordered[len(ordered) // 2]:.2f} "
-        f"p95={p95:.2f}"
+        f"p95={p95:.2f} budget=2000.00"
     )
     assert len(samples) == 10
+    # This is deliberately generous for a cold application/cache process, but
+    # catches accidental evaluation of the full dense candidate catalogue.
+    assert p95 < 2_000
 
 
 @pytest.mark.skipif(not _GIS_AVAILABLE, reason="requires the PostGIS geometry backend")
