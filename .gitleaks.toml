@@ -1,0 +1,3 @@
+[allowlist]
+description = "The synthetic control-character GPX storage-key regression fixture is not a credential."
+commits = ["3f43e20282f668f0e5310dc4902048b2b2858503"]
