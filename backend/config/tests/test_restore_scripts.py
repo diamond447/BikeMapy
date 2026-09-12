@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -41,6 +42,60 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     assert "write-backup-manifest.sh" in workflow
     assert "database_sha256" in manifest
     assert "gpx_sha256" in manifest
+
+
+def test_restore_drill_uses_full_schema_disposable_volume_and_application_checks() -> None:
+    root = Path(__file__).parents[3]
+    drill = (root / "deploy" / "restore-drill.sh").read_text()
+    workflow = (root / ".github" / "workflows" / "restore-drill.yml").read_text()
+    seed = (root / "scripts" / "seed_restore_drill.py").read_text()
+
+    assert 'docker volume create "$GPX_VOLUME"' in drill
+    assert 'docker volume rm "$GPX_VOLUME"' in drill
+    assert "original_gpx_storage_key" in drill
+    assert "restored_gpx_sha" in drill
+    assert "DRILL_GPX_SHA" in drill
+    assert "/health/ready/" in drill
+    assert "/api/v1/routes/" in drill
+    assert "/gpx/" in drill
+    assert "python backend/manage.py migrate --noinput" in workflow
+    assert "python scripts/seed_restore_drill.py" in workflow
+    assert "restore-drill-fixture.gpx" in workflow
+    assert "GPX_SHA256" in seed
+    assert "original_gpx_storage_key=storage_key" in seed
+
+
+def test_restore_gpx_validator_accepts_fixture_and_rejects_semantically_invalid_payload(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).parents[3]
+    validator = root / "scripts" / "validate_restore_gpx.py"
+    fixture = root / "deploy" / "restore-drill-fixture.gpx"
+    invalid = tmp_path / "invalid.gpx"
+    invalid.write_text(
+        '<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1"><metadata /></gpx>'
+    )
+    environment = {**os.environ, "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3"}
+
+    valid_result = subprocess.run(
+        [sys.executable, str(validator), str(fixture)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    invalid_result = subprocess.run(
+        [sys.executable, str(validator), str(invalid)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert valid_result.returncode == 0
+    assert "valid" in valid_result.stdout
+    assert invalid_result.returncode == 1
+    assert "no direct route points" in invalid_result.stderr
 
 
 def test_gpx_archive_validation_rejects_corrupt_and_legacy_archives(tmp_path: Path) -> None:
