@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import sys
 import tarfile
 from pathlib import PurePosixPath
@@ -28,10 +29,16 @@ def main(argv: list[str]) -> int:
         return 2
     archive = argv[1]
     try:
-        with tarfile.open(archive, mode="r:gz") as stream:
-            for member in stream:
-                _validate_member(member)
-    except (OSError, tarfile.TarError, ValueError) as exc:
+        with open(archive, "rb") as raw_archive:
+            # Keep the gzip layer explicit: tarfile can finish after the last
+            # member without consuming the gzip trailer. Reading to EOF makes
+            # truncated data and a bad CRC fail before restore mutates storage.
+            with gzip.GzipFile(fileobj=raw_archive, mode="rb") as compressed:
+                with tarfile.open(fileobj=compressed, mode="r:") as stream:
+                    for member in stream:
+                        _validate_member(member)
+                compressed.read()
+    except (EOFError, OSError, gzip.BadGzipFile, tarfile.TarError, ValueError) as exc:
         print(f"GPX archive validation failed: {exc}", file=sys.stderr)
         return 1
     return 0

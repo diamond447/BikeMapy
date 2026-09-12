@@ -300,6 +300,20 @@ def test_restore_query_cli_json_bridges_to_validator(
         original_gpx_storage_key=key,
         technical_status=ProcessingStatus.VALID,
     )
+    second_payload = tmp_path / "gpx/routes/bridge-second.gpx"
+    second_payload.parent.mkdir(parents=True, exist_ok=True)
+    second_payload.write_bytes((root / "deploy/restore-drill-history.gpx").read_bytes())
+    second_route = Route.objects.create(display_title="Restore query bridge second")
+    second_source = RouteSource.objects.create(
+        route=second_route, mapy_url="https://mapy.com/s/restore-query-bridge-second"
+    )
+    RouteVersion.objects.create(
+        source=second_source,
+        version_number=1,
+        checksum=_sha256(second_payload),
+        original_gpx_storage_key="gpx/routes/bridge-second.gpx",
+        technical_status=ProcessingStatus.VALID,
+    )
 
     assert query.main([str(query_path)]) == 0
     query_json = capsys.readouterr().out
@@ -314,7 +328,7 @@ def test_restore_query_cli_json_bridges_to_validator(
     )
 
     assert result.returncode == 0
-    assert "valid" in result.stdout
+    assert result.stdout.count("valid") == 2
 
 
 def _sha256(path: Path) -> str:
@@ -355,6 +369,12 @@ def test_gpx_archive_validation_rejects_corrupt_and_legacy_archives(tmp_path: Pa
 
     corrupt = tmp_path / "corrupt.tar.gz"
     corrupt.write_bytes(b"not a tar archive")
+    truncated_archives: list[Path] = []
+    valid_bytes = valid.read_bytes()
+    for removed_bytes in (8, 20):
+        truncated = tmp_path / f"truncated-{removed_bytes}.tar.gz"
+        truncated.write_bytes(valid_bytes[:-removed_bytes])
+        truncated_archives.append(truncated)
 
     symlink = tmp_path / "symlink.tar.gz"
     with tarfile.open(symlink, "w:gz") as archive:
@@ -379,5 +399,6 @@ def test_gpx_archive_validation_rejects_corrupt_and_legacy_archives(tmp_path: Pa
     assert validate(legacy).returncode != 0
     assert "outside media/" in validate(legacy).stderr
     assert validate(corrupt).returncode != 0
+    assert all(validate(archive).returncode != 0 for archive in truncated_archives)
     assert validate(symlink).returncode != 0
     assert validate(traversal).returncode != 0

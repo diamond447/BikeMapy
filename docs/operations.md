@@ -148,8 +148,9 @@ time, then restarts them through an exit trap even when the snapshot fails.
 Schedule it during a low-traffic maintenance window and expect a brief read
 outage; it does not provide zero-downtime backups.
 
-The host needs Docker Compose, `sha256sum`, `jq`, and the Alpine image used for
-the GPX archive step. The restore drill additionally needs the PostGIS image.
+The host needs Docker Compose, Python 3.13+ (standard library only),
+`sha256sum`, `jq`, and the Alpine image used for the GPX archive step. The
+restore drill additionally needs the PostGIS image.
 
 The production Compose database mounts this directory at `/backup`. Keep the
 directory outside Git and never place `.env.production` or credentials in it.
