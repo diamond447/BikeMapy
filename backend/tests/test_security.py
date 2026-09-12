@@ -11,6 +11,7 @@ import pytest
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from scripts.check_codeql_sarif import actionable_findings
+from scripts.check_frontend_bundle import check_bundle
 
 from config import settings as project_settings
 
@@ -85,6 +86,15 @@ def test_production_transport_validation_rejects_insecure_cookie(monkeypatch: An
 
 def test_forum_responses_have_a_parser_byte_cap() -> None:
     assert settings.BIKEFORUM_MAX_BYTES > 0
+
+
+def test_frontend_bundle_rejects_the_generic_rate_limit_secret_marker(tmp_path: Path) -> None:
+    bundle = tmp_path / "assets.js"
+    bundle.write_text("const secret = 'RATE_LIMIT_HMAC_SECRET';", encoding="utf-8")
+
+    findings = check_bundle(tmp_path)
+
+    assert any("RATE_LIMIT_HMAC_SECRET" in finding for finding in findings)
 
 
 def test_codeql_gate_joins_results_to_driver_rule_severity(tmp_path: Path) -> None:
