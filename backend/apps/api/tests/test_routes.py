@@ -507,10 +507,14 @@ def test_filtered_viewport_http_query_count_stays_bounded_for_dense_catalogue(
     assert response.status_code == 200
     assert len(response.json()["routes"]) == 3
     assert len(queries) <= 8
-    sql = "\n".join(query["sql"].upper() for query in queries)
-    assert "EXISTS" in sql
-    assert "LIMIT" in sql
-    assert "IN (SELECT DISTINCT" not in sql
+    route_sql = [
+        query["sql"].upper()
+        for query in queries
+        if 'FROM "CATALOGUE_ROUTE"' in query["sql"].upper()
+    ]
+    assert route_sql
+    assert any("EXISTS" in sql and "LIMIT" in sql for sql in route_sql)
+    assert all("IN (SELECT DISTINCT" not in sql for sql in route_sql)
 
 
 @pytest.mark.benchmark
@@ -521,30 +525,43 @@ def test_filtered_viewport_http_query_count_stays_bounded_for_dense_catalogue(
 def test_filtered_viewport_http_cold_cache_benchmark(public_route: Route) -> None:
     """Measure the complete filtered HTTP path against a dense catalogue."""
 
-    _create_dense_viewport_catalogue(public_route, count=1_500)
+    _create_dense_viewport_catalogue(public_route, count=100)
     endpoint = (
         "/api/v1/routes/viewport/?west=16.5&south=49.1&east=16.8&north=49.3&"
         "zoom=12&limit=50&search=dense"
     )
-    samples = []
+
+    def measure(count: int) -> list[float]:
+        samples = []
+        for _ in range(count):
+            cache.clear()
+            started = perf_counter()
+            response = client.get(endpoint)
+            samples.append((perf_counter() - started) * 1000)
+            assert response.status_code == 200
+            assert len(response.json()["routes"]) == 50
+        return samples
+
     client = Client()
-    for _ in range(10):
-        cache.clear()
-        started = perf_counter()
-        response = client.get(endpoint)
-        samples.append((perf_counter() - started) * 1000)
-        assert response.status_code == 200
-        assert len(response.json()["routes"]) == 50
-    ordered = sorted(samples)
-    p95 = ordered[-1]
+    small_samples = measure(5)
+    _create_dense_viewport_catalogue(public_route, count=1_400)
+    dense_samples = measure(10)
+    small_ordered = sorted(small_samples)
+    dense_ordered = sorted(dense_samples)
+    small_median = small_ordered[len(small_ordered) // 2]
+    dense_median = dense_ordered[len(dense_ordered) // 2]
+    p95 = dense_ordered[-1]
+    ratio = dense_median / max(small_median, 1.0)
     print(
-        f"filtered_viewport_http_cold_cache_ms_median={ordered[len(ordered) // 2]:.2f} "
-        f"p95={p95:.2f} budget=2000.00"
+        f"filtered_viewport_http_cold_cache_small_median={small_median:.2f} "
+        f"dense_median={dense_median:.2f} ratio={ratio:.2f} p95={p95:.2f} budget=2000.00"
     )
-    assert len(samples) == 10
+    assert len(small_samples) == 5
+    assert len(dense_samples) == 10
     # This is deliberately generous for a cold application/cache process, but
     # catches accidental evaluation of the full dense candidate catalogue.
     assert p95 < 2_000
+    assert ratio < 15
 
 
 @pytest.mark.skipif(not _GIS_AVAILABLE, reason="requires the PostGIS geometry backend")

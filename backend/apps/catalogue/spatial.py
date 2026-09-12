@@ -398,7 +398,21 @@ def schedule_spatial_cache_invalidation() -> None:
 def schedule_viewport_filter_cache_invalidation() -> None:
     """Invalidate filtered viewport entries after the surrounding transaction commits."""
 
-    transaction.on_commit(bump_viewport_filter_cache_epoch)
+    connection_state = connection
+    atomic_blocks = getattr(connection_state, "atomic_blocks", ())
+    transaction_token: object = atomic_blocks[0] if atomic_blocks else object()
+
+    def bump_once() -> None:
+        previous_token = getattr(connection_state, "_bikemapy_filter_epoch_token", None)
+        if previous_token is not transaction_token:
+            bump_viewport_filter_cache_epoch()
+            connection_state._bikemapy_filter_epoch_token = transaction_token  # type: ignore[attr-defined]
+
+    # Register each callback so a callback discarded with an inner savepoint
+    # cannot suppress a later callback that survives in the outer transaction.
+    # All callbacks from one committed outer transaction share a token and
+    # therefore perform one cache bump.
+    transaction.on_commit(bump_once)
 
 
 def _validate_bounds(west: float, south: float, east: float, north: float) -> None:

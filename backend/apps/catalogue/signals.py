@@ -42,11 +42,14 @@ _FILTER_MEMBERSHIP_FIELDS: Mapping[type[Any], frozenset[str]] = {
     RouteSourcePost: frozenset({"source", "post"}),
     RouteVersion: frozenset({"source", "distance_m", "ascent_m"}),
 }
+_FILTER_LINK_MODELS = frozenset({RouteCategory, RouteSourceMerge, RouteSourcePost})
 
 
 def _invalidate_filter_cache(
     *, sender: type[Any], created: bool = False, update_fields: Any = None, **_: object
 ) -> None:
+    if created and sender not in _FILTER_LINK_MODELS:
+        return
     changed_fields = None if update_fields is None else {str(field) for field in update_fields}
     if not created and changed_fields is not None:
         if not changed_fields.intersection(_FILTER_MEMBERSHIP_FIELDS[sender]):
