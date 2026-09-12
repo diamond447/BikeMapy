@@ -8,6 +8,25 @@ from collections.abc import Callable
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
 
+from .client_identity import client_ip
+
+
+class TrustedProxyClientIdentityMiddleware:
+    """Normalize client identity and remove untrusted forwarded chains.
+
+    Nginx is the only production peer that can reach Django. Once its
+    Cloudflare header has been validated, downstream code sees one canonical
+    ``REMOTE_ADDR`` and cannot accidentally consume a user-controlled prefix.
+    """
+
+    def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        request.META["REMOTE_ADDR"] = client_ip(request)
+        request.META.pop("HTTP_X_FORWARDED_FOR", None)
+        return self.get_response(request)
+
 
 class PreviewReadOnlyMiddleware:
     """Reject state-changing requests originating from configured previews.

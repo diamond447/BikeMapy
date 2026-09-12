@@ -20,8 +20,8 @@ def test_public_api_has_bounded_anonymous_and_authenticated_rates() -> None:
     throttle_classes = rest_framework["DEFAULT_THROTTLE_CLASSES"]
     rates = rest_framework["DEFAULT_THROTTLE_RATES"]
 
-    assert "rest_framework.throttling.AnonRateThrottle" in throttle_classes
-    assert "rest_framework.throttling.UserRateThrottle" in throttle_classes
+    assert "apps.api.throttling.ApiAnonRateThrottle" in throttle_classes
+    assert "apps.api.throttling.ApiUserRateThrottle" in throttle_classes
     assert rates["anon"]
     assert rates["user"]
 
