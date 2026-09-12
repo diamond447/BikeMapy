@@ -3,6 +3,7 @@ name: bikemapy
 services:
   backend:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
+    restart: unless-stopped
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
@@ -15,8 +16,12 @@ services:
       proxy:
         ipv4_address: 172.30.0.3
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      db:
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_healthy
+        restart: true
     healthcheck:
       # Keep `backend` in DJANGO_ALLOWED_HOSTS: DEBUG=False rejects this
       # internal service hostname even though the public host is configured.
@@ -34,6 +39,7 @@ services:
 
   worker:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
+    restart: unless-stopped
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
@@ -42,24 +48,34 @@ services:
     volumes:
       - gpx_data:/app/storage
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      db:
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_healthy
+        restart: true
     logging: *default-log-rotation
 
   beat:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
+    restart: unless-stopped
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
       DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
     command: uv run --locked --no-dev celery -A config beat --loglevel=INFO
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_healthy }
+      db:
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_healthy
+        restart: true
     logging: *default-log-rotation
 
   db:
     image: postgis/postgis:17-3.5
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in the runtime environment}
       POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in the runtime environment}
@@ -76,6 +92,7 @@ services:
 
   redis:
     image: redis:7.4-alpine
+    restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -88,6 +105,7 @@ services:
 
   proxy:
     image: nginx:1.29-alpine
+    restart: unless-stopped
     entrypoint: ["/bin/sh", "/usr/local/bin/nginx-json-entrypoint.sh"]
     command: ["nginx", "-g", "daemon off;"]
     ports:
@@ -101,7 +119,9 @@ services:
       proxy:
         ipv4_address: 172.30.0.2
     depends_on:
-      backend: { condition: service_healthy }
+      backend:
+        condition: service_healthy
+        restart: true
     logging: *default-log-rotation
 
 volumes:

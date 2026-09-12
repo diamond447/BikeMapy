@@ -52,6 +52,15 @@ def test_production_compose_readiness_and_proxy_survive_public_host_change(
     backend = services["backend"]
     proxy = services["proxy"]
 
+    long_running = {"db", "redis", "backend", "worker", "beat", "proxy"}
+    assert long_running <= services.keys()
+    assert all(services[name]["restart"] == "unless-stopped" for name in long_running)
+    for name in ("backend", "worker", "beat"):
+        assert all(
+            dependency["restart"] is True for dependency in services[name]["depends_on"].values()
+        )
+    assert services["proxy"]["depends_on"]["backend"]["restart"] is True
+
     assert backend["environment"]["DJANGO_DEBUG"] == "false"
     assert backend["environment"]["DJANGO_ALLOWED_HOSTS"] == f"{public_host},backend"
     assert "http://backend:8000/health/ready/" in backend["healthcheck"]["test"][-1]
