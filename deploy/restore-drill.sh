@@ -90,7 +90,7 @@ approved_row="$(docker run --rm --network "$NETWORK" \
   "$APP_IMAGE" python scripts/query_restore_gpx_references.py --approved)"
 test "$(jq -er 'length' <<< "$approved_row")" -eq 1
 route_id="$(jq -er '.[0][0]' <<< "$approved_row")"
-gpx_key="$(jq -er '.[0][1]' <<< "$approved_row")"
+gpx_storage_key_json="$(jq -ec '.[0][1]' <<< "$approved_row")"
 expected_gpx_sha="$(jq -er '.[0][2]' <<< "$approved_row")"
 restored_gpx_sha="$expected_gpx_sha"
 
@@ -146,7 +146,7 @@ jq -cn \
   --arg backup_id "$BACKUP_ID" \
   --arg database_sha256 "$database_sha256" \
   --arg gpx_sha256 "$gpx_sha256" \
-  --arg gpx_storage_key "$gpx_key" \
+  --argjson gpx_storage_key "$gpx_storage_key_json" \
   --arg restored_gpx_sha256 "$restored_gpx_sha" \
   --arg route_id "$route_id" \
   --argjson route_count "$route_count" \
