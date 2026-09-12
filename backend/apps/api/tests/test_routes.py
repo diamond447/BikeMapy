@@ -1,5 +1,6 @@
 # mypy: disable-error-code="import-untyped"
 
+import os
 from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
@@ -8,12 +9,13 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
+from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.db import connection
 from django.http import StreamingHttpResponse
-from django.test import Client, override_settings
+from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.request import Request
@@ -29,11 +31,16 @@ from apps.catalogue.models import (
     ForumThread,
     ProcessingStatus,
     Route,
+    RouteBrowseGeometry,
     RouteCategory,
     RouteLifecycle,
+    RouteSource,
+    RouteSourceMerge,
+    RouteVersion,
 )
 from apps.catalogue.services import (
     approve_version,
+    keep_both_routes,
     merge_route_sources,
     record_route_version,
     register_source,
@@ -347,6 +354,214 @@ def test_viewport_endpoint_applies_catalogue_filters(public_route: Route) -> Non
     omitted = client.get(f"/api/v1/routes/viewport/?{base}&search=forest")
     assert omitted.status_code == 200
     assert omitted.json()["routes"] == []
+
+
+def test_filtered_viewport_cache_invalidates_when_match_is_removed(public_route: Route) -> None:
+    client = Client()
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&search=loop"
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+    public_route.display_title = "Brno gravel ride"
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        public_route.save(update_fields=["display_title", "updated_at"])
+
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
+
+
+def test_filtered_viewport_cache_invalidates_when_match_is_added(public_route: Route) -> None:
+    client = Client()
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&search=newly-added"
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
+
+    public_route.display_title = "Newly-added gravel ride"
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        public_route.save(update_fields=["display_title", "updated_at"])
+
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+
+def test_filtered_viewport_cache_invalidates_category_membership(public_route: Route) -> None:
+    client = Client()
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&category=gravel"
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        RouteCategory.objects.filter(route=public_route).delete()
+
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
+
+
+def test_filtered_viewport_cache_invalidates_bulk_merged_source_update(
+    public_route: Route,
+) -> None:
+    duplicate = Route.objects.create(slug="bulk-merged-route", display_title="Merged route")
+    thread = ForumThread.objects.create(
+        url=f"https://bikeforum.example/thread/{uuid4()}",
+        title="Bulk merged locality",
+        locality="Bulk merged town",
+    )
+    post = ForumPost.objects.create(
+        thread=thread,
+        url=f"https://bikeforum.example/post/{uuid4()}",
+    )
+    source, _ = register_source(
+        route=duplicate,
+        post=post,
+        mapy_url=f"https://mapy.com/s/{uuid4()}",
+    )
+    version, _ = record_route_version(
+        source=source,
+        checksum="bulk-merged-version",
+        normalized_geometry={
+            "type": "LineString",
+            "coordinates": [[16.6, 49.2], [16.7, 49.25]],
+        },
+        simplified_geometry={
+            "type": "LineString",
+            "coordinates": [[16.6, 49.2], [16.7, 49.25]],
+        },
+        technical_status=ProcessingStatus.VALID,
+    )
+    approve_version(version)
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        merge_route_sources(public_route, duplicate, reason="Bulk invalidation test")
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&search=Bulk+merged"
+    client = Client()
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        keep_both_routes(public_route, duplicate, reason="Keep both after review")
+
+    refreshed = client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+    assert [item["id"] for item in refreshed] == [str(duplicate.pk)]
+    assert not RouteSourceMerge.objects.filter(source=source, active=True).exists()
+
+
+def _create_dense_viewport_catalogue(public_route: Route, count: int) -> list[Route]:
+    """Create public route rows without evaluating a filtered route queryset."""
+
+    routes = Route.objects.bulk_create(
+        [Route(display_title=f"Dense gravel route {index}") for index in range(count)]
+    )
+    sources = RouteSource.objects.bulk_create(
+        [
+            RouteSource(route=route, mapy_url=f"https://mapy.com/s/dense-{route.pk}")
+            for route in routes
+        ]
+    )
+    geometry: object = {
+        "type": "LineString",
+        "coordinates": [[16.6, 49.2], [16.7, 49.25]],
+    }
+    if _GIS_AVAILABLE:
+        from django.contrib.gis.geos import GEOSGeometry
+
+        geometry = GEOSGeometry(
+            '{"type":"LineString","coordinates":[[16.6,49.2],[16.7,49.25]]}',
+            srid=4326,
+        )
+    versions = RouteVersion.objects.bulk_create(
+        [
+            RouteVersion(
+                source=source,
+                version_number=1,
+                checksum=f"dense-{source.pk}",
+                normalized_geometry=geometry,
+                simplified_geometry=geometry,
+                distance_m=Decimal("12000.00"),
+                technical_status=ProcessingStatus.VALID,
+            )
+            for source in sources
+        ]
+    )
+    for route, version in zip(routes, versions, strict=True):
+        route.current_approved_version_id = version.pk
+    Route.objects.bulk_update(routes, ["current_approved_version"])
+    if _GIS_AVAILABLE:
+        RouteBrowseGeometry.objects.bulk_create(
+            [
+                RouteBrowseGeometry(
+                    version=version,
+                    zoom=12,
+                    geometry=geometry,
+                    tolerance_m=10,
+                )
+                for version in versions
+            ]
+        )
+    return [public_route, *routes]
+
+
+def test_filtered_viewport_http_query_count_stays_bounded_for_dense_catalogue(
+    public_route: Route,
+) -> None:
+    _create_dense_viewport_catalogue(public_route, count=80)
+    cache.clear()
+    query = (
+        "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&limit=3&"
+        "search=dense&min_distance_m=12000.00"
+    )
+    with CaptureQueriesContext(connection) as queries:
+        response = Client().get(f"/api/v1/routes/viewport/?{query}")
+
+    assert response.status_code == 200
+    assert len(response.json()["routes"]) == 3
+    assert len(queries) <= 8
+    route_sql = [
+        query["sql"].upper()
+        for query in queries
+        if 'FROM "CATALOGUE_ROUTE"' in query["sql"].upper()
+    ]
+    assert route_sql
+    assert any("EXISTS" in sql and "LIMIT" in sql for sql in route_sql)
+    assert all("IN (SELECT DISTINCT" not in sql for sql in route_sql)
+
+
+@pytest.mark.benchmark
+@pytest.mark.skipif(
+    os.getenv("RUN_SPATIAL_BENCHMARK") != "1",
+    reason="opt-in benchmark; run against the Compose PostGIS database",
+)
+def test_filtered_viewport_http_cold_cache_benchmark(public_route: Route) -> None:
+    """Measure the complete filtered HTTP path against a dense catalogue."""
+
+    _create_dense_viewport_catalogue(public_route, count=100)
+    endpoint = (
+        "/api/v1/routes/viewport/?west=16.5&south=49.1&east=16.8&north=49.3&"
+        "zoom=12&limit=50&search=dense"
+    )
+
+    def measure(count: int) -> list[float]:
+        samples = []
+        for _ in range(count):
+            cache.clear()
+            started = perf_counter()
+            response = client.get(endpoint)
+            samples.append((perf_counter() - started) * 1000)
+            assert response.status_code == 200
+            assert len(response.json()["routes"]) == 50
+        return samples
+
+    client = Client()
+    small_samples = measure(5)
+    _create_dense_viewport_catalogue(public_route, count=1_400)
+    dense_samples = measure(10)
+    small_ordered = sorted(small_samples)
+    dense_ordered = sorted(dense_samples)
+    small_median = small_ordered[len(small_ordered) // 2]
+    dense_median = dense_ordered[len(dense_ordered) // 2]
+    p95 = dense_ordered[-1]
+    ratio = dense_median / max(small_median, 1.0)
+    print(
+        f"filtered_viewport_http_cold_cache_small_median={small_median:.2f} "
+        f"dense_median={dense_median:.2f} ratio={ratio:.2f} p95={p95:.2f} budget=2000.00"
+    )
+    assert len(small_samples) == 5
+    assert len(dense_samples) == 10
+    # This is deliberately generous for a cold application/cache process, but
+    # catches accidental evaluation of the full dense candidate catalogue.
+    assert p95 < 2_000
+    assert ratio < 15
 
 
 @pytest.mark.skipif(not _GIS_AVAILABLE, reason="requires the PostGIS geometry backend")

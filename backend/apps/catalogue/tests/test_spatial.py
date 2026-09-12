@@ -15,15 +15,19 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import close_old_connections, connection, transaction
-from django.test import override_settings
+from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 
 from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.catalogue.models import (
+    Category,
+    ForumAuthor,
     ForumPost,
     ForumThread,
     ProcessingStatus,
     Route,
     RouteBrowseGeometry,
+    RouteCategory,
     RouteHeatmapCell,
     RouteHeatmapMembership,
     RouteSource,
@@ -36,10 +40,12 @@ from apps.catalogue.spatial import (
     _line_simplify,
     _tile_xy,
     generate_browse_geometries,
+    normalize_filter_inputs,
     query_selected_route,
     query_viewport,
     refresh_route_heatmap,
     schedule_spatial_cache_invalidation,
+    schedule_viewport_filter_cache_invalidation,
 )
 
 pytestmark = pytest.mark.django_db
@@ -125,15 +131,16 @@ def test_filtered_heatmap_limits_after_filtered_count_ordering(published_route: 
     RouteHeatmapMembership.objects.create(cell=weaker_filtered, route=matching_route)
 
     cache.clear()
-    result = query_viewport(
-        west=0,
-        south=30,
-        east=40,
-        north=60,
-        zoom=2,
-        limits=SpatialQueryLimits(max_cells=1),
-        route_ids={published_route.pk, matching_route.pk},
-    )
+    with CaptureQueriesContext(connection) as queries:
+        result = query_viewport(
+            west=0,
+            south=30,
+            east=40,
+            north=60,
+            zoom=2,
+            limits=SpatialQueryLimits(max_cells=1),
+            route_ids={published_route.pk, matching_route.pk},
+        )
 
     assert result["mode"] == "heatmap"
     assert len(result["cells"]) == 1
@@ -142,6 +149,69 @@ def test_filtered_heatmap_limits_after_filtered_count_ordering(published_route: 
     assert result["cells"][0]["y"] == weaker_filtered.y
     assert result["cells"][0]["count"] == 2
     assert result["truncated"] is True
+    heatmap_sql = "\n".join(query["sql"].upper() for query in queries)
+    assert "EXISTS" in heatmap_sql
+    assert "LIMIT" in heatmap_sql
+    assert "IN (SELECT DISTINCT" not in heatmap_sql
+
+
+@override_settings(SPATIAL_HEATMAP_ZOOMS="5", SPATIAL_MAX_CANDIDATE_SCAN=3)
+def test_filtered_heatmap_limits_after_viewport_relevance_and_reports_overflow() -> None:
+    in_view_x, in_view_y = _tile_xy(16.0, 49.0, 5)
+    in_view_cell = RouteHeatmapCell.objects.create(
+        zoom=5,
+        x=in_view_x,
+        y=in_view_y,
+        boundary=_cell_geometry(in_view_x, in_view_y, 5),
+        route_count=2,
+    )
+    off_view_cell = RouteHeatmapCell.objects.create(
+        zoom=5,
+        x=in_view_x + 5,
+        y=in_view_y,
+        boundary=_cell_geometry(in_view_x + 5, in_view_y, 5),
+        route_count=3,
+    )
+    off_view_routes = [Route.objects.create(id=UUID(int=index)) for index in (1, 2, 3)]
+    first_match = Route.objects.create(id=UUID(int=100))
+    second_match = Route.objects.create(id=UUID(int=101))
+    third_match = Route.objects.create(id=UUID(int=102))
+    RouteHeatmapMembership.objects.bulk_create(
+        [
+            *(RouteHeatmapMembership(cell=off_view_cell, route=route) for route in off_view_routes),
+            RouteHeatmapMembership(cell=in_view_cell, route=first_match),
+            RouteHeatmapMembership(cell=in_view_cell, route=second_match),
+            RouteHeatmapMembership(cell=in_view_cell, route=third_match),
+        ]
+    )
+    cache.clear()
+
+    result = query_viewport(
+        west=15.9,
+        south=48.9,
+        east=16.3,
+        north=49.1,
+        zoom=2,
+        limits=SpatialQueryLimits(max_routes=1, max_cells=1),
+        route_ids=set(route.pk for route in [*off_view_routes, first_match]),
+    )
+    assert result["cells"][0]["x"] == in_view_x
+    assert result["cells"][0]["count"] == 1
+    assert result["truncated"] is False
+
+    overflow = query_viewport(
+        west=15.9,
+        south=48.9,
+        east=16.3,
+        north=49.1,
+        zoom=2,
+        limits=SpatialQueryLimits(max_routes=1, max_cells=1),
+        route_ids=set(
+            route.pk for route in [*off_view_routes, first_match, second_match, third_match]
+        ),
+    )
+    assert overflow["cells"][0]["count"] == 2
+    assert overflow["truncated"] is True
 
 
 def test_viewport_and_selected_queries_are_bounded(published_route: Route) -> None:
@@ -157,6 +227,92 @@ def test_viewport_and_selected_queries_are_bounded(published_route: Route) -> No
     )
     assert result["mode"] == "routes"
     assert result["routes"] == []
+
+
+@pytest.mark.skipif(
+    connection.vendor == "postgresql", reason="covers the non-GIS Python bbox fallback"
+)
+@override_settings(SPATIAL_MAX_CANDIDATE_SCAN=5)
+def test_non_gis_viewport_scan_keeps_configured_bound_before_bbox_filter(
+    published_route: Route,
+) -> None:
+    offscreen_geometry = {"type": "LineString", "coordinates": [[0, 0], [0.1, 0]]}
+    matching_geometry = {"type": "LineString", "coordinates": [[16, 49], [16.1, 49]]}
+    routes: list[Route] = []
+    for route_id, geometry in (
+        (1, offscreen_geometry),
+        (2, offscreen_geometry),
+        (100, matching_geometry),
+    ):
+        route = Route(id=UUID(int=route_id), display_title=f"candidate-{route_id}")
+        route.save(force_insert=True)
+        source = RouteSource.objects.create(
+            route=route, mapy_url=f"https://mapy.com/s/candidate-{route_id}"
+        )
+        version = RouteVersion.objects.create(
+            source=source,
+            version_number=1,
+            checksum=f"candidate-{route_id}",
+            normalized_geometry=geometry,
+            simplified_geometry=geometry,
+            technical_status=ProcessingStatus.VALID,
+        )
+        route.current_approved_version = version
+        route.save(update_fields=["current_approved_version", "updated_at"])
+        routes.append(route)
+
+    cache.clear()
+    result = query_viewport(
+        west=15,
+        south=48,
+        east=17,
+        north=50,
+        zoom=12,
+        limits=SpatialQueryLimits(max_routes=1),
+    )
+
+    assert [item["id"] for item in result["routes"]] == [str(routes[-1].pk)]
+
+
+def test_viewport_filter_cache_inputs_are_normalized() -> None:
+    assert normalize_filter_inputs(
+        {
+            "search": "  gravel  ",
+            "max_distance_m": "12000.00",
+            "min_distance_m": "1.2e2",
+        }
+    ) == (
+        ("max_distance_m", "12000"),
+        ("min_distance_m", "120"),
+        ("search", "gravel"),
+    )
+
+
+def test_filter_invalidation_signals_coalesce_and_skip_unlinked_creates() -> None:
+    route = Route.objects.create()
+    category = Category.objects.create(name="Signal test", slug="signal-test")
+    with patch("apps.catalogue.spatial.bump_viewport_filter_cache_epoch") as bump:
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            route.display_title = "Changed title"
+            route.save(update_fields=["display_title", "updated_at"])
+            category.slug = "signal-test-updated"
+            category.save(update_fields=["slug"])
+            RouteCategory.objects.create(route=route, category=category)
+        assert bump.call_count == 1
+
+    with patch("apps.catalogue.spatial.bump_viewport_filter_cache_epoch") as bump:
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            author = ForumAuthor.objects.create(username="unlinked-author")
+            thread = ForumThread.objects.create(
+                url="https://example.test/unlinked-thread", title="Unlinked thread"
+            )
+            ForumPost.objects.create(
+                thread=thread,
+                author=author,
+                url="https://example.test/unlinked-thread#1",
+            )
+            RouteSource.objects.create(route=route, mapy_url="https://mapy.com/s/unlinked-source")
+        assert bump.call_count == 0
 
 
 @override_settings(SPATIAL_HEATMAP_ZOOMS="5,6")
@@ -180,20 +336,45 @@ def test_query_limits_are_rejected_or_clamped(published_route: Route) -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_cache_epoch_advances_only_after_commit_and_not_after_rollback() -> None:
+    from apps.catalogue.spatial import _FILTER_CACHE_EPOCH_KEY
+
     cache.clear()
     initial = int(cache.get("bikemapy:spatial:epoch", 0) or 0)
+    filter_initial = int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0)
     with transaction.atomic():
         schedule_spatial_cache_invalidation()
+        for _ in range(4):
+            schedule_viewport_filter_cache_invalidation()
         assert int(cache.get("bikemapy:spatial:epoch", 0) or 0) == initial
+        assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_initial
     committed = int(cache.get("bikemapy:spatial:epoch", 0) or 0)
+    filter_committed = int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0)
     assert committed > initial
+    assert filter_committed == filter_initial + 1
     try:
         with transaction.atomic():
             schedule_spatial_cache_invalidation()
+            for _ in range(3):
+                schedule_viewport_filter_cache_invalidation()
             raise RuntimeError("rollback")
     except RuntimeError:
         pass
     assert int(cache.get("bikemapy:spatial:epoch", 0) or 0) == committed
+    assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_committed
+    with transaction.atomic():
+        schedule_viewport_filter_cache_invalidation()
+    assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_committed + 1
+    with transaction.atomic():
+        schedule_viewport_filter_cache_invalidation()
+    assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_committed + 2
+
+    @transaction.atomic
+    def decorated_schedule() -> None:
+        schedule_viewport_filter_cache_invalidation()
+
+    decorated_schedule()
+    decorated_schedule()
+    assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_committed + 4
 
 
 def test_cache_epoch_invalidation_does_not_raise_when_redis_is_down() -> None:

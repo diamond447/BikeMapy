@@ -38,7 +38,12 @@ from apps.catalogue.models import (
     RouteSourceMerge,
     SimilarityRelationship,
 )
-from apps.catalogue.spatial import SpatialQueryLimits, query_selected_route, query_viewport
+from apps.catalogue.spatial import (
+    SpatialQueryLimits,
+    normalize_filter_inputs,
+    query_selected_route,
+    query_viewport,
+)
 
 from .pagination import RoutePagination
 from .serializers import (
@@ -427,14 +432,11 @@ class ViewportRouteView(APIView):
                 "min_ascent_m",
                 "max_ascent_m",
             )
-            has_filters = any(request.query_params.get(name, "").strip() for name in filter_names)
-            route_ids = (
-                set(
-                    filter_routes(public_route_queryset(), request.query_params).values_list(
-                        "id", flat=True
-                    )
-                )
-                if has_filters
+            filter_inputs = {name: request.query_params.get(name, "") for name in filter_names}
+            normalized_filters = normalize_filter_inputs(filter_inputs)
+            filtered_routes = (
+                filter_routes(public_route_queryset(), request.query_params)
+                if normalized_filters
                 else None
             )
             result = query_viewport(
@@ -444,7 +446,8 @@ class ViewportRouteView(APIView):
                 north=values["north"],
                 zoom=zoom,
                 limits=SpatialQueryLimits(max_routes=max_routes, max_cells=max_cells),
-                route_ids=route_ids,
+                candidate_queryset=filtered_routes,
+                filter_inputs=filter_inputs,
             )
         except ValidationError as exc:
             raise ParseError(str(exc)) from exc
