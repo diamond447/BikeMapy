@@ -36,6 +36,7 @@ from apps.catalogue.spatial import (
     _line_simplify,
     _tile_xy,
     generate_browse_geometries,
+    normalize_filter_inputs,
     query_selected_route,
     query_viewport,
     refresh_route_heatmap,
@@ -157,6 +158,20 @@ def test_viewport_and_selected_queries_are_bounded(published_route: Route) -> No
     )
     assert result["mode"] == "routes"
     assert result["routes"] == []
+
+
+def test_viewport_filter_cache_inputs_are_normalized() -> None:
+    assert normalize_filter_inputs(
+        {
+            "search": "  gravel  ",
+            "max_distance_m": "12000.00",
+            "min_distance_m": "1.2e2",
+        }
+    ) == (
+        ("max_distance_m", "12000"),
+        ("min_distance_m", "120"),
+        ("search", "gravel"),
+    )
 
 
 @override_settings(SPATIAL_HEATMAP_ZOOMS="5,6")

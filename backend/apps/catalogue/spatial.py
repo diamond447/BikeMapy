@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -18,7 +18,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import connection, transaction
-from django.db.models import Count
+from django.db.models import Count, QuerySet
 from django.utils import timezone
 
 from .fields import _GIS_AVAILABLE
@@ -398,6 +398,48 @@ def _route_values_dict(route: dict[str, Any], geometry: Any) -> dict[str, Any]:
     }
 
 
+_NUMERIC_FILTER_NAMES = frozenset(
+    {
+        "min_distance_m",
+        "max_distance_m",
+        "min_ascent_m",
+        "max_ascent_m",
+    }
+)
+
+
+def _normalize_filter_value(name: str, value: Any) -> str:
+    """Return one stable representation for a viewport filter value."""
+
+    normalized_value = str(value).strip()
+    if name in _NUMERIC_FILTER_NAMES:
+        try:
+            from decimal import Decimal, InvalidOperation
+
+            decimal_value = Decimal(normalized_value)
+            if decimal_value.is_finite():
+                return format(decimal_value.normalize(), "f")
+        except (InvalidOperation, ValueError):
+            pass
+    return normalized_value
+
+
+def normalize_filter_inputs(filters: Mapping[str, Any] | None) -> tuple[tuple[str, str], ...]:
+    """Normalize filter inputs for deterministic, candidate-independent cache keys."""
+
+    if not filters:
+        return ()
+    normalized = []
+    for name in sorted(filters):
+        value = filters[name]
+        if value is None:
+            continue
+        normalized_value = _normalize_filter_value(name, value)
+        if normalized_value:
+            normalized.append((name, normalized_value))
+    return tuple(normalized)
+
+
 @dataclass(frozen=True)
 class SpatialQueryLimits:
     max_routes: int = 500
@@ -420,6 +462,8 @@ def query_viewport(
     north: float,
     zoom: int,
     limits: SpatialQueryLimits | None = None,
+    candidate_queryset: QuerySet[Route] | None = None,
+    filter_inputs: Mapping[str, Any] | None = None,
     route_ids: set[Any] | None = None,
 ) -> dict[str, Any]:
     """Return heatmap cells or simplified lines for a bounded viewport."""
@@ -432,28 +476,47 @@ def query_viewport(
         max_cells=int(_setting("SPATIAL_MAX_CELLS_PER_QUERY", 10_000)),
     )
     epoch = int(cache.get(_CACHE_EPOCH_KEY, 0))
-    route_key = (
-        ",".join(sorted(str(route_id) for route_id in route_ids)) if route_ids is not None else "*"
-    )
-    raw_key = (
-        f"{west}:{south}:{east}:{north}:{zoom}:{limits.max_routes}:"
-        f"{limits.max_cells}:{route_key}:{epoch}"
-    )
-    cache_key = "bikemapy:spatial:viewport:" + hashlib.sha256(raw_key.encode()).hexdigest()
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cast(dict[str, Any], cached)
+    if candidate_queryset is not None and route_ids is not None:
+        raise ValidationError("candidate_queryset and route_ids are mutually exclusive")
+    if route_ids is not None:
+        # Kept for non-HTTP callers while they migrate to candidate_queryset.
+        # In particular, never put this potentially large legacy collection in
+        # a cache key; uncached execution preserves correctness for each set.
+        candidate_queryset = Route.objects.filter(pk__in=route_ids)
+    normalized_filters = normalize_filter_inputs(filter_inputs)
+    cacheable = route_ids is None and (candidate_queryset is None or filter_inputs is not None)
+    cache_key: str | None = None
+    if cacheable:
+        raw_key = json.dumps(
+            {
+                "bounds": [
+                    _normalize_filter_value("west", west),
+                    _normalize_filter_value("south", south),
+                    _normalize_filter_value("east", east),
+                    _normalize_filter_value("north", north),
+                ],
+                "epoch": epoch,
+                "filters": normalized_filters,
+                "limits": [limits.max_routes, limits.max_cells],
+                "zoom": zoom,
+            },
+            separators=(",", ":"),
+        )
+        cache_key = "bikemapy:spatial:viewport:" + hashlib.sha256(raw_key.encode()).hexdigest()
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cast(dict[str, Any], cached)
     selected_heatmap_zoom = next((item for item in heatmap_zooms() if item >= zoom), None)
     if selected_heatmap_zoom is None and zoom <= heatmap_max_zoom():
         selected_heatmap_zoom = heatmap_max_zoom()
     if selected_heatmap_zoom is not None and zoom <= heatmap_max_zoom():
         cell_query = RouteHeatmapCell.objects.filter(zoom=selected_heatmap_zoom, route_count__gt=0)
         cell_order = ("-route_count", "y", "x")
-        if route_ids is not None:
+        if candidate_queryset is not None:
             cell_query = (
                 RouteHeatmapCell.objects.filter(
                     zoom=selected_heatmap_zoom,
-                    memberships__route_id__in=route_ids,
+                    memberships__route_id__in=candidate_queryset.values("pk"),
                 )
                 .annotate(_filtered_route_count=Count("memberships__route_id", distinct=True))
                 .filter(_filtered_route_count__gt=0)
@@ -496,8 +559,8 @@ def query_viewport(
         candidates = Route.objects.filter(
             lifecycle=RouteLifecycle.PUBLISHED, current_approved_version__isnull=False
         )
-        if route_ids is not None:
-            candidates = candidates.filter(pk__in=route_ids)
+        if candidate_queryset is not None:
+            candidates = candidates.filter(pk__in=candidate_queryset.values("pk"))
         if _GIS_AVAILABLE and connection.vendor == "postgresql":
             from django.contrib.gis.geos import Polygon
 
@@ -506,9 +569,9 @@ def query_viewport(
                 geometry__intersects=viewport_geometry, zoom__lte=zoom
             ).values("version_id")
             candidates = candidates.filter(current_approved_version_id__in=intersecting_versions)
-        candidate_scan_limit = max(
-            limits.max_routes + 1,
-            int(_setting("SPATIAL_MAX_CANDIDATE_SCAN", 5_000)),
+        candidate_scan_limit = min(
+            max(1, limits.max_routes + 1),
+            max(1, int(_setting("SPATIAL_MAX_CANDIDATE_SCAN", 5_000))),
         )
         candidate_routes = cast(
             list[dict[str, Any]],
@@ -581,7 +644,8 @@ def query_viewport(
             "truncated": len(rows) > limits.max_routes
             or len(candidate_routes) >= candidate_scan_limit,
         }
-    cache.set(cache_key, result, timeout=int(_setting("SPATIAL_QUERY_CACHE_TTL", 60)))
+    if cache_key is not None:
+        cache.set(cache_key, result, timeout=int(_setting("SPATIAL_QUERY_CACHE_TTL", 60)))
     return result
 
 

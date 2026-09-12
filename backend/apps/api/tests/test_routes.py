@@ -1,5 +1,6 @@
 # mypy: disable-error-code="import-untyped"
 
+import os
 from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import cast
 from uuid import uuid4
 
 import pytest
+from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.management import call_command
@@ -29,8 +31,11 @@ from apps.catalogue.models import (
     ForumThread,
     ProcessingStatus,
     Route,
+    RouteBrowseGeometry,
     RouteCategory,
     RouteLifecycle,
+    RouteSource,
+    RouteVersion,
 )
 from apps.catalogue.services import (
     approve_version,
@@ -347,6 +352,110 @@ def test_viewport_endpoint_applies_catalogue_filters(public_route: Route) -> Non
     omitted = client.get(f"/api/v1/routes/viewport/?{base}&search=forest")
     assert omitted.status_code == 200
     assert omitted.json()["routes"] == []
+
+
+def _create_dense_viewport_catalogue(public_route: Route, count: int) -> list[Route]:
+    """Create public route rows without evaluating a filtered route queryset."""
+
+    routes = Route.objects.bulk_create(
+        [Route(display_title=f"Dense gravel route {index}") for index in range(count)]
+    )
+    sources = RouteSource.objects.bulk_create(
+        [
+            RouteSource(route=route, mapy_url=f"https://mapy.com/s/dense-{route.pk}")
+            for route in routes
+        ]
+    )
+    geometry: object = {
+        "type": "LineString",
+        "coordinates": [[16.6, 49.2], [16.7, 49.25]],
+    }
+    if _GIS_AVAILABLE:
+        from django.contrib.gis.geos import GEOSGeometry
+
+        geometry = GEOSGeometry(
+            '{"type":"LineString","coordinates":[[16.6,49.2],[16.7,49.25]]}',
+            srid=4326,
+        )
+    versions = RouteVersion.objects.bulk_create(
+        [
+            RouteVersion(
+                source=source,
+                version_number=1,
+                checksum=f"dense-{source.pk}",
+                normalized_geometry=geometry,
+                simplified_geometry=geometry,
+                distance_m=Decimal("12000.00"),
+                technical_status=ProcessingStatus.VALID,
+            )
+            for source in sources
+        ]
+    )
+    for route, version in zip(routes, versions, strict=True):
+        route.current_approved_version_id = version.pk
+    Route.objects.bulk_update(routes, ["current_approved_version"])
+    if _GIS_AVAILABLE:
+        RouteBrowseGeometry.objects.bulk_create(
+            [
+                RouteBrowseGeometry(
+                    version=version,
+                    zoom=12,
+                    geometry=geometry,
+                    tolerance_m=10,
+                )
+                for version in versions
+            ]
+        )
+    return [public_route, *routes]
+
+
+def test_filtered_viewport_http_query_count_stays_bounded_for_dense_catalogue(
+    public_route: Route,
+) -> None:
+    _create_dense_viewport_catalogue(public_route, count=80)
+    cache.clear()
+    query = (
+        "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&limit=3&"
+        "search=dense&min_distance_m=12000.00"
+    )
+    with CaptureQueriesContext(connection) as queries:
+        response = Client().get(f"/api/v1/routes/viewport/?{query}")
+
+    assert response.status_code == 200
+    assert len(response.json()["routes"]) == 3
+    assert len(queries) <= 8
+    assert any(" IN (SELECT" in query["sql"].upper() for query in queries)
+
+
+@pytest.mark.benchmark
+@pytest.mark.skipif(
+    os.getenv("RUN_SPATIAL_BENCHMARK") != "1",
+    reason="opt-in benchmark; run against the Compose PostGIS database",
+)
+def test_filtered_viewport_http_cold_cache_benchmark(public_route: Route) -> None:
+    """Measure the complete filtered HTTP path against a dense catalogue."""
+
+    _create_dense_viewport_catalogue(public_route, count=1_500)
+    endpoint = (
+        "/api/v1/routes/viewport/?west=16.5&south=49.1&east=16.8&north=49.3&"
+        "zoom=12&limit=50&search=dense"
+    )
+    samples = []
+    client = Client()
+    for _ in range(10):
+        cache.clear()
+        started = perf_counter()
+        response = client.get(endpoint)
+        samples.append((perf_counter() - started) * 1000)
+        assert response.status_code == 200
+        assert len(response.json()["routes"]) == 50
+    ordered = sorted(samples)
+    p95 = ordered[-1]
+    print(
+        f"filtered_viewport_http_cold_cache_ms_median={ordered[len(ordered) // 2]:.2f} "
+        f"p95={p95:.2f}"
+    )
+    assert len(samples) == 10
 
 
 @pytest.mark.skipif(not _GIS_AVAILABLE, reason="requires the PostGIS geometry backend")
