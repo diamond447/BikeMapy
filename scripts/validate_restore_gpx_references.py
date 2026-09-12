@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 from pathlib import Path, PurePosixPath
@@ -33,13 +34,14 @@ def _payload_path(storage_root: Path, storage_key: str) -> Path:
     return path
 
 
-def _validate_reference(storage_root: Path, row: str) -> str:
-    fields = row.rstrip("\n").split("\t")
-    if len(fields) != 4 or any(not field for field in fields):
-        raise ValueError(
-            "reference row must contain version ID, storage key, checksum, and route ID"
-        )
-    version_id, storage_key, expected_checksum, route_id = fields
+def _validate_reference(storage_root: Path, reference: object) -> str:
+    if (
+        not isinstance(reference, list)
+        or len(reference) != 4
+        or any(not isinstance(field, str) or not field for field in reference)
+    ):
+        raise ValueError("reference must contain version ID, storage key, checksum, and route ID")
+    version_id, storage_key, expected_checksum, route_id = reference
     path = _payload_path(storage_root, storage_key)
     if not path.is_file():
         raise FileNotFoundError(f"version {version_id} ({route_id}) is missing {storage_key}")
@@ -67,15 +69,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--storage-root", type=Path, required=True)
     args = parser.parse_args(argv[1:])
 
-    rows = [line for line in sys.stdin if line.strip()]
-    if not rows:
+    try:
+        references = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        print(f"Restored GPX validation failed: invalid JSON input: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(references, list) or not references:
         print("Restored GPX validation failed: no live database GPX references", file=sys.stderr)
         return 1
 
     failures: list[str] = []
-    for row in rows:
+    for reference in references:
         try:
-            print(_validate_reference(args.storage_root, row))
+            print(_validate_reference(args.storage_root, reference))
         except (OSError, ValueError) as exc:
             failures.append(str(exc))
     if failures:

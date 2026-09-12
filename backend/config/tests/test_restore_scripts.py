@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -59,6 +60,8 @@ def test_restore_drill_uses_full_schema_disposable_volume_and_application_checks
     assert "payload_removed_at IS NULL" in drill
     assert "current_approved_version_id" in drill
     assert "validate_restore_gpx_references.py" in drill
+    assert "json_agg" in drill
+    assert "field-separator" not in drill
     assert "restored_gpx_sha" in drill
     assert "DRILL_GPX_SHA" in drill
     assert "/health/ready/" in drill
@@ -114,12 +117,10 @@ def test_restore_gpx_references_validates_all_rows(tmp_path: Path) -> None:
     first.parent.mkdir(parents=True)
     first.write_bytes((root / "deploy/restore-drill-fixture.gpx").read_bytes())
     second.write_bytes((root / "deploy/restore-drill-history.gpx").read_bytes())
-    rows = "\n".join(
-        [
-            f"1\tgpx/routes/first.gpx\t{_sha256(first)}\tfirst-route",
-            f"2\tgpx/routes/second.gpx\t{_sha256(second)}\tsecond-route",
-        ]
-    )
+    rows = [
+        ["1", "gpx/routes/first.gpx", _sha256(first), "first-route"],
+        ["2", "gpx/routes/second.gpx", _sha256(second), "second-route"],
+    ]
 
     result = _run_reference_validator(validator, storage_root, rows)
 
@@ -156,12 +157,10 @@ def test_restore_gpx_references_rejects_inconsistent_non_first_rows(
         expected_checksum = _sha256(second)
     else:
         expected_checksum = "0" * 64
-    rows = "\n".join(
-        [
-            f"1\tgpx/routes/first.gpx\t{_sha256(first)}\tfirst-route",
-            f"2\tgpx/routes/second.gpx\t{expected_checksum}\tsecond-route",
-        ]
-    )
+    rows = [
+        ["1", "gpx/routes/first.gpx", _sha256(first), "first-route"],
+        ["2", "gpx/routes/second.gpx", expected_checksum, "second-route"],
+    ]
 
     result = _run_reference_validator(validator, storage_root, rows)
 
@@ -169,18 +168,37 @@ def test_restore_gpx_references_rejects_inconsistent_non_first_rows(
     assert expected_error in result.stderr
 
 
+def test_restore_gpx_reference_json_framing_preserves_tabs_and_newlines(tmp_path: Path) -> None:
+    root = Path(__file__).parents[3]
+    validator = root / "scripts" / "validate_restore_gpx_references.py"
+    storage_root = tmp_path / "media"
+    key = "gpx/routes/control\tcharacter\nname.gpx"
+    payload = storage_root / Path(*key.split("/"))
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes((root / "deploy/restore-drill-history.gpx").read_bytes())
+
+    result = _run_reference_validator(
+        validator,
+        storage_root,
+        [["1", key, _sha256(payload), "route-with-controls"]],
+    )
+
+    assert result.returncode == 0
+    assert "valid" in result.stdout
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _run_reference_validator(
-    validator: Path, storage_root: Path, rows: str
+    validator: Path, storage_root: Path, rows: list[list[str]]
 ) -> subprocess.CompletedProcess[str]:
     environment = {**os.environ, "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3"}
     return subprocess.run(
         [sys.executable, str(validator), "--storage-root", str(storage_root)],
         check=False,
-        input=f"{rows}\n",
+        input=json.dumps(rows),
         capture_output=True,
         text=True,
         env=environment,

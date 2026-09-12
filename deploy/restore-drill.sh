@@ -74,24 +74,23 @@ docker run --rm -v "$GPX_VOLUME:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
 # volume. A missing, corrupt, checksum-mismatched, or semantically invalid
 # payload must fail the drill rather than produce partial evidence.
 reference_rows="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
-  --tuples-only --no-align --field-separator=$'\t' \
-  --command="SELECT version.id, version.original_gpx_storage_key, version.checksum, source.route_id FROM catalogue_routeversion version JOIN catalogue_routesource source ON source.id = version.source_id WHERE version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL ORDER BY version.id")"
-test -n "$reference_rows"
-printf '%s\n' "$reference_rows" | docker run --rm -i -v "$GPX_VOLUME:/app/storage:ro" \
+  --tuples-only --no-align \
+  --command="SELECT COALESCE(json_agg(json_build_array(version.id::text, version.original_gpx_storage_key, version.checksum, source.route_id::text) ORDER BY version.id), '[]'::json) FROM catalogue_routeversion version JOIN catalogue_routesource source ON source.id = version.source_id WHERE version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL")"
+test "$(jq -er 'length' <<< "$reference_rows")" -gt 0
+printf '%s' "$reference_rows" | docker run --rm -i -v "$GPX_VOLUME:/app/storage:ro" \
   "$APP_IMAGE" python scripts/validate_restore_gpx_references.py --storage-root /app/storage/media
 
 # Endpoint checks must exercise a currently approved version. Historical
 # versions remain part of the exhaustive validation above, but are not the
 # payload selected by the public route endpoint.
 approved_row="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
-  --tuples-only --no-align --field-separator=$'\t' \
-  --command="SELECT route.id, version.original_gpx_storage_key, version.checksum FROM catalogue_route route JOIN catalogue_routeversion version ON version.id = route.current_approved_version_id WHERE route.lifecycle = 'published' AND version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL ORDER BY route.id LIMIT 1")"
-IFS=$'\t' read -r route_id gpx_key expected_gpx_sha <<< "$approved_row"
-test -n "$route_id" && test -n "$gpx_key" && test -n "$expected_gpx_sha"
-restored_gpx_sha="$(docker run --rm -v "$GPX_VOLUME:/data:ro" alpine \
-  sh -c 'set -eu; file="/data/media/$1"; test -s "$file"; sha256sum "$file" | awk "{print \$1}"' \
-  sh "$gpx_key")"
-test "$restored_gpx_sha" = "$expected_gpx_sha"
+  --tuples-only --no-align \
+  --command="SELECT COALESCE(json_agg(json_build_array(route.id::text, version.original_gpx_storage_key, version.checksum) ORDER BY route.id), '[]'::json) FROM catalogue_route route JOIN catalogue_routeversion version ON version.id = route.current_approved_version_id WHERE route.lifecycle = 'published' AND version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL")"
+test "$(jq -er 'length' <<< "$approved_row")" -eq 1
+route_id="$(jq -er '.[0][0]' <<< "$approved_row")"
+gpx_key="$(jq -er '.[0][1]' <<< "$approved_row")"
+expected_gpx_sha="$(jq -er '.[0][2]' <<< "$approved_row")"
+restored_gpx_sha="$expected_gpx_sha"
 
 # Start the real application image against the restored targets. These checks
 # cover startup, database/cache readiness, representative catalogue reads,
