@@ -383,14 +383,40 @@ export function geometryCoordinates(geometry: Geometry | null): number[][] {
 export function geometryBounds(
   geometry: Geometry | null,
 ): [[number, number], [number, number]] | null {
-  const points = geometryCoordinates(geometry)
-  if (!points.length) return null
-  const longitudes = points.map((point) => point[0])
-  const latitudes = points.map((point) => point[1])
-  return [
-    [Math.min(...longitudes), Math.min(...latitudes)],
-    [Math.max(...longitudes), Math.max(...latitudes)],
-  ]
+  let west = Infinity
+  let south = Infinity
+  let east = -Infinity
+  let north = -Infinity
+  let found = false
+
+  const visit = (value: unknown): void => {
+    if (!Array.isArray(value)) return
+    const longitude = value[0]
+    const latitude = value[1]
+    if (
+      value.length >= 2 &&
+      typeof longitude === 'number' &&
+      Number.isFinite(longitude) &&
+      typeof latitude === 'number' &&
+      Number.isFinite(latitude)
+    ) {
+      found = true
+      west = Math.min(west, longitude)
+      south = Math.min(south, latitude)
+      east = Math.max(east, longitude)
+      north = Math.max(north, latitude)
+      return
+    }
+    value.forEach(visit)
+  }
+
+  visit(geometry?.coordinates)
+  return found
+    ? [
+        [west, south],
+        [east, north],
+      ]
+    : null
 }
 
 export function parseState(): DiscoveryState {
