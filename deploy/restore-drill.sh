@@ -138,7 +138,7 @@ with urllib.request.urlopen(base + f"/api/v1/routes/{route_id}/gpx/", timeout=5)
     payload = response.read()
     if response.status != 200 or hashlib.sha256(payload).hexdigest() != os.environ["DRILL_GPX_SHA"]:
         raise RuntimeError("GPX endpoint did not return the restored bytes")
-' 
+'
 
 evidence="$BACKUP_DIR/restore-drill-${BACKUP_ID}.json"
 jq -cn \
