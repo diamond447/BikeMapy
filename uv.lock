@@ -154,7 +154,7 @@ requires-dist = [
     { name = "django-cors-headers", specifier = ">=4.7,<5" },
     { name = "django-stubs", extras = ["compatible-mypy"], marker = "extra == 'dev'", specifier = ">=5.2,<7" },
     { name = "djangorestframework", specifier = ">=3.17.2,<3.19" },
-    { name = "drf-spectacular", specifier = ">=0.28,<0.31" },
+    { name = "drf-spectacular", specifier = ">=0.28,<0.30" },
     { name = "gunicorn", specifier = ">=23,<24" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "lxml", specifier = ">=6.1,<7" },
