@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -51,16 +52,18 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
 def test_restore_drill_uses_full_schema_disposable_volume_and_application_checks() -> None:
     root = Path(__file__).parents[3]
     drill = (root / "deploy" / "restore-drill.sh").read_text()
+    query = (root / "scripts" / "query_restore_gpx_references.py").read_text()
     workflow = (root / ".github" / "workflows" / "restore-drill.yml").read_text()
     seed = (root / "scripts" / "seed_restore_drill.py").read_text()
 
     assert 'docker volume create "$GPX_VOLUME"' in drill
     assert 'docker volume rm "$GPX_VOLUME"' in drill
-    assert "original_gpx_storage_key" in drill
-    assert "payload_removed_at IS NULL" in drill
-    assert "current_approved_version_id" in drill
+    assert "original_gpx_storage_key" in query
+    assert "payload_removed_at__isnull=True" in query
+    assert "current_approved_version" in query
+    assert "query_restore_gpx_references.py" in drill
     assert "validate_restore_gpx_references.py" in drill
-    assert "json_agg" in drill
+    assert "json.dump" in query
     assert "field-separator" not in drill
     assert "restored_gpx_sha" in drill
     assert "DRILL_GPX_SHA" in drill
@@ -185,6 +188,59 @@ def test_restore_gpx_reference_json_framing_preserves_tabs_and_newlines(tmp_path
 
     assert result.returncode == 0
     assert "valid" in result.stdout
+
+
+def test_restore_reference_query_returns_all_rows_and_current_approved_version() -> None:
+    root = Path(__file__).parents[3]
+    spec = importlib.util.spec_from_file_location(
+        "query_restore_gpx_references", root / "scripts/query_restore_gpx_references.py"
+    )
+    assert spec is not None and spec.loader is not None
+    query = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(query)
+
+    class FakeQuerySet:
+        def __init__(self, rows: list[tuple[str, ...]]) -> None:
+            self.rows = rows
+
+        def filter(self, **filters: object) -> "FakeQuerySet":
+            del filters
+            return self
+
+        def values_list(self, *fields: str) -> "FakeQuerySet":
+            del fields
+            return self
+
+        def order_by(self, *fields: str) -> list[tuple[str, ...]]:
+            del fields
+            return self.rows
+
+    class FakeManager:
+        def __init__(self, rows: list[tuple[str, ...]]) -> None:
+            self.rows = rows
+
+        def filter(self, **filters: object) -> FakeQuerySet:
+            del filters
+            return FakeQuerySet(self.rows)
+
+    historical_id = "historical-version"
+    approved_id = "approved-version"
+    route_id = "approved-route"
+    query.RouteVersion.objects = FakeManager(
+        [
+            (historical_id, "gpx/routes/historical\tkey.gpx", "historical-checksum", route_id),
+            (approved_id, "gpx/routes/approved\nkey.gpx", "approved-checksum", route_id),
+        ]
+    )
+    query.Route.objects = FakeManager(
+        [(route_id, "gpx/routes/approved\nkey.gpx", "approved-checksum")]
+    )
+
+    references = query.live_references()
+    approved_references = query.approved_references()
+
+    assert [row[0] for row in references] == [historical_id, approved_id]
+    assert approved_references == [[route_id, "gpx/routes/approved\nkey.gpx", "approved-checksum"]]
 
 
 def _sha256(path: Path) -> str:

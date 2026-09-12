@@ -73,9 +73,10 @@ docker run --rm -v "$GPX_VOLUME:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
 # Read every live storage reference and validate it against the restored
 # volume. A missing, corrupt, checksum-mismatched, or semantically invalid
 # payload must fail the drill rather than produce partial evidence.
-reference_rows="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
-  --tuples-only --no-align \
-  --command="SELECT COALESCE(json_agg(json_build_array(version.id::text, version.original_gpx_storage_key, version.checksum, source.route_id::text) ORDER BY version.id), '[]'::json) FROM catalogue_routeversion version JOIN catalogue_routesource source ON source.id = version.source_id WHERE version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL")"
+reference_rows="$(docker run --rm --network "$NETWORK" \
+  -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
+  "$APP_IMAGE" python scripts/query_restore_gpx_references.py)"
 test "$(jq -er 'length' <<< "$reference_rows")" -gt 0
 printf '%s' "$reference_rows" | docker run --rm -i -v "$GPX_VOLUME:/app/storage:ro" \
   "$APP_IMAGE" python scripts/validate_restore_gpx_references.py --storage-root /app/storage/media
@@ -83,9 +84,10 @@ printf '%s' "$reference_rows" | docker run --rm -i -v "$GPX_VOLUME:/app/storage:
 # Endpoint checks must exercise a currently approved version. Historical
 # versions remain part of the exhaustive validation above, but are not the
 # payload selected by the public route endpoint.
-approved_row="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
-  --tuples-only --no-align \
-  --command="SELECT COALESCE(json_agg(json_build_array(route.id::text, version.original_gpx_storage_key, version.checksum) ORDER BY route.id), '[]'::json) FROM catalogue_route route JOIN catalogue_routeversion version ON version.id = route.current_approved_version_id WHERE route.lifecycle = 'published' AND version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL")"
+approved_row="$(docker run --rm --network "$NETWORK" \
+  -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
+  "$APP_IMAGE" python scripts/query_restore_gpx_references.py --approved)"
 test "$(jq -er 'length' <<< "$approved_row")" -eq 1
 route_id="$(jq -er '.[0][0]' <<< "$approved_row")"
 gpx_key="$(jq -er '.[0][1]' <<< "$approved_row")"
