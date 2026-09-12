@@ -354,6 +354,12 @@ class RouteVersion(models.Model):
                 name="catalogue_removed_payload_has_no_storage_ref",
             ),
         ]
+        indexes = [
+            models.Index(
+                fields=["technical_status", "distance_m"],
+                name="cat_ver_status_distance_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.source.mapy_url} v{self.version_number}"

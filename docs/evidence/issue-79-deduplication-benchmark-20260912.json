@@ -1,0 +1,44 @@
+{
+  "issue": 79,
+  "command": "POSTGRES_HOST=127.0.0.1 RUN_DEDUPLICATION_BENCHMARK=1 uv run pytest -q backend/apps/catalogue/tests/test_deduplication.py -k deduplication_candidate_scan_benchmark -s --no-cov",
+  "environment": "local disposable Docker Compose PostGIS service",
+  "database": "PostgreSQL 17.5 / PostGIS 3.5",
+  "fixture": {
+    "valid_versions": 2180,
+    "eligible_versions_after_authority": 2120,
+    "candidate_versions_after_length_prefilter": 1420,
+    "candidate_versions_after_spatial_and_length_prefilters": 720,
+    "candidate_page_size": 100,
+    "batch_size": 20,
+    "approved_routes_with_four_versions": 20,
+    "unreviewed_near_length_compatible_routes": 700,
+    "unreviewed_near_length_mismatched_routes": 700,
+    "unreviewed_far_length_compatible_routes": 700
+  },
+  "result": {
+    "candidate_count": 720,
+    "length_prefilter_count": 1420,
+    "spatial_prefilter_count": 720,
+    "compared_count": 720,
+    "retained_result_count": 1,
+    "matched_count": 720,
+    "batch_count": 36,
+    "duration_ms": 760.71,
+    "throughput_per_second": 946.48,
+    "authority_reduction_ratio": 0.02752,
+    "prefilter_reduction_ratio": 0.66038,
+    "length_reduction_ratio": 0.33019,
+    "spatial_reduction_ratio": 0.49296,
+    "index_scan_signal": true
+  },
+  "query_plan_signal": {
+    "geometry_gist_indexes": [
+      "catalogue_routeversion_normalized_geometry_ceea5482_id",
+      "catalogue_routeversion_simplified_geometry_5eb2863e_id"
+    ],
+    "length_index": "cat_ver_status_distance_idx",
+    "method": "EXPLAIN ANALYZE BUFFERS",
+    "observed": "Bitmap Index Scan nodes for both geometry GiST indexes in the candidate prefilter plan; Index Scan using cat_ver_status_distance_idx in the length-only plan."
+  },
+  "notes": "Single local run; this is representative throughput evidence, not a production capacity guarantee."
+}

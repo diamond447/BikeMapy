@@ -398,6 +398,12 @@ ROUTE_DUPLICATE_MAX_LENGTH_DELTA = float(os.getenv("ROUTE_DUPLICATE_MAX_LENGTH_D
 ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M", "25"))
 ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M", "100"))
 ROUTE_VARIANT_MIN_SCORE = float(os.getenv("ROUTE_VARIANT_MIN_SCORE", "0.55"))
+# Similarity keyset-pages candidate IDs and fetches geometries in these
+# batches. The page size bounds memory, while every page is eventually scored.
+ROUTE_DEDUPLICATION_CANDIDATE_PAGE_SIZE = int(
+    os.getenv("ROUTE_DEDUPLICATION_CANDIDATE_PAGE_SIZE", "500")
+)
+ROUTE_DEDUPLICATION_BATCH_SIZE = int(os.getenv("ROUTE_DEDUPLICATION_BATCH_SIZE", "100"))
 
 # Spatial browse products.  The heatmap is deliberately limited to low zooms;
 # route lines take over at closer zooms.  Every public query has an explicit

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from decimal import Decimal
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -19,6 +22,7 @@ from apps.catalogue.deduplication import (
     link_similarity,
     normalize_geometry,
     similar_versions,
+    similar_versions_with_report,
 )
 from apps.catalogue.models import (
     ForumPost,
@@ -155,6 +159,7 @@ def _version(
     *,
     loop: bool = False,
     status: str = ProcessingStatus.VALID,
+    distance_m: Decimal = Decimal("366.88"),
 ) -> RouteVersion:
     source = RouteSource.objects.create(
         route=route, mapy_url=f"https://mapy.com/s/{route.pk}-{number}"
@@ -164,7 +169,7 @@ def _version(
         checksum=f"checksum-{route.pk}-{number}",
         normalized_geometry=geometry,
         simplified_geometry=geometry,
-        distance_m=Decimal("1"),
+        distance_m=distance_m,
         loop_status=LoopStatus.LOOP if loop else LoopStatus.POINT_TO_POINT,
         technical_status=status,
     )[0]
@@ -207,6 +212,143 @@ def test_similar_versions_only_returns_other_valid_routes() -> None:
         status=ProcessingStatus.INVALID,
     )
     assert [candidate.pk for candidate, _ in similar_versions(left)] == [right.pk]
+
+
+def test_current_approved_version_is_authoritative_over_history() -> None:
+    incoming, existing = Route.objects.create(), Route.objects.create()
+    left = _version(incoming, 1, LINE)
+    _version(existing, 1, LINE)
+    current = _version(existing, 2, LINE)
+    approve_version(current)
+
+    matches, report = similar_versions_with_report(left)
+
+    assert [candidate.pk for candidate, _ in matches] == [current.pk]
+    assert report.current_count == 1
+    assert report.historical_count == 0
+
+
+def test_similarity_scan_is_bounded_and_reports_telemetry() -> None:
+    incoming = Route.objects.create()
+    left = _version(incoming, 1, LINE)
+    for _ in range(4):
+        _version(Route.objects.create(), 1, LINE)
+
+    matches, report = similar_versions_with_report(
+        left, config=SimilarityConfig(candidate_page_size=2, batch_size=1)
+    )
+
+    assert len(matches) == 4
+    assert report.candidate_count == 4
+    assert report.compared_count == 4
+    assert report.batch_count == 4
+    assert report.duration_ms >= 0
+    assert report.valid_count is None
+    assert report.eligible_count is None
+    assert report.prefilter_reduction_ratio is None
+    assert report.authority_reduction_ratio is None
+    assert matches[0][1].evidence["candidate_scan"]["candidate_count"] == 4
+
+
+def test_result_limit_retains_the_strongest_late_candidate() -> None:
+    incoming = Route.objects.create(id=UUID(int=100))
+    left = _version(incoming, 1, LINE)
+    weaker: dict[str, object] = {
+        "type": "LineString",
+        "coordinates": [[16.0, 49.0], [16.002, 49.0015], [16.004, 49.002]],
+    }
+    _version(Route.objects.create(id=UUID(int=1)), 1, weaker)
+    strongest = _version(Route.objects.create(id=UUID(int=2)), 1, LINE)
+
+    all_matches, _ = similar_versions_with_report(left)
+    limited_matches, report = similar_versions_with_report(
+        left,
+        config=SimilarityConfig(candidate_page_size=1, batch_size=1),
+        result_limit=1,
+    )
+
+    assert len(limited_matches) == 1
+    assert limited_matches[0][0].pk == max(all_matches, key=lambda item: item[1].score)[0].pk
+    assert limited_matches[0][0].pk == strongest.pk
+    assert report.matched_count == len(all_matches)
+
+
+@pytest.mark.benchmark
+@pytest.mark.skipif(
+    os.getenv("RUN_DEDUPLICATION_BENCHMARK") != "1",
+    reason="opt-in benchmark; run against the Compose PostGIS database",
+)
+def test_deduplication_candidate_scan_benchmark() -> None:
+    """Record bounded candidate throughput on a representative catalogue."""
+
+    incoming = Route.objects.create()
+    left = _version(incoming, 1, LINE)
+    # Twenty reviewed routes each have four immutable versions.  Only each
+    # route's approved version should enter the candidate set.
+    for _ in range(20):
+        route = Route.objects.create()
+        versions = [_version(route, number, LINE) for number in range(1, 5)]
+        approve_version(versions[-1])
+    # Unreviewed history is retained as a fallback. Each pre-filter stage has
+    # its own rejected population: near/length-mismatched and far/length-
+    # compatible routes must be distinguishable in the telemetry.
+    far: dict[str, object] = {
+        "type": "LineString",
+        "coordinates": [[0, 0], [0.002, 0.001]],
+    }
+    for _ in range(700):
+        _version(Route.objects.create(), 1, LINE)
+    for _ in range(700):
+        _version(Route.objects.create(), 1, LINE, distance_m=Decimal("10000"))
+    for _ in range(700):
+        _version(Route.objects.create(), 1, far)
+    started = perf_counter()
+    matches, report = similar_versions_with_report(
+        left,
+        config=SimilarityConfig(candidate_page_size=100, batch_size=20),
+        collect_telemetry=True,
+        result_limit=1,
+    )
+    elapsed_ms = (perf_counter() - started) * 1000
+    print(
+        "deduplication_candidate_scan "
+        f"valid={report.valid_count} eligible={report.eligible_count} "
+        f"length_stage={report.length_prefilter_count} "
+        f"spatial_stage={report.spatial_prefilter_count} "
+        f"candidates={report.candidate_count} reduction={report.prefilter_reduction_ratio:.5f} "
+        f"authority_reduction={report.authority_reduction_ratio:.5f} "
+        f"compared={report.compared_count} retained={len(matches)} "
+        f"batches={report.batch_count} duration_ms={elapsed_ms:.2f} "
+        f"throughput_per_second={report.compared_count / max(elapsed_ms / 1000, 0.001):.2f} "
+        f"index_signal={bool(report.query_plan and 'Index' in report.query_plan)}"
+    )
+    plan = report.query_plan or ""
+    plan_nodes = [line.strip() for line in plan.splitlines() if "Scan" in line or "Index" in line]
+    print(f"deduplication_candidate_scan_plan_nodes={plan_nodes}")
+    assert report.valid_count == 2180
+    assert report.eligible_count == 2120
+    assert report.length_prefilter_count == 1420
+    assert report.spatial_prefilter_count == 720
+    assert report.candidate_count == 720
+    assert report.compared_count == 720
+    assert report.matched_count == 720
+    assert len(matches) == 1
+    assert report.prefilter_reduction_ratio == pytest.approx(0.66038, abs=0.00001)
+    assert report.authority_reduction_ratio == pytest.approx(0.02752, abs=0.00001)
+    assert report.length_reduction_ratio == pytest.approx(0.33019, abs=0.00001)
+    assert report.spatial_reduction_ratio == pytest.approx(0.49296, abs=0.00001)
+    assert report.query_plan is not None
+    assert "catalogue_routeversion_normalized_geometry_ceea5482_id" in plan
+    assert "catalogue_routeversion_simplified_geometry_5eb2863e_id" in plan
+    length_plan = (
+        RouteVersion.objects.filter(
+            technical_status=ProcessingStatus.VALID, distance_m__gte=Decimal("366.88")
+        )
+        .values("pk")
+        .explain(analyze=True, buffers=True)
+    )
+    assert "cat_ver_status_distance_idx" in length_plan
+    print(f"deduplication_candidate_scan_length_plan={length_plan}")
 
 
 def test_keep_both_and_merge_sources_are_audited() -> None:
