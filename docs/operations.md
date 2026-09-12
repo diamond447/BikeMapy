@@ -17,6 +17,81 @@ Configure checks from outside the host and notify the operator on two
 consecutive failures. The endpoint responses intentionally contain status and
 timestamps only; they do not expose report content or client addresses.
 
+## Service restart and host recovery
+
+The production Compose file applies `restart: unless-stopped` to every
+long-running service: `db`, `redis`, `backend`, `worker`, `beat`, and `proxy`.
+Docker therefore recreates a stopped process after an unexpected exit and
+starts existing containers when the Docker daemon starts after a host reboot.
+This is a recovery policy, not a process supervisor or a high-availability
+guarantee. A container deliberately stopped by an operator stays stopped until
+it is explicitly started again.
+
+The production file requires Docker Compose 2.17.0 or newer because it uses
+the long-form `depends_on.restart` option. Verify the host before deployment:
+
+```sh
+docker compose version
+```
+
+Compose waits for healthy PostgreSQL and Redis before creating the backend,
+worker, and scheduler. The proxy waits for a healthy backend. Dependency
+entries also use `restart: true`, so an intentional `docker compose restart`
+or a Compose update/recreate of a dependency propagates to its dependents. An
+unchanged `docker compose up -d dependency` is a no-op and does not propagate a
+restart. An unexpected dependency crash is handled by Docker restarting that dependency;
+the application processes reconnect where supported, and the operator should
+reconcile the full stack if a dependent remains unhealthy:
+
+```sh
+export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
+$COMPOSE ps
+$COMPOSE logs --since=10m db redis backend worker beat proxy
+$COMPOSE up -d db redis backend worker beat proxy
+$COMPOSE ps
+curl --fail --silent --show-error https://api.example.invalid/health/ready/
+```
+
+After a host reboot, first ensure Docker is enabled and running, then run the
+same `up -d` reconciliation and readiness check. For an unexpected service
+exit, inspect `ps`, the service logs, and the container exit/restart count
+before deciding whether to leave the automatic restart in place or stop the
+affected service for investigation. Verify `/health/live/`, `/health/ready/`,
+and `/health/crawler/` as applicable; a healthy API does not prove that the
+crawler is current.
+
+Migrations and other maintenance commands are one-shot jobs. Run them with
+`docker compose run --rm backend ...` (as in the deployment runbook), never
+with `docker compose up`; the command must finish or fail visibly and must not
+be retried indefinitely by a restart policy. The backup and restore scripts
+stop writers during their maintenance window and explicitly start the
+long-running services again.
+
+The disposable production Compose smoke kills each of the six services and
+asserts that Docker reports a running container with an increased restart
+count, then checks backend and proxy readiness. Run it after changing the
+Compose contract:
+
+```sh
+uv run --locked --no-dev python scripts/production_compose_smoke.py
+```
+
+CI additionally runs the smoke with `--daemon-restart`. That mode creates a
+separate, digest-pinned Docker-in-Docker daemon and data volume, runs the
+production Compose stack inside it, restarts only that disposable daemon
+container, and verifies all six `unless-stopped` services and proxy readiness
+after the daemon returns. The privileged container is not a security boundary:
+it can access host kernel resources and may affect the host, so run this mode
+only on a trusted disposable CI worker or an explicitly approved local host.
+The harness targets the nested daemon and does not issue a restart to the
+developer/CI host's shared daemon, but this isolation must not be treated as a
+security guarantee. To run the stronger rehearsal locally, use a Docker
+installation that allows privileged containers:
+
+```sh
+uv run --locked --no-dev python scripts/production_compose_smoke.py --daemon-restart
+```
+
 ## Logs and Sentry
 
 Django and Celery write one JSON object per line to stdout. The formatter

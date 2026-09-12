@@ -91,6 +91,24 @@ uv run --locked --no-dev python scripts/check_production_static_assets.py
 It builds the current backend image, starts the production Compose topology,
 and verifies HTTP 200 responses for the Admin stylesheet and navigation
 script through Nginx.
+The production Compose recovery policy is covered by a companion smoke test;
+it starts the same disposable topology, kills each long-running service, and
+verifies its automatic restart plus API/proxy readiness:
+
+```sh
+uv run --locked --no-dev python scripts/production_compose_smoke.py
+```
+
+Run this recovery smoke after changing service commands, dependencies, or
+restart policy. It is disposable evidence only; the host reboot procedure and
+production host recovery remains an operator action documented in
+[operations.md](operations.md). CI also runs the smoke's `--daemon-restart`
+mode, which restarts a separate digest-pinned Docker-in-Docker daemon and
+verifies the services return. The mode uses `--privileged`, which is not a
+security boundary and can affect the host kernel/resources; run it only on a
+trusted disposable CI worker or explicitly approved host. It targets the
+nested daemon rather than intentionally restarting the shared daemon, but does
+not claim an absolute isolation guarantee.
 The listener is explicitly HTTP because Cloudflare Tunnel terminates HTTPS at
 the edge; `proxy_params` passes the public HTTPS scheme to Django without a
 redirect loop. Django enforces the HTTPS redirect and emits one year of HSTS
