@@ -7,19 +7,35 @@ BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
 test -d "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 PG_IMAGE="${PG_IMAGE:-postgis/postgis:17-3.5}"
+APP_IMAGE="${APP_IMAGE:-bikemapy-restore-drill-backend}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
-CONTAINER="bikemapy-restore-drill-$$"
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-drill-only}"
+CONTAINER="bikemapy-restore-drill-db-$$"
+APP_CONTAINER="bikemapy-restore-drill-app-$$"
+NETWORK="bikemapy-restore-drill-network-$$"
+GPX_VOLUME="bikemapy-restore-drill-gpx-$$"
 db_file="$BACKUP_DIR/db-${BACKUP_ID}.dump"
 gpx_file="$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz"
 manifest="$BACKUP_DIR/manifest-${BACKUP_ID}.json"
 test -s "$db_file" && test -s "$gpx_file" && test -s "$manifest"
-test "$(jq -r .database_sha256 "$manifest")" = "$(sha256sum "$db_file" | awk '{print $1}')"
-test "$(jq -r .gpx_sha256 "$manifest")" = "$(sha256sum "$gpx_file" | awk '{print $1}')"
+database_sha256="$(jq -er .database_sha256 "$manifest")"
+gpx_sha256="$(jq -er .gpx_sha256 "$manifest")"
+test "$database_sha256" = "$(sha256sum "$db_file" | awk '{print $1}')"
+test "$gpx_sha256" = "$(sha256sum "$gpx_file" | awk '{print $1}')"
 bash "$(dirname "$0")/validate-gpx-archive.sh" "$gpx_file"
-cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
+
+cleanup() {
+  docker rm -f "$APP_CONTAINER" "$CONTAINER" >/dev/null 2>&1 || true
+  docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  docker volume rm "$GPX_VOLUME" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
-docker run -d --name "$CONTAINER" -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
-  -e POSTGRES_PASSWORD=drill-only "$PG_IMAGE" >/dev/null
+docker network create "$NETWORK" >/dev/null
+docker volume create "$GPX_VOLUME" >/dev/null
+docker run -d --name "$CONTAINER" --network "$NETWORK" --network-alias db \
+  -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" "$PG_IMAGE" >/dev/null
+
 database_ready=0
 for _ in {1..60}; do
   if docker exec "$CONTAINER" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d bikemapy \
@@ -34,12 +50,111 @@ if (( ! database_ready )); then
   docker logs "$CONTAINER" >&2 || true
   exit 1
 fi
+
 docker exec -i "$CONTAINER" pg_restore --username="$POSTGRES_USER" --clean --if-exists \
-  --no-owner --dbname=bikemapy < "$db_file"
+  --no-owner --exit-on-error --dbname=bikemapy < "$db_file"
 route_count="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
-  --tuples-only --no-align --command="SELECT COALESCE((SELECT COUNT(*) FROM catalogue_route), 0)")"
+  --tuples-only --no-align --command="SELECT COUNT(*) FROM catalogue_route")"
+route_count="${route_count//[[:space:]]/}"
+test "$route_count" -gt 0
+migration_count="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
+  --tuples-only --no-align --command="SELECT COUNT(*) FROM django_migrations")"
+migration_count="${migration_count//[[:space:]]/}"
+test "$migration_count" -gt 0
+
+# Restore the archive into a new volume, matching the production
+# /app/storage/media root. The archive validator has already rejected paths
+# outside media/ and traversal entries.
+archive_name="$(basename "$gpx_file")"
+docker run --rm -v "$GPX_VOLUME:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
+  sh -c 'set -eu; find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar xzf "/backup/$1" -C /data' \
+  sh "$archive_name"
+
+# Read the storage reference and content checksum from the restored database,
+# then resolve that key inside the restored volume. A missing, corrupt, or
+# mismatched payload must fail the drill rather than produce partial evidence.
+reference_row="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
+  --tuples-only --no-align --field-separator=$'\t' \
+  --command="SELECT version.original_gpx_storage_key, version.checksum, source.route_id FROM catalogue_routeversion version JOIN catalogue_routesource source ON source.id = version.source_id WHERE version.original_gpx_storage_key <> '' ORDER BY version.id LIMIT 1")"
+IFS=$'\t' read -r gpx_key expected_gpx_sha route_id <<< "$reference_row"
+test -n "$gpx_key" && test -n "$expected_gpx_sha" && test -n "$route_id"
+case "$gpx_key" in
+  gpx/*) ;;
+  *) echo "Database GPX reference is outside gpx/: $gpx_key" >&2; exit 1 ;;
+esac
+case "$gpx_key" in
+  *..*) echo "Database GPX reference contains traversal: $gpx_key" >&2; exit 1 ;;
+esac
+restored_gpx_sha="$(docker run --rm -v "$GPX_VOLUME:/data:ro" alpine \
+  sh -c 'set -eu; file="/data/media/$1"; test -s "$file"; sha256sum "$file" | awk "{print \$1}"' \
+  sh "$gpx_key")"
+test "$restored_gpx_sha" = "$expected_gpx_sha"
+docker run --rm -v "$GPX_VOLUME:/app/storage:ro" \
+  -e DJANGO_MEDIA_ROOT=/app/storage/media "$APP_IMAGE" \
+  python scripts/validate_restore_gpx.py "/app/storage/media/$gpx_key"
+
+# Start the real application image against the restored targets. These checks
+# cover startup, database/cache readiness, representative catalogue reads,
+# and the GPX endpoint serving the exact restored bytes.
+docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
+  -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
+  -e DJANGO_DEBUG=true -e GPX_REDISTRIBUTION_APPROVED=true \
+  -e DJANGO_MEDIA_ROOT=/app/storage/media -v "$GPX_VOLUME:/app/storage" "$APP_IMAGE" \
+  uv run --locked --no-dev python backend/manage.py runserver 0.0.0.0:8000 --noreload >/dev/null
+application_ready=0
+for _ in {1..30}; do
+  if docker exec "$APP_CONTAINER" python -c \
+    'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health/live/", timeout=2)' \
+    >/dev/null 2>&1; then
+    application_ready=1
+    break
+  fi
+  sleep 2
+done
+if (( ! application_ready )); then
+  echo "Restored application did not start or become live" >&2
+  docker logs "$APP_CONTAINER" >&2 || true
+  exit 1
+fi
+docker exec -e "DRILL_ROUTE_ID=$route_id" -e "DRILL_GPX_SHA=$expected_gpx_sha" \
+  "$APP_CONTAINER" python -c '
+import hashlib
+import json
+import os
+import urllib.request
+
+base = "http://127.0.0.1:8000"
+paths = ["/health/live/", "/health/ready/", "/health/crawler/", "/api/v1/", "/api/v1/routes/"]
+route_id = os.environ["DRILL_ROUTE_ID"]
+for path in paths + [f"/api/v1/routes/{route_id}/"]:
+    with urllib.request.urlopen(base + path, timeout=5) as response:
+        if response.status != 200:
+            raise RuntimeError(f"{path} returned HTTP {response.status}")
+        body = response.read()
+        if path == "/api/v1/routes/" and not json.loads(body)["results"]:
+            raise RuntimeError("restored route catalogue is empty")
+with urllib.request.urlopen(base + f"/api/v1/routes/{route_id}/gpx/", timeout=5) as response:
+    payload = response.read()
+    if response.status != 200 or hashlib.sha256(payload).hexdigest() != os.environ["DRILL_GPX_SHA"]:
+        raise RuntimeError("GPX endpoint did not return the restored bytes")
+'
+
 evidence="$BACKUP_DIR/restore-drill-${BACKUP_ID}.json"
-printf '{"backup_id":"%s","database_sha256":"%s","gpx_sha256":"%s","route_count":%s,"verified_at":"%s"}\n' \
-  "$BACKUP_ID" "$(jq -r .database_sha256 "$manifest")" "$(jq -r .gpx_sha256 "$manifest")" \
-  "${route_count//[[:space:]]/}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$evidence"
+jq -cn \
+  --arg backup_id "$BACKUP_ID" \
+  --arg database_sha256 "$database_sha256" \
+  --arg gpx_sha256 "$gpx_sha256" \
+  --arg gpx_storage_key "$gpx_key" \
+  --arg restored_gpx_sha256 "$restored_gpx_sha" \
+  --arg route_id "$route_id" \
+  --argjson route_count "$route_count" \
+  --argjson migration_count "$migration_count" \
+  --arg verified_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{backup_id: $backup_id, database_sha256: $database_sha256, gpx_sha256: $gpx_sha256,
+    gpx_storage_key: $gpx_storage_key, restored_gpx_sha256: $restored_gpx_sha256,
+    route_id: $route_id, route_count: $route_count, migration_count: $migration_count,
+    application_endpoints: ["/health/live/", "/health/ready/", "/health/crawler/", "/api/v1/",
+      "/api/v1/routes/", "/api/v1/routes/<route-id>/", "/api/v1/routes/<route-id>/gpx/"],
+    verified_at: $verified_at}' > "$evidence"
 echo "Non-production restore drill succeeded for $BACKUP_ID (route_count=$route_count, evidence=$evidence)"

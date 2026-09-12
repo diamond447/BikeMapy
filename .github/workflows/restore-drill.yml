@@ -21,10 +21,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p backup gpx-drill/media/gpx/routes
-          docker run -d --name bikemapy-drill-source \
+          docker build --tag bikemapy-restore-drill-backend --file docker/backend.Dockerfile .
+          docker network create bikemapy-drill-network >/dev/null
+          docker run -d --name bikemapy-drill-source --network bikemapy-drill-network --network-alias db \
             -e POSTGRES_DB=bikemapy -e POSTGRES_USER=bikemapy -e POSTGRES_PASSWORD=drill-only \
             postgis/postgis:17-3.5 >/dev/null
-          trap 'docker rm -f bikemapy-drill-source >/dev/null 2>&1 || true' EXIT
+          trap 'docker rm -f bikemapy-drill-source >/dev/null 2>&1 || true; docker network rm bikemapy-drill-network >/dev/null 2>&1 || true' EXIT
           database_ready=0
           for attempt in {1..60}; do
             if docker exec bikemapy-drill-source psql -h 127.0.0.1 -U bikemapy -d bikemapy \
@@ -39,12 +41,16 @@ jobs:
             docker logs bikemapy-drill-source >&2 || true
             exit 1
           fi
-          docker exec bikemapy-drill-source psql -U bikemapy -d bikemapy -v ON_ERROR_STOP=1 \
-            -c 'CREATE TABLE catalogue_route (id bigint PRIMARY KEY); INSERT INTO catalogue_route VALUES (1), (2);'
+          docker run --rm --network bikemapy-drill-network \
+            -e POSTGRES_DB=bikemapy -e POSTGRES_USER=bikemapy -e POSTGRES_PASSWORD=drill-only \
+            bikemapy-restore-drill-backend uv run --locked --no-dev python backend/manage.py migrate --noinput
+          cp deploy/restore-drill-fixture.gpx gpx-drill/media/gpx/routes/restore-drill.gpx
+          gpx_sha256="$(sha256sum gpx-drill/media/gpx/routes/restore-drill.gpx | awk '{print $1}')"
+          docker run --rm --network bikemapy-drill-network \
+            -e POSTGRES_DB=bikemapy -e POSTGRES_USER=bikemapy -e POSTGRES_PASSWORD=drill-only \
+            -e GPX_SHA256="$gpx_sha256" -e GPX_STORAGE_KEY=gpx/routes/restore-drill.gpx \
+            bikemapy-restore-drill-backend uv run --locked --no-dev python scripts/seed_restore_drill.py
           docker exec bikemapy-drill-source pg_dump -U bikemapy -Fc bikemapy > "backup/db-${BACKUP_ID}.dump"
-          # Keep the fixture relative to the production volume root.  The
-          # media/ prefix is required for Django storage references to resolve.
-          printf 'sample gpx payload\n' > gpx-drill/media/gpx/routes/sample.gpx
           tar czf "backup/gpx-${BACKUP_ID}.tar.gz" -C gpx-drill .
           BACKUP_DIR=backup BACKUP_ID="$BACKUP_ID" bash deploy/write-backup-manifest.sh
       - name: Execute restore drill and produce evidence
