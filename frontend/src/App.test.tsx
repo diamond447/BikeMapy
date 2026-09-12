@@ -71,13 +71,8 @@ vi.mock('maplibre-gl', () => ({
 
 import type { components } from './api/generated/schema'
 import { apiClient } from './api/client'
-import App, {
-  categoriesEnabled,
-  geometryBounds,
-  geometryCoordinates,
-  parseState,
-  writeUrl,
-} from './App'
+import { categoriesEnabled, writeUrl } from './discovery/state'
+import App from './App'
 
 const route: components['schemas']['Route'] = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -574,43 +569,6 @@ describe('BikeMapy route discovery', () => {
     expect(api).toHaveBeenCalled()
   })
 
-  it('hydrates filters, viewport, and selected route from a shared URL', () => {
-    window.history.replaceState(
-      {},
-      '',
-      `/?q=forest&author=Jana&lng=17.1&lat=49.3&z=11&route=${route.id}`,
-    )
-    const state = parseState()
-    expect(state.filters.search).toBe('forest')
-    expect(state.filters.author).toBe('Jana')
-    expect(state.view.zoom).toBe(11)
-    expect(state.routeId).toBe(route.id)
-  })
-
-  it('uses defaults for missing URL values and does not leak local state into shared links', () => {
-    localStorage.setItem(
-      'bikemapy:discovery-state',
-      JSON.stringify({
-        filters: { search: 'private' },
-        routeId: route.id,
-        view: { longitude: 1, latitude: 2, zoom: 3 },
-      }),
-    )
-    window.history.replaceState({}, '', '/?q=shared')
-    const state = parseState()
-    expect(state.filters.search).toBe('shared')
-    expect(state.routeId).toBeNull()
-    expect(state.view).toEqual(
-      expect.objectContaining({ longitude: 16.6, latitude: 49.2, zoom: 7.5 }),
-    )
-    window.history.replaceState({}, '', '/')
-    const restored = parseState()
-    expect(restored.filters.search).toBe('private')
-    expect(restored.view).toEqual(
-      expect.objectContaining({ longitude: 16.6, latitude: 49.2, zoom: 7.5 }),
-    )
-  })
-
   it('persists non-geographic preferences while keeping the viewport in the URL', async () => {
     render(<App />)
 
@@ -947,59 +905,6 @@ describe('BikeMapy route discovery', () => {
     expect(text.indexOf('Elevation profile')).toBeLessThan(text.indexOf('BikeForum sources'))
     expect(text.indexOf('BikeForum sources')).toBeLessThan(text.indexOf('Share route'))
     expect(text.indexOf('Share route')).toBeLessThan(text.indexOf('Report a problem'))
-  })
-
-  it('walks nested route geometry and bounds', () => {
-    expect(
-      geometryCoordinates({
-        type: 'MultiLineString',
-        coordinates: [
-          [
-            [2, 3],
-            [4, 5],
-          ],
-          [
-            [-1, 8],
-            [7, 0],
-          ],
-        ],
-      }),
-    ).toHaveLength(4)
-    expect(geometryBounds(geometry)).toEqual([
-      [16, 49],
-      [16.8, 49.4],
-    ])
-    expect(geometryBounds(null)).toBeNull()
-  })
-
-  it('frames a single point and ignores malformed coordinates', () => {
-    expect(
-      geometryBounds({
-        type: 'Point',
-        coordinates: [16.5, 49.2],
-      }),
-    ).toEqual([
-      [16.5, 49.2],
-      [16.5, 49.2],
-    ])
-    expect(
-      geometryBounds({
-        type: 'MultiLineString',
-        coordinates: [
-          [],
-          [
-            [16, 49],
-            ['invalid', 50],
-            [Number.NaN, 50],
-          ],
-          null,
-        ],
-      } as never),
-    ).toEqual([
-      [16, 49],
-      [16, 49],
-    ])
-    expect(geometryBounds({ type: 'LineString', coordinates: [] })).toBeNull()
   })
 
   it('switches and persists Czech copy while updating route metadata', async () => {
