@@ -8,6 +8,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from django.conf import settings
 
 
 def test_restore_failure_path_restores_database_and_gpx_pair() -> None:
@@ -190,6 +191,11 @@ def test_restore_gpx_reference_json_framing_preserves_tabs_and_newlines(tmp_path
     assert "valid" in result.stdout
 
 
+@pytest.mark.django_db
+@pytest.mark.skipif(
+    not settings.DATABASES["default"]["ENGINE"].endswith("sqlite3"),
+    reason="The query regression uses the isolated SQLite backend in the backend CI job",
+)
 def test_restore_reference_query_returns_all_rows_and_current_approved_version() -> None:
     root = Path(__file__).parents[3]
     spec = importlib.util.spec_from_file_location(
@@ -199,48 +205,36 @@ def test_restore_reference_query_returns_all_rows_and_current_approved_version()
     query = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(query)
 
-    class FakeQuerySet:
-        def __init__(self, rows: list[tuple[str, ...]]) -> None:
-            self.rows = rows
+    from apps.catalogue.models import ProcessingStatus, Route, RouteSource, RouteVersion
 
-        def filter(self, **filters: object) -> "FakeQuerySet":
-            del filters
-            return self
-
-        def values_list(self, *fields: str) -> "FakeQuerySet":
-            del fields
-            return self
-
-        def order_by(self, *fields: str) -> list[tuple[str, ...]]:
-            del fields
-            return self.rows
-
-    class FakeManager:
-        def __init__(self, rows: list[tuple[str, ...]]) -> None:
-            self.rows = rows
-
-        def filter(self, **filters: object) -> FakeQuerySet:
-            del filters
-            return FakeQuerySet(self.rows)
-
-    historical_id = "historical-version"
-    approved_id = "approved-version"
-    route_id = "approved-route"
-    query.RouteVersion.objects = FakeManager(
-        [
-            (historical_id, "gpx/routes/historical\tkey.gpx", "historical-checksum", route_id),
-            (approved_id, "gpx/routes/approved\nkey.gpx", "approved-checksum", route_id),
-        ]
+    route = Route.objects.create(display_title="Restore query regression")
+    source = RouteSource.objects.create(
+        route=route, mapy_url="https://mapy.com/s/restore-query-regression"
     )
-    query.Route.objects = FakeManager(
-        [(route_id, "gpx/routes/approved\nkey.gpx", "approved-checksum")]
+    historical = RouteVersion.objects.create(
+        source=source,
+        version_number=1,
+        checksum="historical-checksum",
+        original_gpx_storage_key="gpx/routes/historical\tkey.gpx",
+        technical_status=ProcessingStatus.VALID,
     )
+    approved = RouteVersion.objects.create(
+        source=source,
+        version_number=2,
+        checksum="approved-checksum",
+        original_gpx_storage_key="gpx/routes/approved\nkey.gpx",
+        technical_status=ProcessingStatus.VALID,
+    )
+    route.current_approved_version = approved
+    route.save(update_fields=["current_approved_version", "updated_at"])
 
     references = query.live_references()
     approved_references = query.approved_references()
 
-    assert [row[0] for row in references] == [historical_id, approved_id]
-    assert approved_references == [[route_id, "gpx/routes/approved\nkey.gpx", "approved-checksum"]]
+    assert [row[0] for row in references] == [str(historical.pk), str(approved.pk)]
+    assert approved_references == [
+        [str(route.pk), "gpx/routes/approved\nkey.gpx", "approved-checksum"]
+    ]
 
 
 def _sha256(path: Path) -> str:
