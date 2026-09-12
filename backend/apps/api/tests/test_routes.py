@@ -15,7 +15,7 @@ from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.db import connection
 from django.http import StreamingHttpResponse
-from django.test import Client, override_settings
+from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.request import Request
@@ -35,10 +35,12 @@ from apps.catalogue.models import (
     RouteCategory,
     RouteLifecycle,
     RouteSource,
+    RouteSourceMerge,
     RouteVersion,
 )
 from apps.catalogue.services import (
     approve_version,
+    keep_both_routes,
     merge_route_sources,
     record_route_version,
     register_source,
@@ -360,7 +362,8 @@ def test_filtered_viewport_cache_invalidates_when_match_is_removed(public_route:
     assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
 
     public_route.display_title = "Brno gravel ride"
-    public_route.save(update_fields=["display_title", "updated_at"])
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        public_route.save(update_fields=["display_title", "updated_at"])
 
     assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
 
@@ -371,9 +374,67 @@ def test_filtered_viewport_cache_invalidates_when_match_is_added(public_route: R
     assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
 
     public_route.display_title = "Newly-added gravel ride"
-    public_route.save(update_fields=["display_title", "updated_at"])
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        public_route.save(update_fields=["display_title", "updated_at"])
 
     assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+
+def test_filtered_viewport_cache_invalidates_category_membership(public_route: Route) -> None:
+    client = Client()
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&category=gravel"
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        RouteCategory.objects.filter(route=public_route).delete()
+
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"] == []
+
+
+def test_filtered_viewport_cache_invalidates_bulk_merged_source_update(
+    public_route: Route,
+) -> None:
+    duplicate = Route.objects.create(slug="bulk-merged-route", display_title="Merged route")
+    thread = ForumThread.objects.create(
+        url=f"https://bikeforum.example/thread/{uuid4()}",
+        title="Bulk merged locality",
+        locality="Bulk merged town",
+    )
+    post = ForumPost.objects.create(
+        thread=thread,
+        url=f"https://bikeforum.example/post/{uuid4()}",
+    )
+    source, _ = register_source(
+        route=duplicate,
+        post=post,
+        mapy_url=f"https://mapy.com/s/{uuid4()}",
+    )
+    version, _ = record_route_version(
+        source=source,
+        checksum="bulk-merged-version",
+        normalized_geometry={
+            "type": "LineString",
+            "coordinates": [[16.6, 49.2], [16.7, 49.25]],
+        },
+        simplified_geometry={
+            "type": "LineString",
+            "coordinates": [[16.6, 49.2], [16.7, 49.25]],
+        },
+        technical_status=ProcessingStatus.VALID,
+    )
+    approve_version(version)
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        merge_route_sources(public_route, duplicate, reason="Bulk invalidation test")
+    base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12&search=Bulk+merged"
+    client = Client()
+    assert client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+
+    with TestCase.captureOnCommitCallbacks(execute=True):
+        keep_both_routes(public_route, duplicate, reason="Keep both after review")
+
+    refreshed = client.get(f"/api/v1/routes/viewport/?{base}").json()["routes"]
+    assert [item["id"] for item in refreshed] == [str(duplicate.pk)]
+    assert not RouteSourceMerge.objects.filter(source=source, active=True).exists()
 
 
 def _create_dense_viewport_catalogue(public_route: Route, count: int) -> list[Route]:
@@ -446,7 +507,10 @@ def test_filtered_viewport_http_query_count_stays_bounded_for_dense_catalogue(
     assert response.status_code == 200
     assert len(response.json()["routes"]) == 3
     assert len(queries) <= 8
-    assert any(" IN (SELECT" in query["sql"].upper() for query in queries)
+    sql = "\n".join(query["sql"].upper() for query in queries)
+    assert "EXISTS" in sql
+    assert "LIMIT" in sql
+    assert "IN (SELECT DISTINCT" not in sql
 
 
 @pytest.mark.benchmark

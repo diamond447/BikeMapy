@@ -878,6 +878,9 @@ def keep_both_routes(
             deactivated_at=timezone.now(),
             deactivated_reason=reason,
         )
+        from .spatial import schedule_viewport_filter_cache_invalidation
+
+        schedule_viewport_filter_cache_invalidation()
     relationship, _ = SimilarityRelationship.objects.get_or_create(
         route_a_id=first,
         route_b_id=second,

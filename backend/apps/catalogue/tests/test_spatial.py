@@ -41,6 +41,7 @@ from apps.catalogue.spatial import (
     query_viewport,
     refresh_route_heatmap,
     schedule_spatial_cache_invalidation,
+    schedule_viewport_filter_cache_invalidation,
 )
 
 pytestmark = pytest.mark.django_db
@@ -240,20 +241,29 @@ def test_query_limits_are_rejected_or_clamped(published_route: Route) -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_cache_epoch_advances_only_after_commit_and_not_after_rollback() -> None:
+    from apps.catalogue.spatial import _FILTER_CACHE_EPOCH_KEY
+
     cache.clear()
     initial = int(cache.get("bikemapy:spatial:epoch", 0) or 0)
+    filter_initial = int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0)
     with transaction.atomic():
         schedule_spatial_cache_invalidation()
+        schedule_viewport_filter_cache_invalidation()
         assert int(cache.get("bikemapy:spatial:epoch", 0) or 0) == initial
+        assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_initial
     committed = int(cache.get("bikemapy:spatial:epoch", 0) or 0)
+    filter_committed = int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0)
     assert committed > initial
+    assert filter_committed > filter_initial
     try:
         with transaction.atomic():
             schedule_spatial_cache_invalidation()
+            schedule_viewport_filter_cache_invalidation()
             raise RuntimeError("rollback")
     except RuntimeError:
         pass
     assert int(cache.get("bikemapy:spatial:epoch", 0) or 0) == committed
+    assert int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0) or 0) == filter_committed
 
 
 def test_cache_epoch_invalidation_does_not_raise_when_redis_is_down() -> None:

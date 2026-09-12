@@ -12,13 +12,14 @@ import json
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, cast
 
 from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import connection, transaction
-from django.db.models import Count, QuerySet, Subquery
+from django.db.models import Count, Exists, OuterRef, QuerySet, Subquery
 from django.utils import timezone
 
 from .fields import _GIS_AVAILABLE
@@ -194,6 +195,14 @@ def _tile_xy(longitude: float, latitude: float, zoom: int) -> tuple[int, int]:
     radians = math.radians(latitude)
     y = int(math.floor((1.0 - math.asinh(math.tan(radians)) / math.pi) / 2.0 * scale))
     return max(0, min(scale - 1, x)), max(0, min(scale - 1, y))
+
+
+def _viewport_tile_range(
+    west: float, south: float, east: float, north: float, zoom: int
+) -> tuple[int, int, int, int]:
+    minimum_x, minimum_y = _tile_xy(west, north, zoom)
+    maximum_x, maximum_y = _tile_xy(east, south, zoom)
+    return minimum_x, maximum_x, minimum_y, maximum_y
 
 
 def _tile_bounds(x: int, y: int, zoom: int) -> tuple[float, float, float, float]:
@@ -386,6 +395,12 @@ def schedule_spatial_cache_invalidation() -> None:
     transaction.on_commit(bump_spatial_cache_epoch)
 
 
+def schedule_viewport_filter_cache_invalidation() -> None:
+    """Invalidate filtered viewport entries after the surrounding transaction commits."""
+
+    transaction.on_commit(bump_viewport_filter_cache_epoch)
+
+
 def _validate_bounds(west: float, south: float, east: float, north: float) -> None:
     if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
         raise ValidationError(
@@ -459,6 +474,16 @@ def normalize_filter_inputs(filters: Mapping[str, Any] | None) -> tuple[tuple[st
     return tuple(normalized)
 
 
+def _normalize_cache_param(value: Any) -> str:
+    if isinstance(value, Decimal) and value.is_finite():
+        return format(value.normalize(), "f")
+    if isinstance(value, float):
+        return _normalize_filter_value("number", value)
+    if isinstance(value, bytes):
+        return value.hex()
+    return str(value)
+
+
 @dataclass(frozen=True)
 class SpatialQueryLimits:
     max_routes: int = 500
@@ -471,6 +496,22 @@ class SpatialQueryLimits:
             raise ValidationError("query limits cannot be negative")
         object.__setattr__(self, "max_routes", min(self.max_routes, hard_routes))
         object.__setattr__(self, "max_cells", min(self.max_cells, hard_cells))
+
+
+def _viewport_candidates(
+    candidate_queryset: QuerySet[Route] | None, *, public_only: bool = True
+) -> QuerySet[Route]:
+    """Build a clean route base with an optional correlated filter predicate."""
+
+    candidates = Route.objects.all()
+    if public_only:
+        candidates = candidates.filter(
+            lifecycle=RouteLifecycle.PUBLISHED, current_approved_version__isnull=False
+        )
+    if candidate_queryset is not None:
+        matching_routes = candidate_queryset.filter(pk=OuterRef("pk")).order_by().values("pk")
+        candidates = candidates.filter(Exists(matching_routes))
+    return candidates
 
 
 def query_viewport(
@@ -495,7 +536,6 @@ def query_viewport(
         max_cells=int(_setting("SPATIAL_MAX_CELLS_PER_QUERY", 10_000)),
     )
     epoch = int(cache.get(_CACHE_EPOCH_KEY, 0))
-    filter_epoch = int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0))
     if candidate_queryset is not None and route_ids is not None:
         raise ValidationError("candidate_queryset and route_ids are mutually exclusive")
     legacy_route_filter = route_ids is not None
@@ -504,13 +544,18 @@ def query_viewport(
         # In particular, never put this potentially large legacy collection in
         # a cache key; uncached execution preserves correctness for each set.
         candidate_queryset = Route.objects.filter(pk__in=route_ids)
+    filter_epoch = (
+        int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0)) if candidate_queryset is not None else 0
+    )
     normalized_filters = normalize_filter_inputs(filter_inputs)
     cacheable = route_ids is None and (candidate_queryset is None or filter_inputs is not None)
     candidate_identity = ""
     if cacheable and candidate_queryset is not None:
         query_sql, query_params = candidate_queryset.query.sql_with_params()
         candidate_identity = hashlib.sha256(
-            json.dumps([query_sql, [str(param) for param in query_params]]).encode()
+            json.dumps(
+                [query_sql, [_normalize_cache_param(param) for param in query_params]]
+            ).encode()
         ).hexdigest()
     cache_key: str | None = None
     if cacheable:
@@ -523,7 +568,7 @@ def query_viewport(
                     _normalize_filter_value("north", north),
                 ],
                 "epoch": epoch,
-                "filter_epoch": filter_epoch,
+                "filter_epoch": filter_epoch if candidate_queryset is not None else None,
                 "filters": normalized_filters,
                 "candidate": candidate_identity,
                 "limits": [limits.max_routes, limits.max_cells],
@@ -542,12 +587,40 @@ def query_viewport(
         cell_query = RouteHeatmapCell.objects.filter(zoom=selected_heatmap_zoom, route_count__gt=0)
         cell_order = ("-route_count", "y", "x")
         candidate_overflow = False
+        cell_viewport_filter: dict[str, Any] = {}
         if candidate_queryset is not None:
-            candidates = Route.objects.filter(pk__in=candidate_queryset.values("pk"))
-            if not legacy_route_filter:
-                candidates = candidates.filter(
-                    lifecycle=RouteLifecycle.PUBLISHED, current_approved_version__isnull=False
+            candidates = _viewport_candidates(
+                candidate_queryset, public_only=not legacy_route_filter
+            )
+            if _GIS_AVAILABLE and connection.vendor == "postgresql":
+                from django.contrib.gis.geos import Polygon
+
+                viewport_geometry = Polygon.from_bbox((west, south, east, north))
+                relevant_memberships = RouteHeatmapMembership.objects.filter(
+                    route_id=OuterRef("pk"),
+                    cell__zoom=selected_heatmap_zoom,
+                    cell__boundary__intersects=viewport_geometry,
                 )
+                cell_viewport_filter = {"boundary__intersects": viewport_geometry}
+            else:
+                minimum_x, maximum_x, minimum_y, maximum_y = _viewport_tile_range(
+                    west, south, east, north, selected_heatmap_zoom
+                )
+                relevant_memberships = RouteHeatmapMembership.objects.filter(
+                    route_id=OuterRef("pk"),
+                    cell__zoom=selected_heatmap_zoom,
+                    cell__x__gte=minimum_x,
+                    cell__x__lte=maximum_x,
+                    cell__y__gte=minimum_y,
+                    cell__y__lte=maximum_y,
+                )
+                cell_viewport_filter = {
+                    "x__gte": minimum_x,
+                    "x__lte": maximum_x,
+                    "y__gte": minimum_y,
+                    "y__lte": maximum_y,
+                }
+            candidates = candidates.filter(Exists(relevant_memberships))
             configured_scan_limit = max(1, int(_setting("SPATIAL_MAX_CANDIDATE_SCAN", 5_000)))
             candidate_scan_limit = min(configured_scan_limit, max(1, limits.max_routes + 1))
             candidate_ids = candidates.order_by("pk").values("pk")[:candidate_scan_limit]
@@ -571,6 +644,8 @@ def query_viewport(
             cell_query = cell_query.filter(
                 boundary__intersects=Polygon.from_bbox((west, south, east, north))
             )
+        elif cell_viewport_filter:
+            cell_query = cell_query.filter(**cell_viewport_filter)
         cells = list(cell_query.order_by(*cell_order)[: limits.max_cells + 1])
         items = []
         for cell in cells[: limits.max_cells]:
@@ -599,19 +674,17 @@ def query_viewport(
             "truncated": len(cells) > limits.max_cells or candidate_overflow,
         }
     else:
-        candidates = Route.objects.filter(
-            lifecycle=RouteLifecycle.PUBLISHED, current_approved_version__isnull=False
-        )
-        if candidate_queryset is not None:
-            candidates = candidates.filter(pk__in=candidate_queryset.values("pk"))
+        candidates = _viewport_candidates(candidate_queryset)
         if _GIS_AVAILABLE and connection.vendor == "postgresql":
             from django.contrib.gis.geos import Polygon
 
             viewport_geometry = Polygon.from_bbox((west, south, east, north))
-            intersecting_versions = RouteBrowseGeometry.objects.filter(
-                geometry__intersects=viewport_geometry, zoom__lte=zoom
-            ).values("version_id")
-            candidates = candidates.filter(current_approved_version_id__in=intersecting_versions)
+            relevant_browse_geometry = RouteBrowseGeometry.objects.filter(
+                version_id=OuterRef("current_approved_version_id"),
+                geometry__intersects=viewport_geometry,
+                zoom__lte=zoom,
+            ).values("pk")
+            candidates = candidates.filter(Exists(relevant_browse_geometry))
         configured_scan_limit = max(1, int(_setting("SPATIAL_MAX_CANDIDATE_SCAN", 5_000)))
         if _GIS_AVAILABLE and connection.vendor == "postgresql":
             candidate_scan_limit = min(configured_scan_limit, max(1, limits.max_routes + 1))
@@ -620,7 +693,6 @@ def query_viewport(
             # Python bbox filtering, otherwise off-screen rows can hide later
             # in-view rows within the supported candidate bound.
             candidate_scan_limit = configured_scan_limit
-        candidate_ids = candidates.order_by("pk").values("pk")[:candidate_scan_limit]
         candidate_overflow = (
             candidates.order_by("pk")
             .values("pk")[candidate_scan_limit : candidate_scan_limit + 1]
@@ -629,9 +701,7 @@ def query_viewport(
         candidate_routes = cast(
             list[dict[str, Any]],
             list(
-                Route.objects.filter(pk__in=Subquery(candidate_ids))
-                .order_by("pk")
-                .values(
+                candidates.order_by("pk").values(
                     "id",
                     "slug",
                     "display_title",
