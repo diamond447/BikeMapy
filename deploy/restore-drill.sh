@@ -70,28 +70,28 @@ docker run --rm -v "$GPX_VOLUME:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
   sh -c 'set -eu; find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar xzf "/backup/$1" -C /data' \
   sh "$archive_name"
 
-# Read the storage reference and content checksum from the restored database,
-# then resolve that key inside the restored volume. A missing, corrupt, or
-# mismatched payload must fail the drill rather than produce partial evidence.
-reference_row="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
+# Read every live storage reference and validate it against the restored
+# volume. A missing, corrupt, checksum-mismatched, or semantically invalid
+# payload must fail the drill rather than produce partial evidence.
+reference_rows="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
   --tuples-only --no-align --field-separator=$'\t' \
-  --command="SELECT version.original_gpx_storage_key, version.checksum, source.route_id FROM catalogue_routeversion version JOIN catalogue_routesource source ON source.id = version.source_id WHERE version.original_gpx_storage_key <> '' ORDER BY version.id LIMIT 1")"
-IFS=$'\t' read -r gpx_key expected_gpx_sha route_id <<< "$reference_row"
-test -n "$gpx_key" && test -n "$expected_gpx_sha" && test -n "$route_id"
-case "$gpx_key" in
-  gpx/*) ;;
-  *) echo "Database GPX reference is outside gpx/: $gpx_key" >&2; exit 1 ;;
-esac
-case "$gpx_key" in
-  *..*) echo "Database GPX reference contains traversal: $gpx_key" >&2; exit 1 ;;
-esac
+  --command="SELECT version.id, version.original_gpx_storage_key, version.checksum, source.route_id FROM catalogue_routeversion version JOIN catalogue_routesource source ON source.id = version.source_id WHERE version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL ORDER BY version.id")"
+test -n "$reference_rows"
+printf '%s\n' "$reference_rows" | docker run --rm -i -v "$GPX_VOLUME:/app/storage:ro" \
+  "$APP_IMAGE" python scripts/validate_restore_gpx_references.py --storage-root /app/storage/media
+
+# Endpoint checks must exercise a currently approved version. Historical
+# versions remain part of the exhaustive validation above, but are not the
+# payload selected by the public route endpoint.
+approved_row="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --dbname=bikemapy \
+  --tuples-only --no-align --field-separator=$'\t' \
+  --command="SELECT route.id, version.original_gpx_storage_key, version.checksum FROM catalogue_route route JOIN catalogue_routeversion version ON version.id = route.current_approved_version_id WHERE route.lifecycle = 'published' AND version.original_gpx_storage_key <> '' AND version.payload_removed_at IS NULL ORDER BY route.id LIMIT 1")"
+IFS=$'\t' read -r route_id gpx_key expected_gpx_sha <<< "$approved_row"
+test -n "$route_id" && test -n "$gpx_key" && test -n "$expected_gpx_sha"
 restored_gpx_sha="$(docker run --rm -v "$GPX_VOLUME:/data:ro" alpine \
   sh -c 'set -eu; file="/data/media/$1"; test -s "$file"; sha256sum "$file" | awk "{print \$1}"' \
   sh "$gpx_key")"
 test "$restored_gpx_sha" = "$expected_gpx_sha"
-docker run --rm -v "$GPX_VOLUME:/app/storage:ro" \
-  -e DJANGO_MEDIA_ROOT=/app/storage/media "$APP_IMAGE" \
-  python scripts/validate_restore_gpx.py "/app/storage/media/$gpx_key"
 
 # Start the real application image against the restored targets. These checks
 # cover startup, database/cache readiness, representative catalogue reads,

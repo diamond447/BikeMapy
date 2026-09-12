@@ -45,10 +45,14 @@ jobs:
             -e POSTGRES_DB=bikemapy -e POSTGRES_USER=bikemapy -e POSTGRES_PASSWORD=drill-only \
             bikemapy-restore-drill-backend uv run --locked --no-dev python backend/manage.py migrate --noinput
           cp deploy/restore-drill-fixture.gpx gpx-drill/media/gpx/routes/restore-drill.gpx
+          cp deploy/restore-drill-history.gpx gpx-drill/media/gpx/routes/restore-drill-history.gpx
           gpx_sha256="$(sha256sum gpx-drill/media/gpx/routes/restore-drill.gpx | awk '{print $1}')"
+          gpx_history_sha256="$(sha256sum gpx-drill/media/gpx/routes/restore-drill-history.gpx | awk '{print $1}')"
           docker run --rm --network bikemapy-drill-network \
             -e POSTGRES_DB=bikemapy -e POSTGRES_USER=bikemapy -e POSTGRES_PASSWORD=drill-only \
             -e GPX_SHA256="$gpx_sha256" -e GPX_STORAGE_KEY=gpx/routes/restore-drill.gpx \
+            -e GPX_HISTORY_SHA256="$gpx_history_sha256" \
+            -e GPX_HISTORY_STORAGE_KEY=gpx/routes/restore-drill-history.gpx \
             bikemapy-restore-drill-backend uv run --locked --no-dev python scripts/seed_restore_drill.py
           docker exec bikemapy-drill-source pg_dump -U bikemapy -Fc bikemapy > "backup/db-${BACKUP_ID}.dump"
           tar czf "backup/gpx-${BACKUP_ID}.tar.gz" -C gpx-drill .

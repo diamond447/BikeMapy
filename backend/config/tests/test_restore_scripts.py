@@ -1,8 +1,11 @@
+import hashlib
 import os
 import subprocess
 import sys
 import tarfile
 from pathlib import Path
+
+import pytest
 
 
 def test_restore_failure_path_restores_database_and_gpx_pair() -> None:
@@ -53,6 +56,9 @@ def test_restore_drill_uses_full_schema_disposable_volume_and_application_checks
     assert 'docker volume create "$GPX_VOLUME"' in drill
     assert 'docker volume rm "$GPX_VOLUME"' in drill
     assert "original_gpx_storage_key" in drill
+    assert "payload_removed_at IS NULL" in drill
+    assert "current_approved_version_id" in drill
+    assert "validate_restore_gpx_references.py" in drill
     assert "restored_gpx_sha" in drill
     assert "DRILL_GPX_SHA" in drill
     assert "/health/ready/" in drill
@@ -61,6 +67,7 @@ def test_restore_drill_uses_full_schema_disposable_volume_and_application_checks
     assert "python backend/manage.py migrate --noinput" in workflow
     assert "python scripts/seed_restore_drill.py" in workflow
     assert "restore-drill-fixture.gpx" in workflow
+    assert "restore-drill-history.gpx" in workflow
     assert "GPX_SHA256" in seed
     assert "original_gpx_storage_key=storage_key" in seed
 
@@ -96,6 +103,88 @@ def test_restore_gpx_validator_accepts_fixture_and_rejects_semantically_invalid_
     assert "valid" in valid_result.stdout
     assert invalid_result.returncode == 1
     assert "no direct route points" in invalid_result.stderr
+
+
+def test_restore_gpx_references_validates_all_rows(tmp_path: Path) -> None:
+    root = Path(__file__).parents[3]
+    validator = root / "scripts" / "validate_restore_gpx_references.py"
+    storage_root = tmp_path / "media"
+    first = storage_root / "gpx/routes/first.gpx"
+    second = storage_root / "gpx/routes/second.gpx"
+    first.parent.mkdir(parents=True)
+    first.write_bytes((root / "deploy/restore-drill-fixture.gpx").read_bytes())
+    second.write_bytes((root / "deploy/restore-drill-history.gpx").read_bytes())
+    rows = "\n".join(
+        [
+            f"1\tgpx/routes/first.gpx\t{_sha256(first)}\tfirst-route",
+            f"2\tgpx/routes/second.gpx\t{_sha256(second)}\tsecond-route",
+        ]
+    )
+
+    result = _run_reference_validator(validator, storage_root, rows)
+
+    assert result.returncode == 0
+    assert "version 1" in result.stdout
+    assert "version 2" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("missing", "is missing"),
+        ("checksum", "checksum mismatch"),
+        ("semantic", "no direct route points"),
+    ],
+)
+def test_restore_gpx_references_rejects_inconsistent_non_first_rows(
+    tmp_path: Path, case: str, expected_error: str
+) -> None:
+    root = Path(__file__).parents[3]
+    validator = root / "scripts" / "validate_restore_gpx_references.py"
+    storage_root = tmp_path / "media"
+    first = storage_root / "gpx/routes/first.gpx"
+    second = storage_root / "gpx/routes/second.gpx"
+    first.parent.mkdir(parents=True)
+    first.write_bytes((root / "deploy/restore-drill-fixture.gpx").read_bytes())
+    if case == "checksum":
+        second.write_bytes((root / "deploy/restore-drill-history.gpx").read_bytes())
+        expected_checksum = "0" * 64
+    elif case == "semantic":
+        second.write_text(
+            '<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1"><metadata /></gpx>'
+        )
+        expected_checksum = _sha256(second)
+    else:
+        expected_checksum = "0" * 64
+    rows = "\n".join(
+        [
+            f"1\tgpx/routes/first.gpx\t{_sha256(first)}\tfirst-route",
+            f"2\tgpx/routes/second.gpx\t{expected_checksum}\tsecond-route",
+        ]
+    )
+
+    result = _run_reference_validator(validator, storage_root, rows)
+
+    assert result.returncode == 1
+    assert expected_error in result.stderr
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _run_reference_validator(
+    validator: Path, storage_root: Path, rows: str
+) -> subprocess.CompletedProcess[str]:
+    environment = {**os.environ, "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3"}
+    return subprocess.run(
+        [sys.executable, str(validator), "--storage-root", str(storage_root)],
+        check=False,
+        input=f"{rows}\n",
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
 
 
 def test_gpx_archive_validation_rejects_corrupt_and_legacy_archives(tmp_path: Path) -> None:
