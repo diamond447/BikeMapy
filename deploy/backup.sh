@@ -12,10 +12,22 @@ mkdir -p "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 failure_marker="$BACKUP_DIR/backup-failed-${BACKUP_ID}"
 services_stopped=0
+# Capture the exact image reference before stopping writers. The environment
+# may already select a release candidate, but a backup failure must bring the
+# version that was serving traffic back instead of starting that candidate.
+previous_backend_image=""
+backend_container="$($COMPOSE ps -q backend 2>/dev/null || true)"
+if [[ -n "$backend_container" ]]; then
+  previous_backend_image="$(docker inspect --format '{{.Config.Image}}' "$backend_container" 2>/dev/null || true)"
+fi
 restart_services() {
   if (( services_stopped )); then
     services_stopped=0
-    if ! $COMPOSE up -d backend worker beat proxy; then
+    if [[ -z "$previous_backend_image" ]]; then
+      echo "WARNING: no previously running backend image was found; leaving writers stopped" >&2
+      return 0
+    fi
+    if ! BIKEMAPY_BACKEND_IMAGE="$previous_backend_image" $COMPOSE up -d --force-recreate backend worker beat proxy; then
       echo "WARNING: failed to restart services after backup" >&2
       return 1
     fi

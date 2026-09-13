@@ -8,7 +8,19 @@ services:
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
       DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
-    command: uv run --locked --no-dev gunicorn config.wsgi:application --logger-class config.gunicorn.JsonGunicornLogger --bind 0.0.0.0:8000 --workers ${WEB_WORKERS:-3} --error-logfile -
+    # A release must run migrations as a one-shot job before this service is
+    # started. Keep the guard in the long-running command as a second safety
+    # boundary so an accidentally started candidate cannot serve against an
+    # older schema.
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        echo 'migration preflight: checking applied schema' >&2 &&
+        uv run --locked --no-dev python backend/manage.py migrate --check --noinput &&
+        exec uv run --locked --no-dev gunicorn config.wsgi:application
+        --logger-class config.gunicorn.JsonGunicornLogger --bind 0.0.0.0:8000
+        --workers ${WEB_WORKERS:-3} --error-logfile -
     volumes:
       - gpx_data:/app/storage
     networks:
@@ -44,7 +56,13 @@ services:
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
       DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
-    command: uv run --locked --no-dev celery -A config worker --loglevel=INFO
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        echo 'migration preflight: checking applied schema' >&2 &&
+        uv run --locked --no-dev python backend/manage.py migrate --check --noinput &&
+        exec uv run --locked --no-dev celery -A config worker --loglevel=INFO
     volumes:
       - gpx_data:/app/storage
     depends_on:
@@ -63,7 +81,13 @@ services:
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
       DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
-    command: uv run --locked --no-dev celery -A config beat --loglevel=INFO
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        echo 'migration preflight: checking applied schema' >&2 &&
+        uv run --locked --no-dev python backend/manage.py migrate --check --noinput &&
+        exec uv run --locked --no-dev celery -A config beat --loglevel=INFO
     depends_on:
       db:
         condition: service_healthy

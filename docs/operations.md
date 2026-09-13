@@ -61,11 +61,14 @@ and `/health/crawler/` as applicable; a healthy API does not prove that the
 crawler is current.
 
 Migrations and other maintenance commands are one-shot jobs. Run them with
-`docker compose run --rm backend ...` (as in the deployment runbook), never
-with `docker compose up`; the command must finish or fail visibly and must not
-be retried indefinitely by a restart policy. The backup and restore scripts
-stop writers during their maintenance window and explicitly start the
-long-running services again.
+`docker compose run --rm --no-deps backend ...` (as in the deployment runbook),
+never with `docker compose up`; the command must finish or fail visibly and
+must not be retried indefinitely by a restart policy. The production web,
+worker, and scheduler commands run `migrate --check` before starting, so an
+unmigrated candidate exits instead of serving against an older schema. The
+backup and restore scripts stop writers during their maintenance window and
+the backup recovery trap restarts the exact image that was running before the
+window (or leaves writers stopped if no previous backend exists).
 
 The disposable production Compose smoke kills each of the six services and
 asserts that Docker reports a running container with an increased restart
