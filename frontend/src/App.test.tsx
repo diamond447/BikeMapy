@@ -306,6 +306,7 @@ describe('BikeMapy route discovery', () => {
     )
     expect(api).toHaveBeenCalledWith('/api/v1/routes/', {
       params: { query: { page: '2', page_size: '100' } },
+      signal: expect.any(AbortSignal),
     })
   })
 
@@ -345,6 +346,7 @@ describe('BikeMapy route discovery', () => {
     expect(screen.queryByRole('button', { name: /load more routes/i })).not.toBeInTheDocument()
     expect(api).toHaveBeenCalledWith('/api/v1/routes/', {
       params: { query: { page: '2', page_size: '100' } },
+      signal: expect.any(AbortSignal),
     })
   })
 
@@ -566,6 +568,100 @@ describe('BikeMapy route discovery', () => {
     await user.click(screen.getByRole('button', { name: /clear filters/i }))
     expect(search).toHaveValue('')
     expect(author).toHaveValue('')
+    expect(api).toHaveBeenCalled()
+  })
+
+  it('debounces rapid catalogue filters and aborts superseded list and viewport requests', async () => {
+    vi.restoreAllMocks()
+    const calls: Array<{
+      path: string
+      query: Record<string, unknown>
+      signal: AbortSignal | undefined
+    }> = []
+    let initialListResolve: ((value: unknown) => void) | undefined
+    let initialViewportResolve: ((value: unknown) => void) | undefined
+    const api = vi.spyOn(apiClient, 'GET').mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      const request = options as {
+        params?: { query?: Record<string, unknown> }
+        signal?: AbortSignal
+      }
+      const query = request.params?.query ?? {}
+      calls.push({ path, query, signal: request.signal })
+      if (path === '/api/v1/routes/' && calls.filter((call) => call.path === path).length === 1)
+        return new Promise((resolve) => {
+          initialListResolve = resolve
+        }) as never
+      if (
+        path.includes('/viewport/') &&
+        calls.filter((call) => call.path.includes('/viewport/')).length === 1
+      )
+        return new Promise((resolve) => {
+          initialViewportResolve = resolve
+        }) as never
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({
+        data: { count: 1, next: null, previous: null, results: [secondRoute] },
+        error: undefined,
+      }) as never
+    }) as never)
+
+    render(<App />)
+    await waitFor(() =>
+      expect(calls.filter((call) => call.path === '/api/v1/routes/')).toHaveLength(1),
+    )
+    await waitFor(() =>
+      expect(calls.filter((call) => call.path.includes('/viewport/'))).toHaveLength(1),
+    )
+
+    fireEvent.change(screen.getByRole('searchbox', { name: /search routes/i }), {
+      target: { value: 'r' },
+    })
+    fireEvent.change(screen.getByRole('searchbox', { name: /search routes/i }), {
+      target: { value: 'ridge' },
+    })
+    fireEvent.change(screen.getByLabelText('Distance from (m)'), {
+      target: { value: '1' },
+    })
+    fireEvent.change(screen.getByLabelText('Distance from (m)'), {
+      target: { value: '1000' },
+    })
+
+    await waitFor(() => {
+      expect(
+        calls.filter(
+          (call) => call.query.search === 'ridge' && call.query.min_distance_m === '1000',
+        ),
+      ).toHaveLength(2)
+    })
+    expect(calls.filter((call) => call.path === '/api/v1/routes/')).toHaveLength(2)
+    expect(calls.filter((call) => call.path.includes('/viewport/'))).toHaveLength(2)
+    expect(calls[0].signal?.aborted).toBe(true)
+    expect(calls[1].signal?.aborted).toBe(true)
+
+    initialListResolve?.({
+      data: { count: 1, next: null, previous: null, results: [route] },
+      error: undefined,
+    })
+    initialViewportResolve?.({
+      data: {
+        mode: 'heatmap',
+        zoom: 7,
+        data_zoom: 7,
+        cells: [],
+        routes: [],
+        truncated: false,
+      },
+      error: undefined,
+    })
+    expect(await screen.findByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /south ridge loop/i })).not.toBeInTheDocument()
     expect(api).toHaveBeenCalled()
   })
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { apiClient } from '../api/client'
 import type { Filters, Route, ViewState } from './types'
+import { useDebouncedFilters } from './useDebouncedFilters'
 
 export type RouteListState = {
   routes: Route[]
@@ -55,6 +56,8 @@ export function useRouteList(
 ) {
   const [state, setState] = useState<RouteListState>(emptyState)
   const requestIdRef = useRef(0)
+  const requestControllerRef = useRef<AbortController | null>(null)
+  const debouncedFilters = useDebouncedFilters(filters)
   const paginationRef = useRef<{
     requestId: number
     requested: Set<string>
@@ -63,7 +66,7 @@ export function useRouteList(
   }>({ requestId: 0, requested: new Set(), visited: new Set(), inFlight: false })
   const query = useMemo(() => {
     const params = new URLSearchParams({ page_size: '100' })
-    Object.entries(filters).forEach(([key, value]) => {
+    Object.entries(debouncedFilters).forEach(([key, value]) => {
       if (value) params.set(key, value)
     })
     if (viewportOnly && view.bounds) {
@@ -73,10 +76,22 @@ export function useRouteList(
       params.set('north', String(view.bounds[3]))
     }
     return params.toString()
-  }, [filters, view.bounds, viewportOnly])
+  }, [debouncedFilters, view.bounds, viewportOnly])
+
+  const previousFiltersRef = useRef(filters)
+  useEffect(() => {
+    if (previousFiltersRef.current === filters) return
+    previousFiltersRef.current = filters
+    requestIdRef.current += 1
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = null
+  }, [filters])
 
   useEffect(() => {
     const requestId = ++requestIdRef.current
+    const controller = new AbortController()
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = controller
     paginationRef.current = {
       requestId,
       requested: new Set(),
@@ -90,6 +105,7 @@ export function useRouteList(
     apiClient
       .GET('/api/v1/routes/', {
         params: { query: Object.fromEntries(new URLSearchParams(query)) } as never,
+        signal: controller.signal,
       })
       .then(({ data, error }) => {
         if (!active || requestIdRef.current !== requestId) return
@@ -130,6 +146,8 @@ export function useRouteList(
       })
     return () => {
       active = false
+      controller.abort()
+      if (requestControllerRef.current === controller) requestControllerRef.current = null
     }
   }, [copy.incompleteResults, copy.unavailable, query, retryToken])
 
@@ -168,6 +186,9 @@ export function useRouteList(
     }
     pagination.requested.add(nextRequest.key)
     pagination.inFlight = true
+    const controller = new AbortController()
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = controller
     setState((current) => ({
       ...current,
       loadingMore: true,
@@ -175,7 +196,10 @@ export function useRouteList(
       loadMoreRetryable: false,
     }))
     apiClient
-      .GET('/api/v1/routes/', { params: { query: nextRequest.query } as never })
+      .GET('/api/v1/routes/', {
+        params: { query: nextRequest.query } as never,
+        signal: controller.signal,
+      })
       .then(({ data, error }) => {
         if (requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
@@ -226,6 +250,9 @@ export function useRouteList(
           loadMoreError: error instanceof Error ? error.message : copy.unavailable,
           loadMoreRetryable: true,
         }))
+      })
+      .finally(() => {
+        if (requestControllerRef.current === controller) requestControllerRef.current = null
       })
   }, [copy.incompleteResults, copy.unavailable, state])
 
