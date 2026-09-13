@@ -14,6 +14,7 @@ import { RouteBrowser } from './components/RouteBrowser'
 import { RouteDetail } from './components/RouteDetail'
 import { ReportDialog } from './components/ReportDialog'
 import { MapStage } from './components/MapStage'
+import type { InteractionMode } from './components/interaction'
 import { translations } from './i18n/translations'
 import type { Language } from './i18n/types'
 import {
@@ -94,6 +95,11 @@ function App() {
   const mapNode = useRef<HTMLDivElement>(null)
   const panelNode = useRef<HTMLElement>(null)
   const detailNode = useRef<HTMLElement>(null)
+  const detailHeadingNode = useRef<HTMLHeadingElement>(null)
+  const originatingRouteRef = useRef<string | null>(initial.routeId)
+  const keyboardSelectionRef = useRef(false)
+  const pendingDetailFocusRef = useRef(false)
+  const pendingRouteListFocusRef = useRef<string | null>(null)
   const {
     routes,
     count,
@@ -176,8 +182,20 @@ function App() {
     setCanonical(permanentRouteUrl || `${PUBLIC_SITE_URL}/`)
   }, [copy.intro, copy.siteDescription, copy.siteTitle, language, permanentRouteUrl, selectedRoute])
   const selectRoute = useCallback(
-    (id: string | null, push = true) => {
-      if (!id) trackedRouteRef.current = null
+    (id: string | null, push = true, interaction: InteractionMode = 'programmatic') => {
+      if (!id) {
+        trackedRouteRef.current = null
+        pendingDetailFocusRef.current = false
+        pendingRouteListFocusRef.current =
+          interaction === 'keyboard' ? originatingRouteRef.current : null
+        originatingRouteRef.current = null
+        keyboardSelectionRef.current = false
+      } else {
+        pendingDetailFocusRef.current = interaction === 'keyboard'
+        originatingRouteRef.current = id
+        keyboardSelectionRef.current = interaction === 'keyboard'
+        pendingRouteListFocusRef.current = null
+      }
       setSelectedId(id)
       setOverlap(id ? [id] : [])
       if (window.innerWidth <= 700) {
@@ -185,6 +203,9 @@ function App() {
         if (id) {
           setPanelOpen(false)
           setMobileSheetPosition('full')
+        } else if (interaction === 'keyboard') {
+          setPanelOpen(true)
+          setMobileSheetPosition('half')
         } else {
           setMobileSheetPosition('collapsed')
         }
@@ -193,6 +214,24 @@ function App() {
     },
     [filters, view, viewportOnly],
   )
+
+  useEffect(() => {
+    if (!selectionVisible || !pendingDetailFocusRef.current) return
+    const heading = detailHeadingNode.current
+    if (!heading) return
+    pendingDetailFocusRef.current = false
+    heading.focus()
+  }, [selectedId, selectedRoute, selectionVisible])
+
+  useEffect(() => {
+    if (selectionVisible || !pendingRouteListFocusRef.current) return
+    const routeId = pendingRouteListFocusRef.current
+    pendingRouteListFocusRef.current = null
+    const card = Array.from(document.querySelectorAll<HTMLButtonElement>('.route-card')).find(
+      (candidate) => candidate.dataset.routeId === routeId,
+    )
+    ;(card ?? document.querySelector<HTMLElement>('.route-list'))?.focus()
+  }, [selectionVisible])
   const filtersRef = useRef(filters)
   const viewRef = useRef(view)
   const viewportOnlyRef = useRef(viewportOnly)
@@ -213,6 +252,10 @@ function App() {
     copy,
     onViewChange: setView,
     onRouteClick: (ids) => {
+      pendingDetailFocusRef.current = false
+      originatingRouteRef.current = ids[0]
+      keyboardSelectionRef.current = false
+      pendingRouteListFocusRef.current = null
       setOverlap(ids)
       setSelectedId(ids[0])
       writeUrl(filtersRef.current, viewRef.current, ids[0], 'push', viewportOnlyRef.current)
@@ -242,16 +285,33 @@ function App() {
   useEffect(() => {
     const handlePopState = () => {
       const next = parseState()
+      const returningToResults = !next.routeId && Boolean(selectedId)
+      const focusInDetail = Boolean(
+        detailNode.current && detailNode.current.contains(document.activeElement),
+      )
+      const restoreResultsFocus =
+        returningToResults && (keyboardSelectionRef.current || focusInDetail)
       setFilters(normalizeFilters(next.filters))
       setView(next.view)
       setSelectedId(next.routeId)
       setOverlap(next.routeId ? [next.routeId] : [])
       setViewportOnly(next.viewportOnly)
+      pendingDetailFocusRef.current = false
+      pendingRouteListFocusRef.current = restoreResultsFocus
+        ? (originatingRouteRef.current ?? selectedId)
+        : null
+      originatingRouteRef.current = next.routeId
+      keyboardSelectionRef.current = false
+      if (restoreResultsFocus && window.innerWidth <= 700) {
+        setPanelOpen(true)
+        setMobileSheetPosition('half')
+        setMobilePanelHeight(null)
+      }
       jumpTo(next.view)
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [jumpTo])
+  }, [jumpTo, selectedId])
   useEffect(() => {
     const panel = panelNode.current
     if (!panel) return
@@ -410,7 +470,7 @@ function App() {
             onViewportOnlyChange: setViewportOnly,
             onRetry: retry,
             onHover: setHoveredRouteId,
-            onSelectRoute: selectRoute,
+            onSelectRoute: (id, interaction) => selectRoute(id, true, interaction),
             onLoadMore: loadMore,
             onToggleLanguage: toggleLanguage,
           }}
@@ -418,6 +478,7 @@ function App() {
         {selectionVisible && (
           <RouteDetail
             detailNode={detailNode}
+            headingNode={detailHeadingNode}
             reportTriggerNode={report.triggerNode}
             copy={copy}
             language={language}
@@ -435,13 +496,13 @@ function App() {
               reportsEnabled: REPORTS_ENABLED,
             }}
             actions={{
-              onBack: () => selectRoute(null),
+              onBack: (interaction) => selectRoute(null, true, interaction),
               onNextOverlap: nextOverlap,
               onRetryMetadata: () => setMetadataRetryToken((current) => current + 1),
               onRetryGeometry: () => setGeometryRetryToken((current) => current + 1),
               onCopyLink: copyPermanentLink,
               onOpenReport: report.openForm,
-              onClose: () => selectRoute(null),
+              onClose: (interaction) => selectRoute(null, true, interaction),
               onToggleLanguage: toggleLanguage,
             }}
           />

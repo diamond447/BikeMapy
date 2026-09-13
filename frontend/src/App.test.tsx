@@ -250,6 +250,84 @@ describe('BikeMapy route discovery', () => {
     })
   })
 
+  it('moves focus into keyboard-opened detail and restores the originating card', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    const card = await screen.findByRole('button', { name: /south ridge loop/i })
+    card.focus()
+    await user.keyboard('{Enter}')
+
+    const heading = await screen.findByRole('heading', { name: /south ridge loop/i })
+    expect(heading).toHaveFocus()
+
+    const back = screen.getByRole('button', { name: /back to results/i })
+    back.focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(card).toHaveFocus())
+  })
+
+  it('restores the originating card when browser Back returns to results', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    const card = await screen.findByRole('button', { name: /south ridge loop/i })
+    card.focus()
+    await user.keyboard('{Enter}')
+    await screen.findByRole('heading', { name: /south ridge loop/i })
+
+    window.history.back()
+    await waitFor(() => expect(card).toHaveFocus())
+  })
+
+  it('does not move focus into detail for pointer selection', async () => {
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    const card = await screen.findByRole('button', { name: /south ridge loop/i })
+    await user.click(card)
+    await screen.findByRole('heading', { name: /south ridge loop/i })
+    expect(screen.getByRole('heading', { name: /south ridge loop/i })).not.toHaveFocus()
+
+    const close = screen.getByRole('button', { name: /close route details/i })
+    close.focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(card).toHaveFocus())
+  })
+
+  it('does not move focus for a route opened from the URL', async () => {
+    window.history.replaceState({}, '', `/?route=${route.id}`)
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    const heading = await screen.findByRole('heading', { name: /south ridge loop/i })
+    expect(heading).not.toHaveFocus()
+
+    const close = screen.getByRole('button', { name: /close route details/i })
+    close.focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /south ridge loop/i })).toHaveFocus(),
+    )
+  })
+
+  it('returns focus to the route list when a keyboard-close target is not listed', async () => {
+    window.history.replaceState({}, '', `/?route=${remoteRoute.id}`)
+    vi.restoreAllMocks()
+    mockApi(true)
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: /remote route outside page/i })
+    const close = screen.getByRole('button', { name: /close route details/i })
+    close.focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(document.querySelector('.route-list')).toHaveFocus())
+  })
+
   it('appends API pages through keyboard activation and keeps the selected route', async () => {
     vi.restoreAllMocks()
     const routeCalls: Array<Record<string, string>> = []

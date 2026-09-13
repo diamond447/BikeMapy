@@ -11,6 +11,7 @@ import {
   routeStatus,
 } from './RouteDetailParts'
 import { SidebarFooter } from './SidebarFooter'
+import { interactionFromClick, type InteractionMode } from './interaction'
 
 type RouteDetailData = {
   selectedRoute: Route | null | undefined
@@ -27,18 +28,19 @@ type RouteDetailData = {
 }
 
 type RouteDetailActions = {
-  onBack: () => void
+  onBack: (interaction: InteractionMode) => void
   onNextOverlap: (direction: number) => void
   onRetryMetadata: () => void
   onRetryGeometry: () => void
   onCopyLink: () => void
   onOpenReport: () => void
-  onClose: () => void
+  onClose: (interaction: InteractionMode) => void
   onToggleLanguage: () => void
 }
 
 export type RouteDetailProps = {
   detailNode: RefObject<HTMLElement | null>
+  headingNode: RefObject<HTMLHeadingElement | null>
   reportTriggerNode: RefObject<HTMLButtonElement | null>
   copy: Copy
   language: Language
@@ -48,6 +50,7 @@ export type RouteDetailProps = {
 
 export function RouteDetail({
   detailNode,
+  headingNode,
   reportTriggerNode,
   copy,
   language,
@@ -79,7 +82,11 @@ export function RouteDetail({
   } = actions
   return (
     <section ref={detailNode} className="route-detail" aria-labelledby="route-detail-title">
-      <button type="button" className="back-results" onClick={onBack}>
+      <button
+        type="button"
+        className="back-results"
+        onClick={(event) => onBack(interactionFromClick(event.detail))}
+      >
         ← {copy.backToResults}
       </button>
       <div className="detail-kicker">
@@ -102,7 +109,7 @@ export function RouteDetail({
           </span>
         )}
       </div>
-      <h2 id="route-detail-title">
+      <h2 id="route-detail-title" ref={headingNode} tabIndex={-1}>
         {selectedRoute?.title ??
           (selectedMetadataLoading ? copy.loadingRoute : copy.detailsUnavailable)}
       </h2>
@@ -225,7 +232,7 @@ export function RouteDetail({
       <button
         type="button"
         className="close-detail"
-        onClick={onClose}
+        onClick={(event) => onClose(interactionFromClick(event.detail))}
         aria-label={copy.closeDetails}
       >
         ×

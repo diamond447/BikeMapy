@@ -2,6 +2,7 @@ import type { RefObject } from 'react'
 
 import { hasMetric } from './RouteDetailParts'
 import { SidebarFooter } from './SidebarFooter'
+import { interactionFromClick, type InteractionMode } from './interaction'
 import type { Filters, Route } from '../discovery/types'
 import type { Copy, Language } from '../i18n/types'
 
@@ -38,7 +39,7 @@ type RouteBrowserActions = {
   onViewportOnlyChange: (value: boolean) => void
   onRetry: () => void
   onHover: (id: string | null) => void
-  onSelectRoute: (id: string) => void
+  onSelectRoute: (id: string, interaction: InteractionMode) => void
   onLoadMore: () => void
   onToggleLanguage: () => void
 }
@@ -199,7 +200,7 @@ export function RouteBrowser({ panelNode, copy, language, data, ui, actions }: R
             </button>
           </div>
         )}
-        <nav className="route-list" aria-label={copy.routes}>
+        <nav className="route-list" aria-label={copy.routes} tabIndex={-1}>
           {routes.map((route) => (
             <button
               key={route.id}
@@ -210,7 +211,8 @@ export function RouteBrowser({ panelNode, copy, language, data, ui, actions }: R
               onMouseLeave={() => onHover(null)}
               onFocus={() => onHover(route.id)}
               onBlur={() => onHover(null)}
-              onClick={() => onSelectRoute(route.id)}
+              onClick={(event) => onSelectRoute(route.id, interactionFromClick(event.detail))}
+              data-route-id={route.id}
             >
               <span className="route-card-marker" aria-hidden="true">
                 {route.id === selectedId ? '◆' : '◇'}
