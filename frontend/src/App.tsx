@@ -97,6 +97,7 @@ function App() {
   const detailNode = useRef<HTMLElement>(null)
   const detailHeadingNode = useRef<HTMLHeadingElement>(null)
   const originatingRouteRef = useRef<string | null>(initial.routeId)
+  const keyboardSelectionRef = useRef(false)
   const pendingDetailFocusRef = useRef(false)
   const pendingRouteListFocusRef = useRef<string | null>(null)
   const {
@@ -188,9 +189,11 @@ function App() {
         pendingRouteListFocusRef.current =
           interaction === 'keyboard' ? originatingRouteRef.current : null
         originatingRouteRef.current = null
+        keyboardSelectionRef.current = false
       } else {
         pendingDetailFocusRef.current = interaction === 'keyboard'
         originatingRouteRef.current = id
+        keyboardSelectionRef.current = interaction === 'keyboard'
         pendingRouteListFocusRef.current = null
       }
       setSelectedId(id)
@@ -251,6 +254,7 @@ function App() {
     onRouteClick: (ids) => {
       pendingDetailFocusRef.current = false
       originatingRouteRef.current = ids[0]
+      keyboardSelectionRef.current = false
       pendingRouteListFocusRef.current = null
       setOverlap(ids)
       setSelectedId(ids[0])
@@ -282,17 +286,23 @@ function App() {
     const handlePopState = () => {
       const next = parseState()
       const returningToResults = !next.routeId && Boolean(selectedId)
+      const focusInDetail = Boolean(
+        detailNode.current && detailNode.current.contains(document.activeElement),
+      )
+      const restoreResultsFocus =
+        returningToResults && (keyboardSelectionRef.current || focusInDetail)
       setFilters(normalizeFilters(next.filters))
       setView(next.view)
       setSelectedId(next.routeId)
       setOverlap(next.routeId ? [next.routeId] : [])
       setViewportOnly(next.viewportOnly)
       pendingDetailFocusRef.current = false
-      pendingRouteListFocusRef.current = returningToResults
+      pendingRouteListFocusRef.current = restoreResultsFocus
         ? (originatingRouteRef.current ?? selectedId)
         : null
       originatingRouteRef.current = next.routeId
-      if (returningToResults && window.innerWidth <= 700) {
+      keyboardSelectionRef.current = false
+      if (restoreResultsFocus && window.innerWidth <= 700) {
         setPanelOpen(true)
         setMobileSheetPosition('half')
         setMobilePanelHeight(null)

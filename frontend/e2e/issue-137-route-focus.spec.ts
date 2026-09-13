@@ -102,6 +102,29 @@ test('keyboard close returns focus after pointer and URL route selection', async
   await expect(page.locator('.route-list')).toBeFocused()
 })
 
+test('mobile browser Back after pointer selection does not apply keyboard restoration', async ({
+  page,
+}) => {
+  await installFixtures(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await page.getByRole('button', { name: /show routes/i }).click()
+  await page.getByRole('button', { name: /south ridge loop/i }).click()
+
+  const mapStage = page.locator('.map-stage')
+  await mapStage.evaluate((element) => {
+    element.setAttribute('tabindex', '-1')
+    ;(element as HTMLElement).focus()
+  })
+  await page.goBack()
+  await expect(page.locator('.route-sheet .route-detail')).toHaveCount(0)
+  await expect(page.locator('[data-testid="sheet-position"]')).not.toHaveAttribute(
+    'data-position',
+    'half',
+  )
+  await expect(mapStage).toBeFocused()
+})
+
 test('mobile keyboard route navigation moves into detail and restores the card', async ({
   page,
 }) => {
