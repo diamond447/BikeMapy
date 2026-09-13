@@ -6,4 +6,5 @@ interface ImportMetaEnv {
   readonly VITE_API_URL?: string
   /** Set to false for read-only Cloudflare pull-request previews. */
   readonly VITE_ENABLE_REPORTS?: string
+  readonly VITE_TURNSTILE_SITE_KEY?: string
 }

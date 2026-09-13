@@ -141,6 +141,17 @@ starting their long-running process. This is a startup guard, not a migration
 mechanism: a release must still run the migration as a one-shot command and
 must not start the candidate until that command succeeds.
 
+Production Compose sets `BIKEMAPY_DEPLOYMENT_MODE=production`. Django refuses to
+start in that mode unless `DJANGO_SECRET_KEY` is explicitly supplied, is at
+least 50 characters long, has sufficient variation, and is not a documented
+placeholder or development default. Generate it with a password manager or a
+cryptographically secure generator, for example `openssl rand -base64 48`,
+and keep it only in the host's `.env.production` file. The frontend production
+build likewise requires `VITE_API_URL` to be an absolute public HTTPS DNS
+origin; IP literals and private-name suffixes are rejected. When
+`VITE_ENABLE_REPORTS` is enabled it also requires the public
+`VITE_TURNSTILE_SITE_KEY`. These checks run before an artifact is produced.
+
 The repository does not assume a homeserver exists. When one is available,
 install `cloudflared` on that host and route a named tunnel to the local Nginx
 listener. The tunnel is outbound-only; no router port-forward is needed:

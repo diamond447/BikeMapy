@@ -26,7 +26,7 @@ test:
 check: lint typecheck test build
 
 build:
-	cd frontend && VITE_PUBLIC_SITE_URL=$${VITE_PUBLIC_SITE_URL:-http://localhost:5173} corepack pnpm build
+	cd frontend && VITE_PUBLIC_SITE_URL=$${VITE_PUBLIC_SITE_URL:-http://localhost:5173} VITE_API_URL=$${VITE_API_URL:-https://api.example.invalid} VITE_ENABLE_REPORTS=$${VITE_ENABLE_REPORTS:-false} corepack pnpm build
 
 format:
 	$(UV) run --locked --extra dev ruff format backend

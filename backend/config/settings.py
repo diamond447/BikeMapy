@@ -16,8 +16,44 @@ def env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "local-development-key-do-not-use-in-production")
+LOCAL_DEVELOPMENT_SECRET_KEY = "local-development-key-do-not-use-in-production"
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", LOCAL_DEVELOPMENT_SECRET_KEY)
 DEPLOYMENT_MODE = os.getenv("BIKEMAPY_DEPLOYMENT_MODE", "local").lower()
+
+
+def validate_production_secret_key(secret_key: str | None) -> None:
+    """Reject absent, placeholder, and obviously weak signing keys in production."""
+
+    if not secret_key or not secret_key.strip():
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY must be explicitly configured in production deployments"
+        )
+
+    normalized = secret_key.strip().lower()
+    placeholder_markers = (
+        "change-me",
+        "changeme",
+        "do-not-use",
+        "example",
+        "local-development",
+        "placeholder",
+        "replace-with",
+        "your-",
+    )
+    if len(secret_key.strip()) < 50 or len(set(secret_key.strip())) < 12:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY must be at least 50 characters and contain sufficient variation"
+        )
+    if normalized.startswith("django-insecure-"):
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY must not use Django's insecure generated-key prefix"
+        )
+    if any(marker in normalized for marker in placeholder_markers):
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY must not contain a placeholder value")
+
+
+if DEPLOYMENT_MODE == "production":
+    validate_production_secret_key(os.getenv("DJANGO_SECRET_KEY"))
 if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
     raise ImproperlyConfigured(
         "DJANGO_DEBUG must be explicitly set to false in production deployments"

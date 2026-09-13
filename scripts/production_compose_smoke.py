@@ -413,7 +413,7 @@ def main() -> None:
                     "POSTGRES_HOST=db",
                     "POSTGRES_PORT=5432",
                     "DJANGO_DEBUG=false",
-                    "DJANGO_SECRET_KEY=compose-smoke-only-secret",
+                    "DJANGO_SECRET_KEY=compose-smoke-only-secret-9f7b3c1d5e8a2b4c6d0f9e1a3b5c7d9e2f4a6b8c0d2e4f6a8b1c3d5e7f9",
                     f"DJANGO_ALLOWED_HOSTS={PUBLIC_HOST},backend",
                     "DJANGO_DATABASE_ENGINE=django.contrib.gis.db.backends.postgis",
                     "DJANGO_CACHE_URL=redis://redis:6379/1",
