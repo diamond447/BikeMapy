@@ -25,9 +25,9 @@ function siteMetadataPlugin(siteUrl: string): Plugin {
   }
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  if (mode === 'production') {
+  if (command === 'build') {
     if (!env.VITE_PUBLIC_SITE_URL?.trim()) {
       throw new Error('VITE_PUBLIC_SITE_URL is required for production builds')
     }

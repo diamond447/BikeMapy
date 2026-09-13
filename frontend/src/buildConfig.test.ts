@@ -1,4 +1,7 @@
+// @vitest-environment node
+
 import { describe, expect, it } from 'vitest'
+import viteConfig from '../vite.config'
 
 import {
   reportsEnabled,
@@ -7,14 +10,49 @@ import {
 } from './buildConfig'
 
 describe('production build configuration', () => {
-  it('accepts a local API origin for local builds', () => {
-    expect(validateApiOrigin('http://localhost:8000')).toBe('http://localhost:8000')
+  it('validates alternate Vite build modes while leaving dev serve defaults alone', () => {
+    const resolveConfig = viteConfig as unknown as (configEnv: {
+      command: 'build' | 'serve'
+      mode: string
+    }) => unknown
+    const previous = {
+      site: process.env.VITE_PUBLIC_SITE_URL,
+      api: process.env.VITE_API_URL,
+      reports: process.env.VITE_ENABLE_REPORTS,
+    }
+    process.env.VITE_PUBLIC_SITE_URL = 'https://www.example.test'
+    process.env.VITE_API_URL = 'https://api.example.test'
+    process.env.VITE_ENABLE_REPORTS = 'false'
+
+    try {
+      expect(() => resolveConfig({ command: 'build', mode: 'staging' })).not.toThrow()
+      delete process.env.VITE_API_URL
+      expect(() => resolveConfig({ command: 'build', mode: 'staging' })).toThrow('VITE_API_URL')
+      expect(() => resolveConfig({ command: 'serve', mode: 'development' })).not.toThrow()
+    } finally {
+      if (previous.site === undefined) delete process.env.VITE_PUBLIC_SITE_URL
+      else process.env.VITE_PUBLIC_SITE_URL = previous.site
+      if (previous.api === undefined) delete process.env.VITE_API_URL
+      else process.env.VITE_API_URL = previous.api
+      if (previous.reports === undefined) delete process.env.VITE_ENABLE_REPORTS
+      else process.env.VITE_ENABLE_REPORTS = previous.reports
+    }
   })
 
   it.each([
     undefined,
     '',
     'localhost:8000',
+    'http://api.example.test',
+    'http://localhost:8000',
+    'https://localhost:8000',
+    'https://127.0.0.1:8000',
+    'https://10.0.0.1',
+    'https://169.254.1.1',
+    'https://172.16.0.1',
+    'https://192.168.1.20',
+    'https://[::1]',
+    'https://service.local',
     'ftp://api.example.test',
     'https://api.example.test/v1',
   ])('rejects an invalid API origin: %s', (value) => {

@@ -87,6 +87,11 @@ def test_production_mode_rejects_missing_debug_setting() -> None:
             "replace-with-a-long-random-secret-but-not-one-123456789",
             "placeholder",
         ),
+        (
+            "django-generated",
+            "django-insecure-9f7b3c1d5e8a2b4c6d0f9e1a3b5c7d9e2f4a6b8c0d2e4f6a8b1c3d5e7f9",
+            "insecure generated-key prefix",
+        ),
         ("short", "too-short", "at least 50"),
         ("repeated", "a" * 64, "sufficient variation"),
     ],

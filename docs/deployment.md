@@ -147,7 +147,7 @@ least 50 characters long, has sufficient variation, and is not a documented
 placeholder or development default. Generate it with a password manager or a
 cryptographically secure generator, for example `openssl rand -base64 48`,
 and keep it only in the host's `.env.production` file. The frontend production
-build likewise requires `VITE_API_URL` to be an absolute HTTP(S) origin; when
+build likewise requires `VITE_API_URL` to be an absolute public HTTPS origin; when
 `VITE_ENABLE_REPORTS` is enabled it also requires the public
 `VITE_TURNSTILE_SITE_KEY`. These checks run before an artifact is produced.
 

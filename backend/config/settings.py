@@ -44,6 +44,10 @@ def validate_production_secret_key(secret_key: str | None) -> None:
         raise ImproperlyConfigured(
             "DJANGO_SECRET_KEY must be at least 50 characters and contain sufficient variation"
         )
+    if normalized.startswith("django-insecure-"):
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY must not use Django's insecure generated-key prefix"
+        )
     if any(marker in normalized for marker in placeholder_markers):
         raise ImproperlyConfigured("DJANGO_SECRET_KEY must not contain a placeholder value")
 

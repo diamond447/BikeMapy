@@ -1,8 +1,37 @@
 export type BuildEnvironment = Record<string, string | undefined>
 
-const API_PROTOCOLS = new Set(['http:', 'https:'])
+const API_PROTOCOL = 'https:'
 
-/** Validate the public API origin consumed by the browser bundle. */
+function isNonPublicHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized.endsWith('.local') ||
+    normalized === '0.0.0.0' ||
+    normalized === '::' ||
+    normalized === '::1' ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    normalized.startsWith('fe80:')
+  ) {
+    return true
+  }
+
+  const octets = normalized.split('.').map(Number)
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) return false
+  const [first, second] = octets
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  )
+}
+
+/** Validate the public HTTPS API origin consumed by a deployable bundle. */
 export function validateApiOrigin(value: string | undefined): string {
   const configured = value?.trim()
   if (!configured) {
@@ -13,18 +42,19 @@ export function validateApiOrigin(value: string | undefined): string {
   try {
     url = new URL(configured)
   } catch {
-    throw new Error('VITE_API_URL must be an absolute HTTP(S) origin')
+    throw new Error('VITE_API_URL must be an absolute public HTTPS origin')
   }
 
   if (
-    !API_PROTOCOLS.has(url.protocol) ||
+    url.protocol !== API_PROTOCOL ||
+    isNonPublicHostname(url.hostname) ||
     url.username ||
     url.password ||
     url.pathname !== '/' ||
     url.search ||
     url.hash
   ) {
-    throw new Error('VITE_API_URL must be an absolute HTTP(S) origin')
+    throw new Error('VITE_API_URL must be an absolute public HTTPS origin')
   }
 
   return url.origin
