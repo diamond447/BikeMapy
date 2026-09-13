@@ -29,6 +29,11 @@ The image contains application code, locked runtime dependencies, and the
 collected Django static assets under `/app/staticfiles`. In production,
 WhiteNoise serves that immutable asset set through the Nginx `/static/` proxy;
 the development Compose stack leaves static serving to Django's runserver.
+The backend image uses the repository root as its Docker context, with
+`.dockerignore` excluding runtime configuration, backups, restore artifacts,
+and local-only files. The Dockerfile then copies only `backend/` and the
+runtime `scripts/` directory into the image; deployment files and operational
+data are not image inputs.
 Secrets, database data, GPX files, OAuth credentials, and deployment settings
 remain in the host environment or Docker volumes. Keep `.env.production` on
 the host and restrict its permissions (`chmod 600`). The production Compose
