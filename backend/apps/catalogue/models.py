@@ -243,6 +243,11 @@ class ImmutableSourceQuerySet(models.QuerySet["RouteSource"]):
 
 
 class ImmutableVersionQuerySet(models.QuerySet["RouteVersion"]):
+    def update(self, **kwargs: object) -> int:
+        if "elevation_profile" in kwargs:
+            raise ValidationError({"elevation_profile": "Historical version content is immutable."})
+        return super().update(**kwargs)
+
     def delete(self) -> tuple[int, dict[str, int]]:
         raise ProtectedError("Historical route versions cannot be deleted.", set(self))
 

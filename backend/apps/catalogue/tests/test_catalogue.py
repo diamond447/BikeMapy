@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -188,6 +189,27 @@ def test_source_and_versions_are_idempotent_and_version_changes_are_immutable(
     assert source.processing_status == ProcessingStatus.VALID
     assert source.last_checked_at is not None
     assert source.last_successful_check_at is not None
+
+
+def test_new_route_versions_accept_distinct_elevation_profiles(
+    forum_context: tuple[ForumPost, Route],
+) -> None:
+    post, route = forum_context
+    source, _ = register_source(route=route, post=post, mapy_url="https://mapy.com/s/profiles")
+    first, _ = record_route_version(
+        source=source,
+        checksum="profile-one",
+        elevation_profile=[{"distance_m": 0.0, "elevation_m": 120.0}],
+    )
+    second, _ = record_route_version(
+        source=source,
+        checksum="profile-two",
+        elevation_profile=[{"distance_m": 0.0, "elevation_m": 310.0}],
+    )
+
+    assert first.version_number == 1
+    assert second.version_number == 2
+    assert first.elevation_profile != second.elevation_profile
 
 
 def test_publication_requires_valid_version_and_optional_metadata_does_not_gate_it(
@@ -492,6 +514,7 @@ def test_route_version_content_is_immutable_but_payload_removal_is_explicit(
         checksum="immutable",
         storage_key="gpx/immutable.gpx",
         distance_m=Decimal("20.0"),
+        elevation_profile=[{"distance_m": 0.0, "elevation_m": 180.0}],
     )
     approve_version(version)
     version.refresh_from_db()
@@ -514,6 +537,22 @@ def test_route_version_content_is_immutable_but_payload_removal_is_explicit(
     version.checksum = "changed"
     with pytest.raises(ValidationError):
         version.save()
+    version.refresh_from_db()
+    version.elevation_profile = [{"distance_m": 0.0, "elevation_m": 220.0}]
+    with pytest.raises(ValidationError):
+        version.save()
+    version.refresh_from_db()
+    with pytest.raises(ValidationError, match="elevation_profile"):
+        RouteVersion.objects.filter(pk=version.pk).update(
+            elevation_profile=[{"distance_m": 0.0, "elevation_m": 220.0}]
+        )
+    assert version.elevation_profile == [{"distance_m": 0.0, "elevation_m": 180.0}]
+    with pytest.raises((IntegrityError, ProgrammingError)), transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE catalogue_routeversion SET elevation_profile = %s WHERE id = %s",
+                [json.dumps([{"distance_m": 0.0, "elevation_m": 220.0}]), version.pk],
+            )
     version.refresh_from_db()
     with pytest.raises((IntegrityError, ProgrammingError)), transaction.atomic():
         RouteVersion.objects.filter(pk=version.pk).update(checksum="direct-change")
