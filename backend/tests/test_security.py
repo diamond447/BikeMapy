@@ -62,6 +62,7 @@ def test_production_mode_rejects_missing_debug_setting() -> None:
         {
             "BIKEMAPY_DEPLOYMENT_MODE": "production",
             "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "DJANGO_SECRET_KEY": "a9f7b3c1e5d8f0a2b4c6d8e1f3a5b7c9d2e4f6a8b0c2d4e6f8a1b3c5d7e9f2",
             "PYTHONPATH": "backend",
         }
     )
@@ -74,6 +75,69 @@ def test_production_mode_rejects_missing_debug_setting() -> None:
     )
     assert result.returncode != 0
     assert "DJANGO_DEBUG must be explicitly set to false" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("missing", None, "explicitly configured"),
+        ("default", "local-development-key-do-not-use-in-production", "at least 50"),
+        (
+            "placeholder",
+            "replace-with-a-long-random-secret-but-not-one-123456789",
+            "placeholder",
+        ),
+        ("short", "too-short", "at least 50"),
+        ("repeated", "a" * 64, "sufficient variation"),
+    ],
+)
+def test_production_mode_rejects_unsafe_signing_keys(
+    name: str, value: str | None, message: str
+) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "BIKEMAPY_DEPLOYMENT_MODE": "production",
+            "DJANGO_DEBUG": "false",
+            "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "PYTHONPATH": "backend",
+        }
+    )
+    if value is None:
+        environment.pop("DJANGO_SECRET_KEY", None)
+    else:
+        environment["DJANGO_SECRET_KEY"] = value
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config.settings"],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, name
+    assert message in result.stderr
+
+
+def test_production_mode_accepts_a_strong_signing_key() -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "BIKEMAPY_DEPLOYMENT_MODE": "production",
+            "DJANGO_DEBUG": "false",
+            "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "DJANGO_SECRET_KEY": "a9f7b3c1e5d8f0a2b4c6d8e1f3a5b7c9d2e4f6a8b0c2d4e6f8a1b3c5d7e9f2",
+            "PYTHONPATH": "backend",
+        }
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", "import config.settings"],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_production_transport_validation_rejects_insecure_cookie(monkeypatch: Any) -> None:

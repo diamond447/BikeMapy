@@ -4,6 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { trackProductEvent } from './analytics'
 import { normalizePublicSiteUrl, routeUrl } from './siteMetadata'
+import { reportsEnabled } from './buildConfig'
 import { useRouteList } from './discovery/useRouteList'
 import { useViewport } from './discovery/useViewport'
 import { useSelectedRoute } from './discovery/useSelectedRoute'
@@ -32,7 +33,7 @@ const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_
 const LANGUAGE_KEY = 'bikemapy:language'
 // Cloudflare preview builds set this to false. Keeping the guard at build time
 // means a preview contains only the public read API and has no report action.
-const REPORTS_ENABLED = import.meta.env.VITE_ENABLE_REPORTS !== 'false'
+const REPORTS_ENABLED = reportsEnabled(import.meta.env.VITE_ENABLE_REPORTS)
 
 function initialLanguage(): Language {
   try {

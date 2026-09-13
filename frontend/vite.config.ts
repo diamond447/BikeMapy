@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config'
 import { loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { normalizePublicSiteUrl, renderRobots, renderSitemap } from './src/siteMetadata'
+import { validateProductionBuildEnvironment } from './src/buildConfig'
 
 function siteMetadataPlugin(siteUrl: string): Plugin {
   return {
@@ -26,8 +27,11 @@ function siteMetadataPlugin(siteUrl: string): Plugin {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  if (mode === 'production' && !env.VITE_PUBLIC_SITE_URL?.trim()) {
-    throw new Error('VITE_PUBLIC_SITE_URL is required for production builds')
+  if (mode === 'production') {
+    if (!env.VITE_PUBLIC_SITE_URL?.trim()) {
+      throw new Error('VITE_PUBLIC_SITE_URL is required for production builds')
+    }
+    validateProductionBuildEnvironment(env)
   }
   const siteUrl = normalizePublicSiteUrl(env.VITE_PUBLIC_SITE_URL)
   return {

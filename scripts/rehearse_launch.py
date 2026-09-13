@@ -125,7 +125,9 @@ def runtime_env(
         "DJANGO_DATABASE_ENGINE": "django.contrib.gis.db.backends.postgis",
         "DJANGO_SETTINGS_MODULE": "config.settings",
         "DJANGO_DEBUG": "false",
-        "DJANGO_SECRET_KEY": "launch-rehearsal-only",
+        "DJANGO_SECRET_KEY": (
+            "launch-rehearsal-only-9f7b3c1d5e8a2b4c6d0f9e1a3b5c7d9e2f4a6b8c0d2e4f6a8b1c3d5e7f9"
+        ),
         "DJANGO_ALLOWED_HOSTS": "localhost,127.0.0.1,backend",
         "DJANGO_CACHE_URL": "redis://redis:6379/1",
         "CELERY_BROKER_URL": "redis://redis:6379/0",
