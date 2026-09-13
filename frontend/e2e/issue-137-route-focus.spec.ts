@@ -63,6 +63,11 @@ async function expectKeyboardRouteFocus(page: Page) {
   const back = page.getByRole('button', { name: /back to results/i })
   await back.focus()
   await page.keyboard.press('Enter')
+  await expect(page.locator('[data-testid="sheet-position"]')).toHaveAttribute(
+    'data-position',
+    /half|full/,
+  )
+  await expect(card).toBeVisible()
   await expect(card).toBeFocused()
 }
 
@@ -73,6 +78,28 @@ test('desktop keyboard route navigation moves into detail and restores the card'
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/')
   await expectKeyboardRouteFocus(page)
+})
+
+test('keyboard close returns focus after pointer and URL route selection', async ({ page }) => {
+  await installFixtures(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/')
+
+  const card = page.getByRole('button', { name: /south ridge loop/i })
+  await card.click()
+  await expect(page.getByRole('heading', { name: /south ridge loop/i })).toBeVisible()
+  const close = page.getByRole('button', { name: /close route details/i })
+  await close.focus()
+  await page.keyboard.press('Enter')
+  await expect(card).toBeFocused()
+
+  await page.goto('/?route=99999999-9999-4999-8999-999999999999')
+  const heading = page.getByRole('heading', { name: /south ridge loop/i })
+  await expect(heading).toBeVisible()
+  await expect(heading).not.toBeFocused()
+  await page.getByRole('button', { name: /close route details/i }).focus()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.route-list')).toBeFocused()
 })
 
 test('mobile keyboard route navigation moves into detail and restores the card', async ({

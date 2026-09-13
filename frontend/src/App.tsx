@@ -96,7 +96,7 @@ function App() {
   const panelNode = useRef<HTMLElement>(null)
   const detailNode = useRef<HTMLElement>(null)
   const detailHeadingNode = useRef<HTMLHeadingElement>(null)
-  const keyboardOriginRouteRef = useRef<string | null>(null)
+  const originatingRouteRef = useRef<string | null>(initial.routeId)
   const pendingDetailFocusRef = useRef(false)
   const pendingRouteListFocusRef = useRef<string | null>(null)
   const {
@@ -186,11 +186,11 @@ function App() {
         trackedRouteRef.current = null
         pendingDetailFocusRef.current = false
         pendingRouteListFocusRef.current =
-          interaction === 'keyboard' ? keyboardOriginRouteRef.current : null
-        keyboardOriginRouteRef.current = null
+          interaction === 'keyboard' ? originatingRouteRef.current : null
+        originatingRouteRef.current = null
       } else {
         pendingDetailFocusRef.current = interaction === 'keyboard'
-        keyboardOriginRouteRef.current = interaction === 'keyboard' ? id : null
+        originatingRouteRef.current = id
         pendingRouteListFocusRef.current = null
       }
       setSelectedId(id)
@@ -200,6 +200,9 @@ function App() {
         if (id) {
           setPanelOpen(false)
           setMobileSheetPosition('full')
+        } else if (interaction === 'keyboard') {
+          setPanelOpen(true)
+          setMobileSheetPosition('half')
         } else {
           setMobileSheetPosition('collapsed')
         }
@@ -247,7 +250,7 @@ function App() {
     onViewChange: setView,
     onRouteClick: (ids) => {
       pendingDetailFocusRef.current = false
-      keyboardOriginRouteRef.current = null
+      originatingRouteRef.current = ids[0]
       pendingRouteListFocusRef.current = null
       setOverlap(ids)
       setSelectedId(ids[0])
@@ -278,19 +281,27 @@ function App() {
   useEffect(() => {
     const handlePopState = () => {
       const next = parseState()
+      const returningToResults = !next.routeId && Boolean(selectedId)
       setFilters(normalizeFilters(next.filters))
       setView(next.view)
       setSelectedId(next.routeId)
       setOverlap(next.routeId ? [next.routeId] : [])
       setViewportOnly(next.viewportOnly)
       pendingDetailFocusRef.current = false
-      keyboardOriginRouteRef.current = null
-      pendingRouteListFocusRef.current = null
+      pendingRouteListFocusRef.current = returningToResults
+        ? (originatingRouteRef.current ?? selectedId)
+        : null
+      originatingRouteRef.current = next.routeId
+      if (returningToResults && window.innerWidth <= 700) {
+        setPanelOpen(true)
+        setMobileSheetPosition('half')
+        setMobilePanelHeight(null)
+      }
       jumpTo(next.view)
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [jumpTo])
+  }, [jumpTo, selectedId])
   useEffect(() => {
     const panel = panelNode.current
     if (!panel) return
