@@ -18,10 +18,11 @@ def cleanup_expired_crawl_response_bodies(
 ) -> dict[str, int]:
     """Clear expired HTML bodies while retaining conditional-request metadata.
 
-    IDs are selected and updated in one bounded batch. The second body
-    predicate makes the update safe when another worker changes a row between
-    the two queries. ``remaining`` makes cleanup backlog observable without
-    scanning or deleting an unbounded number of rows in one invocation.
+    IDs are selected and updated in one bounded batch using the partial expiry
+    index. The second body and expiry predicates make the update safe when a
+    fetch or another cleanup worker changes a row between the two queries.
+    ``remaining`` uses the same indexed eligibility predicate, making cleanup
+    backlog observable without scanning an unbounded metadata table.
     """
 
     retention_seconds = max(
@@ -38,14 +39,21 @@ def cleanup_expired_crawl_response_bodies(
     current_time = now or timezone.now()
     cutoff = current_time - timedelta(seconds=retention_seconds)
     candidate_ids = list(
-        CrawlResponseCache.objects.filter(body__gt="", fetched_at__lt=cutoff)
-        .order_by("fetched_at", "pk")
+        CrawlResponseCache.objects.filter(
+            body__gt="", body_expires_at__isnull=False, body_expires_at__lte=current_time
+        )
+        .order_by("body_expires_at", "pk")
         .values_list("pk", flat=True)[:batch_size]
     )
     cleared = CrawlResponseCache.objects.filter(
-        pk__in=candidate_ids, body__gt="", fetched_at__lt=cutoff
-    ).update(body="")
-    remaining = CrawlResponseCache.objects.filter(body__gt="", fetched_at__lt=cutoff).exists()
+        pk__in=candidate_ids,
+        body__gt="",
+        body_expires_at__isnull=False,
+        body_expires_at__lte=current_time,
+    ).update(body="", body_expires_at=None)
+    remaining = CrawlResponseCache.objects.filter(
+        body__gt="", body_expires_at__isnull=False, body_expires_at__lte=current_time
+    ).exists()
     result = {
         "cleared": cleared,
         "remaining": int(remaining),

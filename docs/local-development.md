@@ -74,7 +74,9 @@ deployment gates: `GPX_EXTRACTION_ENABLED`, `GPX_PROVIDER_AUTHORIZED`, and
 unless a synthetic adapter is being used.
 
 The cache body is raw upstream HTML and exists only to replay a recent page;
-the approved retention period is 24 hours (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS`).
+the approved retention period is 24 hours from body acquisition
+(`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS`). A validator-only `304` refreshes
+metadata but never extends that body deadline.
 The hourly cleanup keeps one bounded batch and reports the cleared and
 remaining counts in the Celery log. It clears only `body`; URL, redirect,
 status, ETag, Last-Modified, checksum, and fetch time remain for conditional

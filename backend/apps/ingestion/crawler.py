@@ -477,6 +477,23 @@ class HttpxPageFetcher(PageFetcher):
         if policy is not None and not policy.can_fetch(str(self.user_agent), url):
             raise RobotsDenied(f"robots.txt disallows {url}")
 
+    @staticmethod
+    def _body_is_retained(cached: CrawlResponseCache, now: datetime) -> bool:
+        """Return whether the raw body is still inside its fixed retention window."""
+
+        if not cached.body:
+            return False
+        expiry = cached.body_expires_at
+        if expiry is None:
+            # This fallback keeps rows created before the expiry migration safe
+            # until the migration or the next model save supplies the deadline.
+            retention = max(
+                1,
+                int(getattr(settings, "BIKEFORUM_CACHE_BODY_RETENTION_SECONDS", 24 * 3600)),
+            )
+            expiry = cached.fetched_at + timedelta(seconds=retention)
+        return expiry > now
+
     def _validate_url(self, url: str) -> None:
         _origin, host, port = _configured_origin(url)
         scheme = urlparse(url).scheme
@@ -519,10 +536,11 @@ class HttpxPageFetcher(PageFetcher):
         self._validate_url(url)
         cached = CrawlResponseCache.objects.filter(url=url).first()
         self._allowed(url)  # robots is always checked, including cache hits
+        cache_now = timezone.now()
         if (
             cached
-            and cached.body
-            and (timezone.now() - cached.fetched_at).total_seconds() < self.cache_ttl
+            and self._body_is_retained(cached, cache_now)
+            and (cache_now - cached.fetched_at).total_seconds() < self.cache_ttl
         ):
             if len(cached.body.encode("utf-8")) > self.max_bytes:
                 raise CrawlError(f"Cached BikeForum page exceeds the {self.max_bytes}-byte limit")
@@ -554,7 +572,7 @@ class HttpxPageFetcher(PageFetcher):
                         max_bytes=self.max_bytes,
                     )
                     if response.status_code == 304:
-                        if cached and cached.body:
+                        if cached and self._body_is_retained(cached, timezone.now()):
                             if len(cached.body.encode("utf-8")) > self.max_bytes:
                                 raise CrawlError(
                                     f"Cached BikeForum page exceeds the {self.max_bytes}-byte limit"
@@ -594,6 +612,17 @@ class HttpxPageFetcher(PageFetcher):
                         current = target
                         break
                     body = response.content.decode(response.encoding or "utf-8", errors="replace")
+                    fetched_at = timezone.now()
+                    retention_seconds = max(
+                        1,
+                        int(
+                            getattr(
+                                settings,
+                                "BIKEFORUM_CACHE_BODY_RETENTION_SECONDS",
+                                24 * 3600,
+                            )
+                        ),
+                    )
                     CrawlResponseCache.objects.update_or_create(
                         url=url,
                         defaults={
@@ -603,7 +632,8 @@ class HttpxPageFetcher(PageFetcher):
                             "etag": response.headers.get("etag", ""),
                             "last_modified": response.headers.get("last-modified", ""),
                             "checksum": hashlib.sha256(response.content).hexdigest(),
-                            "fetched_at": timezone.now(),
+                            "fetched_at": fetched_at,
+                            "body_expires_at": fetched_at + timedelta(seconds=retention_seconds),
                         },
                     )
                     return FetchedPage(url=current, body=body, status_code=response.status_code)

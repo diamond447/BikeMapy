@@ -133,7 +133,7 @@ import; existing stored keys remain readable and removable.
 
 Celery Beat also runs `bikemapy.ingestion.cleanup_crawl_response_cache` every
 hour. It clears at most `BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE` (500 by default)
-`CrawlResponseCache.body` values older than the 24-hour
+`CrawlResponseCache.body` values past their fixed 24-hour-from-acquisition
 `BIKEFORUM_CACHE_BODY_RETENTION_SECONDS` boundary. The task logs the cleared
 count, whether a backlog remains, cutoff, and configured batch/retention values.
 It preserves URL, final URL, status, ETag, Last-Modified, checksum, and fetch

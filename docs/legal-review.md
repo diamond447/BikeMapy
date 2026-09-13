@@ -35,7 +35,7 @@ with any future screenshots, exports, or map-derived products.
 For the narrow operational purpose of replaying a recently fetched page after
 a worker interruption and completing a conditional HTTP request, the approved
 engineering retention boundary for raw `CrawlResponseCache.body` is 24 hours
-from the latest successful fetch. Celery Beat clears expired bodies hourly in
+from body acquisition. Celery Beat clears expired bodies hourly in
 bounded batches while retaining URL, redirect, status, validators, checksum,
 and fetch time as crawler metadata. Database backups can retain a pre-cleanup
 body until their documented 30-snapshot host or 90-snapshot encrypted-laptop

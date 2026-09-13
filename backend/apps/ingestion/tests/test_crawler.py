@@ -7,6 +7,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 import pytest
 from django.conf import settings
+from django.db import models
 from django.test import override_settings
 from django.utils import timezone
 
@@ -657,6 +658,17 @@ def test_cache_cleanup_is_bounded_and_preserves_conditional_metadata() -> None:
     assert newer.body == "new body"
 
 
+def test_cache_body_expiry_uses_a_partial_index() -> None:
+    expiry_index = next(
+        index
+        for index in CrawlResponseCache._meta.indexes
+        if index.name == "ingestion_c_body_expiry_idx"
+    )
+
+    assert expiry_index.fields == ["body_expires_at", "id"]
+    assert expiry_index.condition == models.Q(body_expires_at__isnull=False)
+
+
 def test_cache_cleanup_is_scheduled_and_real_crawl_is_disabled_by_default() -> None:
     from apps.ingestion.tasks import cleanup_crawl_response_cache, crawl_bikeforum
 
@@ -705,6 +717,39 @@ def test_metadata_only_cache_retries_without_validators_after_304() -> None:
     assert fetcher.fetch(THREAD_URL).body == "fresh body"
     assert seen[-2].headers["if-none-match"] == '"v1"'
     assert "if-none-match" not in seen[-1].headers
+    client.close()
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"],
+    BIKEFORUM_DNS_CHECK=False,
+    BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=24 * 3600,
+)
+def test_body_backed_304_does_not_extend_body_retention_deadline() -> None:
+    expiry = timezone.now() + timedelta(hours=1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(304)
+
+    cache_entry = CrawlResponseCache.objects.create(
+        url=THREAD_URL,
+        final_url=THREAD_URL,
+        status_code=200,
+        body="cached",
+        etag='"v1"',
+        fetched_at=timezone.now() - timedelta(hours=2),
+        body_expires_at=expiry,
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, cache_ttl=1)
+
+    assert fetcher.fetch(THREAD_URL).body == "cached"
+
+    cache_entry.refresh_from_db()
+    assert cache_entry.fetched_at > expiry - timedelta(hours=2)
+    assert cache_entry.body_expires_at == expiry
     client.close()
 
 

@@ -77,7 +77,8 @@ display.
 The crawler temporarily persists each fetched page's raw HTML in the
 `CrawlResponseCache.body` database field so a recent page can be replayed after
 a worker interruption. The approved engineering retention period is 24 hours
-from the latest successful fetch (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86400`).
+from body acquisition (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86400`); a
+validator-only refresh never extends the body deadline.
 An hourly bounded Celery cleanup clears expired bodies; it retains only the
 source URL, final URL, status, HTTP validators, checksum, and fetch time needed
 for conditional requests and crawl diagnostics. The body is not rendered as

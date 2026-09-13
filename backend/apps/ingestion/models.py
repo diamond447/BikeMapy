@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from typing import Any
+
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -90,25 +94,49 @@ class CrawlResponseCache(models.Model):
     """Short-lived replay body plus durable metadata for conditional requests.
 
     ``body`` is raw upstream HTML and is cleared by the scheduled retention
-    task. URL, redirect, status, validators, checksum, and fetch time are
-    retained as crawler metadata so a later request can still use conditional
-    HTTP semantics without retaining page content.
+    task. URL, redirect, status, validators, checksum, fetch time, and the
+    body-specific expiry deadline are retained as crawler metadata so a later
+    request can still use conditional HTTP semantics without retaining page
+    content. A validator refresh never extends the body deadline.
     """
 
     url = models.URLField(max_length=1000, unique=True)
     final_url = models.URLField(max_length=1000, blank=True)
     status_code = models.PositiveSmallIntegerField()
     body = models.TextField(blank=True)
+    body_expires_at = models.DateTimeField(blank=True, null=True)
     etag = models.CharField(max_length=500, blank=True)
     last_modified = models.CharField(max_length=255, blank=True)
     checksum = models.CharField(max_length=128, blank=True)
     fetched_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        indexes = [models.Index(fields=["fetched_at"], name="ingestion_c_fetched_6f7f6a_idx")]
+        indexes = [
+            models.Index(fields=["fetched_at"], name="ingestion_c_fetched_6f7f6a_idx"),
+            models.Index(
+                fields=["body_expires_at", "id"],
+                name="ingestion_c_body_expiry_idx",
+                condition=models.Q(body_expires_at__isnull=False),
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.url
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self.body and self.body_expires_at is None:
+            retention_seconds = max(
+                1,
+                int(
+                    getattr(
+                        settings,
+                        "BIKEFORUM_CACHE_BODY_RETENTION_SECONDS",
+                        24 * 3600,
+                    )
+                ),
+            )
+            self.body_expires_at = self.fetched_at + timedelta(seconds=retention_seconds)
+        super().save(*args, **kwargs)
 
 
 class CrawlPageWork(models.Model):
