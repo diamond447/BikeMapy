@@ -57,6 +57,7 @@ export function useRouteList(
   const [state, setState] = useState<RouteListState>(emptyState)
   const requestIdRef = useRef(0)
   const requestControllerRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
   const debouncedFilters = useDebouncedFilters(filters)
   const paginationRef = useRef<{
     requestId: number
@@ -66,7 +67,7 @@ export function useRouteList(
   }>({ requestId: 0, requested: new Set(), visited: new Set(), inFlight: false })
   const query = useMemo(() => {
     const params = new URLSearchParams({ page_size: '100' })
-    Object.entries(debouncedFilters).forEach(([key, value]) => {
+    Object.entries(debouncedFilters.filters).forEach(([key, value]) => {
       if (value) params.set(key, value)
     })
     if (viewportOnly && view.bounds) {
@@ -76,7 +77,17 @@ export function useRouteList(
       params.set('north', String(view.bounds[3]))
     }
     return params.toString()
-  }, [debouncedFilters, view.bounds, viewportOnly])
+  }, [debouncedFilters.filters, view.bounds, viewportOnly])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestControllerRef.current?.abort()
+      requestControllerRef.current = null
+      requestIdRef.current += 1
+    }
+  }, [])
 
   const previousFiltersRef = useRef(filters)
   useEffect(() => {
@@ -108,7 +119,7 @@ export function useRouteList(
         signal: controller.signal,
       })
       .then(({ data, error }) => {
-        if (!active || requestIdRef.current !== requestId) return
+        if (!mountedRef.current || !active || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
         const routes = uniqueRoutes(data.results)
         const count = Math.max(data.count, routes.length)
@@ -137,7 +148,7 @@ export function useRouteList(
         })
       })
       .catch((error: unknown) => {
-        if (active && requestIdRef.current === requestId)
+        if (mountedRef.current && active && requestIdRef.current === requestId)
           setState({
             ...emptyState(),
             loading: false,
@@ -149,7 +160,7 @@ export function useRouteList(
       controller.abort()
       if (requestControllerRef.current === controller) requestControllerRef.current = null
     }
-  }, [copy.incompleteResults, copy.unavailable, query, retryToken])
+  }, [copy.incompleteResults, copy.unavailable, debouncedFilters.revision, query, retryToken])
 
   const loadMore = useCallback(() => {
     const pagination = paginationRef.current
@@ -201,7 +212,7 @@ export function useRouteList(
         signal: controller.signal,
       })
       .then(({ data, error }) => {
-        if (requestIdRef.current !== requestId) return
+        if (!mountedRef.current || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
         const incoming = uniqueRoutes(data.results)
         const current = state
@@ -241,7 +252,7 @@ export function useRouteList(
         })
       })
       .catch((error: unknown) => {
-        if (requestIdRef.current !== requestId) return
+        if (!mountedRef.current || requestIdRef.current !== requestId) return
         pagination.inFlight = false
         pagination.requested.delete(nextRequest.key)
         setState((current) => ({

@@ -20,8 +20,18 @@ export function useViewport(
   }>({ data: null, loading: false, error: null })
   const requestIdRef = useRef(0)
   const requestControllerRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
   const debouncedFilters = useDebouncedFilters(filters)
   const previousFiltersRef = useRef(filters)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestControllerRef.current?.abort()
+      requestControllerRef.current = null
+      requestIdRef.current += 1
+    }
+  }, [])
   useEffect(() => {
     if (previousFiltersRef.current === filters) return
     previousFiltersRef.current = filters
@@ -51,7 +61,7 @@ export function useViewport(
       zoom: Math.round(view.zoom),
       limit: 500,
       cell_limit: 10000,
-      ...Object.fromEntries(Object.entries(debouncedFilters).filter(([, value]) => value)),
+      ...Object.fromEntries(Object.entries(debouncedFilters.filters).filter(([, value]) => value)),
     }
     // Mark the external request as pending while it is in flight.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -62,12 +72,12 @@ export function useViewport(
         signal: controller.signal,
       })
       .then(({ data, error }) => {
-        if (!active || requestIdRef.current !== requestId) return
+        if (!mountedRef.current || !active || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.mapUnavailable)
         setState({ data, loading: false, error: null })
       })
       .catch((error: unknown) => {
-        if (active && requestIdRef.current === requestId)
+        if (mountedRef.current && active && requestIdRef.current === requestId)
           setState((current) => ({
             ...current,
             loading: false,
@@ -84,7 +94,8 @@ export function useViewport(
     }
   }, [
     copy.mapUnavailable,
-    debouncedFilters,
+    debouncedFilters.filters,
+    debouncedFilters.revision,
     ready,
     retryToken,
     view.bounds,

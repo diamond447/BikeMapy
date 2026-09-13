@@ -42,17 +42,54 @@ async function installFixtures(page: Page, requests: string[]) {
     ),
   )
   let initialListRequests = 0
+  const releaseInitialLists: Array<() => void> = []
+  let initialViewportRequests = 0
+  const releaseInitialViewports: Array<() => void> = []
   await page.route('**/api/v1/routes/**', async (route) => {
     const requestUrl = new URL(route.request().url())
     requests.push(requestUrl.toString())
-    if (requestUrl.pathname.endsWith('/viewport/'))
-      return route.fulfill(
-        json({ mode: 'routes', zoom: 8, cells: [], routes: [], truncated: false }),
+    if (requestUrl.pathname.endsWith('/viewport/') && !requestUrl.searchParams.has('search')) {
+      initialViewportRequests += 1
+      if (initialViewportRequests <= 2) {
+        await new Promise<void>((resolve) => releaseInitialViewports.push(resolve))
+        try {
+          await route.fulfill(
+            json({ mode: 'routes', zoom: 8, cells: [], routes: [], truncated: false }),
+          )
+        } catch {
+          // The viewport request is expected to be aborted after the filter changes.
+        }
+        return
+      }
+    }
+    if (requestUrl.pathname.endsWith('/viewport/')) {
+      await route.fulfill(
+        json({
+          mode: 'routes',
+          zoom: 8,
+          cells: [],
+          routes: [
+            {
+              ...filteredRoute,
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [16, 49],
+                  [16.2, 49.1],
+                ],
+              },
+            },
+          ],
+          truncated: false,
+        }),
       )
+      releaseInitialViewports.splice(0).forEach((release) => release())
+      return
+    }
 
     if (!requestUrl.searchParams.has('search') && initialListRequests < 2) {
       initialListRequests += 1
-      await new Promise((resolve) => setTimeout(resolve, 500))
+      await new Promise<void>((resolve) => releaseInitialLists.push(resolve))
       try {
         await route.fulfill(json({ count: 1, next: null, previous: null, results: [routeData] }))
       } catch {
@@ -60,7 +97,8 @@ async function installFixtures(page: Page, requests: string[]) {
       }
       return
     }
-    return route.fulfill(json({ count: 1, next: null, previous: null, results: [filteredRoute] }))
+    await route.fulfill(json({ count: 1, next: null, previous: null, results: [filteredRoute] }))
+    releaseInitialLists.splice(0).forEach((release) => release())
   })
 }
 
@@ -68,10 +106,13 @@ test('debounces catalogue typing, cancels the old list, and keeps final list and
   page,
 }) => {
   const requests: string[] = []
-  const failedRequests: string[] = []
+  const abortedRequests: string[] = []
   page.on('requestfailed', (request) => {
-    if (request.url().includes('/api/v1/routes/') && request.failure()?.errorText)
-      failedRequests.push(request.failure()!.errorText)
+    if (
+      request.url().includes('/api/v1/routes/') &&
+      /abort/i.test(request.failure()?.errorText ?? '')
+    )
+      abortedRequests.push(request.url())
   })
   await installFixtures(page, requests)
   await page.goto('/')
@@ -86,12 +127,19 @@ test('debounces catalogue typing, cancels the old list, and keeps final list and
   const listRequests = catalogueRequests.filter((url) => !url.includes('/viewport/'))
   const viewportRequests = catalogueRequests.filter((url) => url.includes('/viewport/'))
   expect(listRequests).toHaveLength(3)
-  expect(viewportRequests).toHaveLength(2)
-  expect(failedRequests.some((failure) => /abort/i.test(failure))).toBe(true)
+  expect(
+    viewportRequests.filter((url) => new URL(url).searchParams.get('search') === 'ridge'),
+  ).toHaveLength(1)
+  expect(
+    abortedRequests.some(
+      (url) => url.includes('/viewport/') && !new URL(url).searchParams.has('search'),
+    ),
+  ).toBe(true)
   expect(listRequests.filter((url) => !new URL(url).searchParams.has('search'))).toHaveLength(2)
   expect(
     listRequests.filter((url) => new URL(url).searchParams.get('search') === 'ridge'),
   ).toHaveLength(1)
+  await expect(page.locator('.map-canvas')).toHaveAttribute('data-map-route-features', '1')
   expect(
     viewportRequests.filter((url) => new URL(url).searchParams.get('search') === 'ridge'),
   ).toHaveLength(1)
