@@ -48,10 +48,24 @@ describe('production build configuration', () => {
     'https://localhost:8000',
     'https://127.0.0.1:8000',
     'https://10.0.0.1',
+    'https://100.64.0.1',
     'https://169.254.1.1',
     'https://172.16.0.1',
+    'https://192.0.2.1',
     'https://192.168.1.20',
+    'https://198.18.0.1',
+    'https://203.0.113.1',
+    'https://224.0.0.1',
     'https://[::1]',
+    'https://[::ffff:127.0.0.1]',
+    'https://[::ffff:7f00:1]',
+    'https://[::ffff:192.168.1.1]',
+    'https://[::ffff:c0a8:101]',
+    'https://[fe80::1]',
+    'https://[fe90::1]',
+    'https://[febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff]',
+    'https://[fec0::1]',
+    'https://[2001:db8::1]',
     'https://service.local',
     'ftp://api.example.test',
     'https://api.example.test/v1',
@@ -79,6 +93,10 @@ describe('production build configuration', () => {
         VITE_ENABLE_REPORTS: 'false',
       }),
     ).not.toThrow()
+  })
+
+  it('accepts a public IPv4-mapped IPv6 origin', () => {
+    expect(validateApiOrigin('https://[::ffff:8.8.8.8]')).toBe('https://[::ffff:808:808]')
   })
 
   it('treats case-insensitive false as disabled', () => {
