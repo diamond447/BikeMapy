@@ -4,14 +4,15 @@ const API_PROTOCOL = 'https:'
 
 function isInvalidApiHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const dnsName = normalized.endsWith('.') ? normalized.slice(0, -1) : normalized
   if (
-    normalized === 'localhost' ||
-    normalized.endsWith('.localhost') ||
-    normalized.endsWith('.local') ||
-    normalized.endsWith('.internal') ||
-    normalized.endsWith('.intranet') ||
-    normalized.endsWith('.lan') ||
-    normalized.endsWith('.home.arpa')
+    dnsName === 'localhost' ||
+    dnsName.endsWith('.localhost') ||
+    dnsName.endsWith('.local') ||
+    dnsName.endsWith('.internal') ||
+    dnsName.endsWith('.intranet') ||
+    dnsName.endsWith('.lan') ||
+    dnsName.endsWith('.home.arpa')
   ) {
     return true
   }
@@ -19,11 +20,10 @@ function isInvalidApiHostname(hostname: string): boolean {
   // URL canonicalization turns IPv4, IPv6, and IPv4-mapped IPv6 literals into
   // stable forms. Reject every literal instead of maintaining an incomplete
   // list of private and special-use ranges.
-  if (normalized.includes(':') || /^(?:\d{1,3}\.){3}\d{1,3}$/.test(normalized)) {
+  if (dnsName.includes(':') || /^(?:\d{1,3}\.){3}\d{1,3}$/.test(dnsName)) {
     return true
   }
 
-  const dnsName = normalized.endsWith('.') ? normalized.slice(0, -1) : normalized
   const labels = dnsName.split('.')
   return (
     labels.length < 2 || labels.some((label) => !/^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/i.test(label))

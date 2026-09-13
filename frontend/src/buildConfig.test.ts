@@ -55,6 +55,10 @@ describe('production build configuration', () => {
     'https://[100::1]',
     'https://[64:ff9b:1::1]',
     'https://service.local',
+    'https://service.local.',
+    'https://foo.localhost.',
+    'https://api.internal.',
+    'https://router.home.arpa.',
     'ftp://api.example.test',
     'https://api.example.test/v1',
   ])('rejects an invalid API origin: %s', (value) => {
@@ -88,6 +92,7 @@ describe('production build configuration', () => {
     expect(validateApiOrigin('https://api.example.invalid:8443')).toBe(
       'https://api.example.invalid:8443',
     )
+    expect(validateApiOrigin('https://api.example.test.')).toBe('https://api.example.test.')
   })
 
   it('treats case-insensitive false as disabled', () => {
