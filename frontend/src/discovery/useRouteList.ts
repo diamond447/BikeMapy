@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { apiClient } from '../api/client'
 import type { Filters, Route, ViewState } from './types'
+import { useDebouncedFilters } from './useDebouncedFilters'
 
 export type RouteListState = {
   routes: Route[]
@@ -55,6 +56,9 @@ export function useRouteList(
 ) {
   const [state, setState] = useState<RouteListState>(emptyState)
   const requestIdRef = useRef(0)
+  const requestControllerRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
+  const debouncedFilters = useDebouncedFilters(filters)
   const paginationRef = useRef<{
     requestId: number
     requested: Set<string>
@@ -63,7 +67,7 @@ export function useRouteList(
   }>({ requestId: 0, requested: new Set(), visited: new Set(), inFlight: false })
   const query = useMemo(() => {
     const params = new URLSearchParams({ page_size: '100' })
-    Object.entries(filters).forEach(([key, value]) => {
+    Object.entries(debouncedFilters.filters).forEach(([key, value]) => {
       if (value) params.set(key, value)
     })
     if (viewportOnly && view.bounds) {
@@ -73,10 +77,32 @@ export function useRouteList(
       params.set('north', String(view.bounds[3]))
     }
     return params.toString()
-  }, [filters, view.bounds, viewportOnly])
+  }, [debouncedFilters.filters, view.bounds, viewportOnly])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestControllerRef.current?.abort()
+      requestControllerRef.current = null
+      requestIdRef.current += 1
+    }
+  }, [])
+
+  const previousFiltersRef = useRef(filters)
+  useEffect(() => {
+    if (previousFiltersRef.current === filters) return
+    previousFiltersRef.current = filters
+    requestIdRef.current += 1
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = null
+  }, [filters])
 
   useEffect(() => {
     const requestId = ++requestIdRef.current
+    const controller = new AbortController()
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = controller
     paginationRef.current = {
       requestId,
       requested: new Set(),
@@ -90,9 +116,10 @@ export function useRouteList(
     apiClient
       .GET('/api/v1/routes/', {
         params: { query: Object.fromEntries(new URLSearchParams(query)) } as never,
+        signal: controller.signal,
       })
       .then(({ data, error }) => {
-        if (!active || requestIdRef.current !== requestId) return
+        if (!mountedRef.current || !active || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
         const routes = uniqueRoutes(data.results)
         const count = Math.max(data.count, routes.length)
@@ -121,7 +148,7 @@ export function useRouteList(
         })
       })
       .catch((error: unknown) => {
-        if (active && requestIdRef.current === requestId)
+        if (mountedRef.current && active && requestIdRef.current === requestId)
           setState({
             ...emptyState(),
             loading: false,
@@ -130,8 +157,10 @@ export function useRouteList(
       })
     return () => {
       active = false
+      controller.abort()
+      if (requestControllerRef.current === controller) requestControllerRef.current = null
     }
-  }, [copy.incompleteResults, copy.unavailable, query, retryToken])
+  }, [copy.incompleteResults, copy.unavailable, debouncedFilters.revision, query, retryToken])
 
   const loadMore = useCallback(() => {
     const pagination = paginationRef.current
@@ -168,6 +197,9 @@ export function useRouteList(
     }
     pagination.requested.add(nextRequest.key)
     pagination.inFlight = true
+    const controller = new AbortController()
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = controller
     setState((current) => ({
       ...current,
       loadingMore: true,
@@ -175,9 +207,12 @@ export function useRouteList(
       loadMoreRetryable: false,
     }))
     apiClient
-      .GET('/api/v1/routes/', { params: { query: nextRequest.query } as never })
+      .GET('/api/v1/routes/', {
+        params: { query: nextRequest.query } as never,
+        signal: controller.signal,
+      })
       .then(({ data, error }) => {
-        if (requestIdRef.current !== requestId) return
+        if (!mountedRef.current || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.unavailable)
         const incoming = uniqueRoutes(data.results)
         const current = state
@@ -217,7 +252,7 @@ export function useRouteList(
         })
       })
       .catch((error: unknown) => {
-        if (requestIdRef.current !== requestId) return
+        if (!mountedRef.current || requestIdRef.current !== requestId) return
         pagination.inFlight = false
         pagination.requested.delete(nextRequest.key)
         setState((current) => ({
@@ -226,6 +261,9 @@ export function useRouteList(
           loadMoreError: error instanceof Error ? error.message : copy.unavailable,
           loadMoreRetryable: true,
         }))
+      })
+      .finally(() => {
+        if (requestControllerRef.current === controller) requestControllerRef.current = null
       })
   }, [copy.incompleteResults, copy.unavailable, state])
 

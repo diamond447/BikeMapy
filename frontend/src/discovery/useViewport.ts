@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { apiClient } from '../api/client'
 import type { Filters, ViewState, ViewportResponse } from './types'
+import { useDebouncedFilters } from './useDebouncedFilters'
 
 export type ViewportCopy = { mapUnavailable: string }
 
@@ -17,8 +18,33 @@ export function useViewport(
     loading: boolean
     error: string | null
   }>({ data: null, loading: false, error: null })
+  const requestIdRef = useRef(0)
+  const requestControllerRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
+  const debouncedFilters = useDebouncedFilters(filters)
+  const previousFiltersRef = useRef(filters)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestControllerRef.current?.abort()
+      requestControllerRef.current = null
+      requestIdRef.current += 1
+    }
+  }, [])
+  useEffect(() => {
+    if (previousFiltersRef.current === filters) return
+    previousFiltersRef.current = filters
+    requestIdRef.current += 1
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = null
+  }, [filters])
   useEffect(() => {
     if (!ready) return
+    const requestId = ++requestIdRef.current
+    const controller = new AbortController()
+    requestControllerRef.current?.abort()
+    requestControllerRef.current = controller
     let active = true
     const span = Math.max(0.05, 35 / 2 ** view.zoom)
     const [west, south, east, north] = view.bounds ?? [
@@ -35,32 +61,41 @@ export function useViewport(
       zoom: Math.round(view.zoom),
       limit: 500,
       cell_limit: 10000,
-      ...Object.fromEntries(Object.entries(filters).filter(([, value]) => value)),
+      ...Object.fromEntries(Object.entries(debouncedFilters.filters).filter(([, value]) => value)),
     }
     // Mark the external request as pending while it is in flight.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setState((current) => ({ ...current, loading: true, error: null }))
     apiClient
-      .GET('/api/v1/routes/viewport/', { params: { query } as never })
+      .GET('/api/v1/routes/viewport/', {
+        params: { query } as never,
+        signal: controller.signal,
+      })
       .then(({ data, error }) => {
-        if (!active) return
+        if (!mountedRef.current || !active || requestIdRef.current !== requestId) return
         if (error || !data) throw new Error(copy.mapUnavailable)
         setState({ data, loading: false, error: null })
       })
       .catch((error: unknown) => {
-        if (active)
+        if (mountedRef.current && active && requestIdRef.current === requestId)
           setState((current) => ({
             ...current,
             loading: false,
             error: error instanceof Error ? error.message : copy.mapUnavailable,
           }))
       })
+      .finally(() => {
+        if (requestControllerRef.current === controller) requestControllerRef.current = null
+      })
     return () => {
       active = false
+      controller.abort()
+      if (requestControllerRef.current === controller) requestControllerRef.current = null
     }
   }, [
     copy.mapUnavailable,
-    filters,
+    debouncedFilters.filters,
+    debouncedFilters.revision,
     ready,
     retryToken,
     view.bounds,

@@ -306,6 +306,7 @@ describe('BikeMapy route discovery', () => {
     )
     expect(api).toHaveBeenCalledWith('/api/v1/routes/', {
       params: { query: { page: '2', page_size: '100' } },
+      signal: expect.any(AbortSignal),
     })
   })
 
@@ -345,6 +346,7 @@ describe('BikeMapy route discovery', () => {
     expect(screen.queryByRole('button', { name: /load more routes/i })).not.toBeInTheDocument()
     expect(api).toHaveBeenCalledWith('/api/v1/routes/', {
       params: { query: { page: '2', page_size: '100' } },
+      signal: expect.any(AbortSignal),
     })
   })
 
@@ -566,6 +568,191 @@ describe('BikeMapy route discovery', () => {
     await user.click(screen.getByRole('button', { name: /clear filters/i }))
     expect(search).toHaveValue('')
     expect(author).toHaveValue('')
+    expect(api).toHaveBeenCalled()
+  })
+
+  it('debounces rapid catalogue filters and aborts superseded list and viewport requests', async () => {
+    vi.restoreAllMocks()
+    const calls: Array<{
+      path: string
+      query: Record<string, unknown>
+      signal: AbortSignal | undefined
+    }> = []
+    let initialListResolve: ((value: unknown) => void) | undefined
+    let initialViewportResolve: ((value: unknown) => void) | undefined
+    const api = vi.spyOn(apiClient, 'GET').mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      const request = options as {
+        params?: { query?: Record<string, unknown> }
+        signal?: AbortSignal
+      }
+      const query = request.params?.query ?? {}
+      calls.push({ path, query, signal: request.signal })
+      if (path === '/api/v1/routes/' && calls.filter((call) => call.path === path).length === 1)
+        return new Promise((resolve) => {
+          initialListResolve = resolve
+        }) as never
+      if (
+        path.includes('/viewport/') &&
+        calls.filter((call) => call.path.includes('/viewport/')).length === 1
+      )
+        return new Promise((resolve) => {
+          initialViewportResolve = resolve
+        }) as never
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({
+        data: { count: 1, next: null, previous: null, results: [secondRoute] },
+        error: undefined,
+      }) as never
+    }) as never)
+
+    render(<App />)
+    await waitFor(() =>
+      expect(calls.filter((call) => call.path === '/api/v1/routes/')).toHaveLength(1),
+    )
+    await waitFor(() =>
+      expect(calls.filter((call) => call.path.includes('/viewport/'))).toHaveLength(1),
+    )
+
+    fireEvent.change(screen.getByRole('searchbox', { name: /search routes/i }), {
+      target: { value: 'r' },
+    })
+    fireEvent.change(screen.getByRole('searchbox', { name: /search routes/i }), {
+      target: { value: 'ridge' },
+    })
+    fireEvent.change(screen.getByLabelText('Distance from (m)'), {
+      target: { value: '1' },
+    })
+    fireEvent.change(screen.getByLabelText('Distance from (m)'), {
+      target: { value: '1000' },
+    })
+
+    await waitFor(() => {
+      expect(
+        calls.filter(
+          (call) => call.query.search === 'ridge' && call.query.min_distance_m === '1000',
+        ),
+      ).toHaveLength(2)
+    })
+    expect(calls.filter((call) => call.path === '/api/v1/routes/')).toHaveLength(2)
+    expect(calls.filter((call) => call.path.includes('/viewport/'))).toHaveLength(2)
+    expect(calls[0].signal?.aborted).toBe(true)
+    expect(calls[1].signal?.aborted).toBe(true)
+
+    initialListResolve?.({
+      data: { count: 1, next: null, previous: null, results: [route] },
+      error: undefined,
+    })
+    initialViewportResolve?.({
+      data: {
+        mode: 'heatmap',
+        zoom: 7,
+        data_zoom: 7,
+        cells: [],
+        routes: [],
+        truncated: false,
+      },
+      error: undefined,
+    })
+    expect(await screen.findByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /south ridge loop/i })).not.toBeInTheDocument()
+    expect(api).toHaveBeenCalled()
+  })
+
+  it('restarts a cancelled request when a filter returns to its settled value', async () => {
+    vi.restoreAllMocks()
+    let initialListResolve: ((value: unknown) => void) | undefined
+    let listCalls = 0
+    const api = vi.spyOn(apiClient, 'GET').mockImplementation(((path: string) => {
+      if (path === '/api/v1/routes/') {
+        listCalls += 1
+        if (listCalls === 1)
+          return new Promise((resolve) => {
+            initialListResolve = resolve
+          }) as never
+        return Promise.resolve({
+          data: { count: 1, next: null, previous: null, results: [secondRoute] },
+          error: undefined,
+        }) as never
+      }
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({ data: remoteRoute, error: undefined }) as never
+    }) as never)
+
+    render(<App />)
+    await waitFor(() => expect(listCalls).toBe(1))
+    const search = screen.getByRole('searchbox', { name: /search routes/i })
+    fireEvent.change(search, { target: { value: 'r' } })
+    fireEvent.change(search, { target: { value: '' } })
+
+    await waitFor(() => expect(listCalls).toBe(2))
+    initialListResolve?.({
+      data: { count: 1, next: null, previous: null, results: [route] },
+      error: undefined,
+    })
+    expect(await screen.findByRole('button', { name: /north ridge loop/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /south ridge loop/i })).not.toBeInTheDocument()
+    expect(
+      api.mock.calls.filter((call) => (call as [string])[0] === '/api/v1/routes/'),
+    ).toHaveLength(2)
+  })
+
+  it('aborts an in-flight pagination request when the catalogue unmounts', async () => {
+    vi.restoreAllMocks()
+    let pageResolve: ((value: unknown) => void) | undefined
+    let pageSignal: AbortSignal | undefined
+    const api = vi.spyOn(apiClient, 'GET').mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      const request = options as {
+        params?: { query?: Record<string, string> }
+        signal?: AbortSignal
+      }
+      if (path === '/api/v1/routes/' && request.params?.query?.page === '2') {
+        pageSignal = request.signal
+        return new Promise((resolve) => {
+          pageResolve = resolve
+        }) as never
+      }
+      if (path === '/api/v1/routes/')
+        return Promise.resolve({
+          data: {
+            count: 2,
+            next: '/api/v1/routes/?page=2&page_size=100',
+            previous: null,
+            results: [route],
+          },
+          error: undefined,
+        }) as never
+      if (path.includes('/viewport/'))
+        return Promise.resolve({
+          data: { mode: 'heatmap', zoom: 7, data_zoom: 7, cells: [], routes: [], truncated: false },
+          error: undefined,
+        }) as never
+      return Promise.resolve({ data: remoteRoute, error: undefined }) as never
+    }) as never)
+
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: /load more routes/i }))
+    await screen.findByRole('button', { name: /loading more routes/i })
+    cleanup()
+    expect(pageSignal?.aborted).toBe(true)
+    pageResolve?.({
+      data: { count: 2, next: null, previous: null, results: [secondRoute] },
+      error: undefined,
+    })
     expect(api).toHaveBeenCalled()
   })
 
