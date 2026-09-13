@@ -136,6 +136,10 @@ also make both cookies `Secure`, so owner authentication cannot establish a
 cookie over an insecure request. Production Compose requires an explicit
 `DJANGO_DEBUG=false` value and sets its deployment mode; it refuses to render
 when that value is absent, and Django refuses to start if it is true.
+The backend, worker, and scheduler commands also run `migrate --check` before
+starting their long-running process. This is a startup guard, not a migration
+mechanism: a release must still run the migration as a one-shot command and
+must not start the candidate until that command succeeds.
 
 The repository does not assume a homeserver exists. When one is available,
 install `cloudflared` on that host and route a named tunnel to the local Nginx
@@ -190,9 +194,15 @@ backend unhealthy even when the public `PUBLIC_HOST` is correct.
 
 ```sh
 export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
-export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<selected-digest>"
 export BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 export BACKUP_DIR="$PWD/backup"
+
+# Keep .env.production (and the running Compose project) pointed at the
+# previous, known-good image while taking the snapshot. Do not export the
+# candidate image before backup.sh: its recovery trap deliberately restarts
+# the image that was serving before the backup window.
+export PREVIOUS_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$($COMPOSE ps -q backend)")"
+unset BIKEMAPY_BACKEND_IMAGE
 
 # Back up before migrations. Store these files on a separate encrypted disk.
 # This writes the canonical volume-relative GPX archive and its checksum
@@ -200,9 +210,12 @@ export BACKUP_DIR="$PWD/backup"
 BACKUP_DIR="$BACKUP_DIR" BACKUP_ID="$BACKUP_ID" COMPOSE="$COMPOSE" \
   ./deploy/backup.sh
 
-# Pull only the selected immutable image, then migrate that image.
+export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<selected-digest>"
+# Pull only the selected immutable image. Stop the previous writers before
+# running its schema migration so no candidate process can start early.
 $COMPOSE pull backend worker beat
-$COMPOSE run --rm backend uv run --locked --no-dev python backend/manage.py migrate --noinput
+$COMPOSE stop backend worker beat proxy
+$COMPOSE run --rm --no-deps backend uv run --locked --no-dev python backend/manage.py migrate --noinput
 $COMPOSE up -d backend worker beat proxy
 
 # Do not continue until readiness and the public API respond successfully.

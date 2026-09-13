@@ -5,6 +5,8 @@ services:
   db:
     ports:
       - "127.0.0.1::5432"
+    volumes:
+      - ${REHEARSAL_BACKUP_DIR:-/tmp/bikemapy-rehearsal-backup}:/backup
   redis:
     ports:
       - "127.0.0.1::6379"

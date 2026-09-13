@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -105,8 +106,16 @@ def build_images(previous_ref: str) -> dict[str, str]:
     }
 
 
-def runtime_env(path: Path, image: str, *, forum_port: int | None = None) -> None:
+def runtime_env(
+    path: Path,
+    image: str,
+    *,
+    forum_port: int | None = None,
+    backup_dir: Path | None = None,
+) -> None:
     origin = f"http://host.docker.internal:{forum_port}" if forum_port else "http://localhost:1"
+    rehearsal_backup_dir = backup_dir or path.parent / "backup"
+    rehearsal_backup_dir.mkdir(parents=True, exist_ok=True)
     values = {
         "BIKEMAPY_BACKEND_IMAGE": image,
         "BIKEMAPY_ENV_FILE": str(path),
@@ -130,6 +139,7 @@ def runtime_env(path: Path, image: str, *, forum_port: int | None = None) -> Non
         "BIKEFORUM_PAGE_ATTEMPTS": "3",
         "GPX_REDISTRIBUTION_APPROVED": "false",
         "GPX_INTERNAL_REDIRECT": "false",
+        "REHEARSAL_BACKUP_DIR": str(rehearsal_backup_dir),
     }
     path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
 
@@ -154,6 +164,19 @@ class Stack:
     def compose(self, *args: str, capture: bool = False) -> str:
         return run([*self.base, *args], capture=capture)
 
+    def compose_unchecked(
+        self, *args: str, capture: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        command = [*self.base, *args]
+        print("$", " ".join(command), flush=True)
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            text=True,
+            capture_output=capture,
+        )
+
     def stop(self) -> None:
         self.compose("down", "--volumes", "--remove-orphans")
 
@@ -164,6 +187,9 @@ class Stack:
     def backend_image_id(self) -> str:
         container = self.compose("ps", "-q", "backend", capture=True).splitlines()[-1]
         return run(["docker", "inspect", "--format", "{{.Image}}", container], capture=True)
+
+    def backend_container_id(self) -> str:
+        return self.compose("ps", "-q", "backend", capture=True).splitlines()[-1]
 
 
 def wait_http(url: str, *, timeout: float = 90) -> None:
@@ -226,7 +252,7 @@ def migrate_and_start(stack: Stack, *, worker: bool) -> int:
         "migrate",
         "--noinput",
     )
-    stack.compose("up", "-d", "backend", *("worker",) if worker else ())
+    stack.compose("up", "-d", "--force-recreate", "backend", *("worker",) if worker else ())
     port = stack.backend_port()
     wait_for(f"http://127.0.0.1:{port}/health/ready/")
     return port
@@ -244,14 +270,155 @@ def seed_catalogue(stack: Stack) -> None:
     )
 
 
-def rollback_rehearsal(images: dict[str, str], evidence: Path) -> dict[str, Any]:
-    project = f"bikemapy-rollback-{os.getpid()}"
-    with tempfile.TemporaryDirectory(prefix="bikemapy-rollback-env-") as directory:
+def candidate_startup_gate(images: dict[str, str]) -> dict[str, Any]:
+    """Prove a candidate exits instead of serving before schema migration."""
+    project = f"bikemapy-migration-gate-{os.getpid()}"
+    with tempfile.TemporaryDirectory(prefix="bikemapy-migration-gate-env-") as directory:
         env_file = Path(directory) / "runtime.env"
         runtime_env(env_file, images["candidate_image"])
         stack = Stack(project, env_file)
         try:
-            candidate_port = migrate_and_start(stack, worker=False)
+            stack.compose("up", "-d", "--wait", "db", "redis")
+            migration_command = (
+                "uv",
+                "run",
+                "--locked",
+                "--no-dev",
+                "python",
+                "backend/manage.py",
+                "migrate",
+                "--check",
+                "--noinput",
+            )
+            plan = stack.compose_unchecked(
+                "run",
+                "--rm",
+                "--no-deps",
+                "backend",
+                *migration_command[:-2],
+                "--plan",
+                capture=True,
+            )
+            plan_output = f"{plan.stdout}\n{plan.stderr}"
+            if plan.returncode != 0 or "Planned operations:" not in plan_output:
+                raise RuntimeError(
+                    "migration gate dependencies/command did not pass before the expected check "
+                    f"failure (exit={plan.returncode}): {plan_output}"
+                )
+            check = stack.compose_unchecked(
+                "run", "--rm", "--no-deps", "backend", *migration_command, capture=True
+            )
+            check_output = f"{check.stdout}\n{check.stderr}"
+            if check.returncode != 1:
+                raise RuntimeError(
+                    "migrate --check did not report unapplied migrations "
+                    f"(exit={check.returncode}): {check_output}"
+                )
+            result = stack.compose_unchecked("run", "--rm", "--no-deps", "backend", capture=True)
+            startup_output = f"{result.stdout}\n{result.stderr}"
+            if result.returncode == 0 or "migration" not in startup_output.lower():
+                raise RuntimeError("candidate unexpectedly started before migrations")
+            return {
+                "verified": True,
+                "candidate_image": images["candidate_image"],
+                "exit_code": result.returncode,
+                "reason": "migrate --check rejected the unapplied schema",
+                "migration_plan_output": plan_output.strip(),
+                "migration_check_output": check_output.strip(),
+                "startup_guard_output": startup_output.strip(),
+            }
+        finally:
+            stack.stop()
+
+
+def run_backup(
+    stack: Stack,
+    backup_dir: Path,
+    *,
+    backup_id: str,
+    gpx_volume: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    compose = " ".join(shlex.quote(part) for part in stack.base)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "BACKUP_DIR": str(backup_dir),
+            "BACKUP_ID": backup_id,
+            "COMPOSE": compose,
+            "GPX_VOLUME": gpx_volume or f"{stack.project}_gpx_data",
+        }
+    )
+    return subprocess.run(
+        ["bash", str(ROOT / "deploy/backup.sh")],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
+def rollback_rehearsal(images: dict[str, str], evidence: Path) -> dict[str, Any]:
+    project = f"bikemapy-rollback-{os.getpid()}"
+    with tempfile.TemporaryDirectory(prefix="bikemapy-rollback-env-") as directory:
+        env_file = Path(directory) / "runtime.env"
+        backup_dir = Path(directory) / "backup"
+        runtime_env(env_file, images["previous_image"], backup_dir=backup_dir)
+        stack = Stack(project, env_file)
+        try:
+            migration_gate = candidate_startup_gate(images)
+            previous_port = migrate_and_start(stack, worker=False)
+            seed_catalogue(stack)
+
+            backup_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            backup_result = run_backup(stack, backup_dir, backup_id=backup_id)
+            if backup_result.returncode != 0:
+                error_output = f"{backup_result.stdout}\n{backup_result.stderr}"
+                raise RuntimeError(f"backup rehearsal failed:\n{error_output}")
+            manifest = json.loads((backup_dir / f"manifest-{backup_id}.json").read_text())
+
+            failed_backup_id = f"{backup_id}-failure"
+            # Leave the previous container serving while selecting the
+            # candidate in Compose. If backup.sh accidentally used the
+            # selected environment during recovery, this check would observe
+            # the candidate image instead of the previous image.
+            runtime_env(env_file, images["candidate_image"], backup_dir=backup_dir)
+            previous_container_before_failure = stack.backend_container_id()
+            failed_backup = run_backup(
+                stack,
+                backup_dir,
+                backup_id=failed_backup_id,
+                gpx_volume="/dev/null",
+            )
+            if failed_backup.returncode == 0:
+                raise RuntimeError("failed backup rehearsal unexpectedly succeeded")
+            previous_port = stack.backend_port()
+            previous_base = f"http://127.0.0.1:{previous_port}"
+            previous_after_backup_failure = wait_for(f"{previous_base}/health/ready/")
+            previous_container_after_failure = stack.backend_container_id()
+            if previous_container_after_failure == previous_container_before_failure:
+                raise RuntimeError("backup failure did not recreate the previous backend")
+            previous_after_failure_image_id = stack.backend_image_id()
+            if previous_after_failure_image_id != images["previous_image_id"]:
+                raise RuntimeError("backup failure did not restore the previous image")
+
+            stack.compose("stop", "backend", "worker", "beat", "proxy")
+            stack.compose(
+                "run",
+                "--no-deps",
+                "--rm",
+                "backend",
+                "uv",
+                "run",
+                "--locked",
+                "--no-dev",
+                "python",
+                "backend/manage.py",
+                "migrate",
+                "--noinput",
+            )
+            stack.compose("up", "-d", "--force-recreate", "backend")
+            candidate_port = stack.backend_port()
             base = f"http://127.0.0.1:{candidate_port}"
             candidate_health = wait_for(f"{base}/health/ready/")
             candidate_running_image_id = stack.backend_image_id()
@@ -262,8 +429,8 @@ def rollback_rehearsal(images: dict[str, str], evidence: Path) -> dict[str, Any]
             if len(candidate_routes.get("results", [])) != 1:
                 raise RuntimeError("candidate route read did not return one seeded route")
 
-            runtime_env(env_file, images["previous_image"])
-            stack.compose("up", "-d", "--no-deps", "backend")
+            runtime_env(env_file, images["previous_image"], backup_dir=backup_dir)
+            stack.compose("up", "-d", "--force-recreate", "--no-deps", "backend")
             previous_port = stack.backend_port()
             previous_base = f"http://127.0.0.1:{previous_port}"
             previous_health = wait_for(f"{previous_base}/health/ready/")
@@ -292,6 +459,21 @@ def rollback_rehearsal(images: dict[str, str], evidence: Path) -> dict[str, Any]
                     "running_image_id": previous_running_image_id,
                     "health": previous_health,
                     "route_count": len(previous_routes["results"]),
+                },
+                "migration_gate": migration_gate,
+                "backup": {
+                    "backup_id": backup_id,
+                    "manifest": manifest,
+                    "database_dump": f"db-{backup_id}.dump",
+                    "gpx_archive": f"gpx-{backup_id}.tar.gz",
+                },
+                "backup_failure_recovery": {
+                    "backup_id": failed_backup_id,
+                    "failed_exit_code": failed_backup.returncode,
+                    "previous_health": previous_after_backup_failure,
+                    "container_before": previous_container_before_failure,
+                    "container_after": previous_container_after_failure,
+                    "running_image_id": previous_after_failure_image_id,
                 },
                 "environment": "local disposable Docker Compose PostGIS/Redis stack",
                 "scope": "non-production rehearsal; production rollback remains an owner action",
