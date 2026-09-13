@@ -13,7 +13,11 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
-COPY . .
+# Keep the image boundary explicit. Deployment configuration, operational
+# data, and local review material are intentionally not part of the backend
+# image even though the build context is the repository root.
+COPY backend ./backend
+COPY scripts ./scripts
 RUN uv sync --locked --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
 # Build the immutable static asset set into the release image. Production
