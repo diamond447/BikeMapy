@@ -10,6 +10,7 @@ from django.core.exceptions import ObjectDoesNotExist
 
 from apps.catalogue.services import process_payload_deletion, retry_payload_deletions
 
+from .cache import cleanup_expired_crawl_response_bodies
 from .crawler import run_crawl
 from .dispatch import block_extraction_attempt, extraction_gate_reason, reconcile_extraction_queue
 from .gpx import (
@@ -39,6 +40,22 @@ def crawl_bikeforum(
 ) -> dict[str, Any]:
     """Run a bounded crawl; PostgreSQL state makes retries resumable."""
 
+    if not all(
+        getattr(settings, setting, False)
+        for setting in (
+            "BIKEFORUM_CRAWL_ENABLED",
+            "BIKEFORUM_PROVIDER_AUTHORIZED",
+            "BIKEFORUM_OPERATOR_APPROVED",
+        )
+    ):
+        return {
+            "status": "disabled",
+            "reason": (
+                "Real-source BikeForum crawling is disabled until provider and operator "
+                "decisions are recorded"
+            ),
+        }
+
     return run_crawl(
         start_url=start_url or settings.BIKEFORUM_INCREMENTAL_URL,
         max_pages=max_pages or 10,
@@ -61,6 +78,13 @@ def incremental_bikeforum_crawl() -> dict[str, Any]:
             stream="incremental",
         ),
     )
+
+
+@shared_task(name="bikemapy.ingestion.cleanup_crawl_response_cache")  # type: ignore[untyped-decorator]
+def cleanup_crawl_response_cache(limit: int | None = None) -> dict[str, int]:
+    """Clear one bounded batch of expired raw crawler response bodies."""
+
+    return cleanup_expired_crawl_response_bodies(limit=limit)
 
 
 @shared_task(name="bikemapy.ingestion.reconcile_extractions")  # type: ignore[untyped-decorator]

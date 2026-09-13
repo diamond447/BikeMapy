@@ -553,19 +553,28 @@ class HttpxPageFetcher(PageFetcher):
                         headers=headers,
                         max_bytes=self.max_bytes,
                     )
-                    if response.status_code == 304 and cached and cached.body:
-                        if len(cached.body.encode("utf-8")) > self.max_bytes:
-                            raise CrawlError(
-                                f"Cached BikeForum page exceeds the {self.max_bytes}-byte limit"
+                    if response.status_code == 304:
+                        if cached and cached.body:
+                            if len(cached.body.encode("utf-8")) > self.max_bytes:
+                                raise CrawlError(
+                                    f"Cached BikeForum page exceeds the {self.max_bytes}-byte limit"
+                                )
+                            cached.fetched_at = timezone.now()
+                            cached.save(update_fields=["fetched_at"])
+                            return FetchedPage(
+                                url=cached.final_url or current,
+                                body=cached.body,
+                                status_code=200,
+                                from_cache=True,
                             )
-                        cached.fetched_at = timezone.now()
-                        cached.save(update_fields=["fetched_at"])
-                        return FetchedPage(
-                            url=cached.final_url or current,
-                            body=cached.body,
-                            status_code=200,
-                            from_cache=True,
-                        )
+                        # Retention deliberately leaves validators behind. A
+                        # metadata-only 304 cannot be parsed, so retry without
+                        # validators to obtain a fresh body.
+                        if "If-None-Match" in headers or "If-Modified-Since" in headers:
+                            headers.pop("If-None-Match", None)
+                            headers.pop("If-Modified-Since", None)
+                            continue
+                        raise CrawlError("BikeForum returned 304 without a retained response body")
                     if response.status_code in {408, 425, 429} or response.status_code >= 500:
                         if attempt < self.retries:
                             time.sleep(min(self.backoff * (2**attempt), 30))

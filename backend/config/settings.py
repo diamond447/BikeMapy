@@ -324,6 +324,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.reports.retain_closed_reports",
         "schedule": 86400,
     },
+    "cleanup-crawler-response-cache": {
+        "task": "bikemapy.ingestion.cleanup_crawl_response_cache",
+        "schedule": 3600,
+    },
 }
 
 # Health monitoring treats a daily crawl as stale after this configurable
@@ -361,6 +365,13 @@ BIKEFORUM_RATE_LIMIT = float(os.getenv("BIKEFORUM_RATE_LIMIT", "2"))
 BIKEFORUM_RETRIES = int(os.getenv("BIKEFORUM_RETRIES", "2"))
 BIKEFORUM_BACKOFF = float(os.getenv("BIKEFORUM_BACKOFF", "1"))
 BIKEFORUM_CACHE_TTL = float(os.getenv("BIKEFORUM_CACHE_TTL", "3600"))
+# Raw forum HTML is retained only for short-lived replay after a crawl. The
+# URL, final URL, status, validators, checksum, and fetch time remain useful
+# crawler metadata after the scheduled cleanup clears the body.
+BIKEFORUM_CACHE_BODY_RETENTION_SECONDS = int(
+    os.getenv("BIKEFORUM_CACHE_BODY_RETENTION_SECONDS", str(24 * 3600))
+)
+BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE = int(os.getenv("BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE", "500"))
 BIKEFORUM_MAX_PAGES = int(os.getenv("BIKEFORUM_MAX_PAGES", "100"))
 # Do not let an origin serve an arbitrarily large HTML document to the parser.
 BIKEFORUM_MAX_BYTES = int(os.getenv("BIKEFORUM_MAX_BYTES", str(5 * 1024 * 1024)))
@@ -373,6 +384,11 @@ BIKEFORUM_ALLOWED_ORIGINS = [
 # URLs must never trigger requests to real Mapy hosts. Production must retain
 # the default and run the bounded source availability checks.
 BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
+# Real-source crawling remains off until the provider and operator decisions
+# recorded in docs/legal-review.md have been completed.
+BIKEFORUM_CRAWL_ENABLED = env_bool("BIKEFORUM_CRAWL_ENABLED", False)
+BIKEFORUM_PROVIDER_AUTHORIZED = env_bool("BIKEFORUM_PROVIDER_AUTHORIZED", False)
+BIKEFORUM_OPERATOR_APPROVED = env_bool("BIKEFORUM_OPERATOR_APPROVED", False)
 BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)
 BIKEFORUM_LEASE_SECONDS = int(os.getenv("BIKEFORUM_LEASE_SECONDS", "600"))
 BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))

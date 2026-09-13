@@ -87,7 +87,13 @@ class CrawlCheckpoint(models.Model):
 
 
 class CrawlResponseCache(models.Model):
-    """Small HTTP cache used for conditional requests and replayable crawls."""
+    """Short-lived replay body plus durable metadata for conditional requests.
+
+    ``body`` is raw upstream HTML and is cleared by the scheduled retention
+    task. URL, redirect, status, validators, checksum, and fetch time are
+    retained as crawler metadata so a later request can still use conditional
+    HTTP semantics without retaining page content.
+    """
 
     url = models.URLField(max_length=1000, unique=True)
     final_url = models.URLField(max_length=1000, blank=True)

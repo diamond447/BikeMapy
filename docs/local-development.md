@@ -38,7 +38,12 @@ Redis, and GPX volumes.
 
 The crawler targets the public Bike-Forum origin `https://www.bike-forum.cz`;
 the default incremental cursor is `https://www.bike-forum.cz/forum/`.
-The crawler is deliberately bounded and resumable. It fetches only public
+The crawler is deliberately bounded and resumable. Real-source crawling is
+disabled by default (`BIKEFORUM_CRAWL_ENABLED=false`) and must stay disabled
+until all three gates (`BIKEFORUM_CRAWL_ENABLED`,
+`BIKEFORUM_PROVIDER_AUTHORIZED`, and `BIKEFORUM_OPERATOR_APPROVED`) reflect
+the provider and operator decisions in [the legal review](legal-review.md).
+It fetches only public
 server-rendered HTML, identifies itself with `BIKEFORUM_USER_AGENT`, reads
 `robots.txt`, waits between requests, caches responses, and uses bounded
 retries. Requests and discovered links are restricted to the explicitly
@@ -49,7 +54,8 @@ still has the normal DNS TOCTOU limitation. Keep the default two-second
 request interval unless the forum owner has explicitly granted a different
 limit.
 
-Run an incremental crawl through Celery:
+After the required approvals are recorded, enable the flag in the deployment
+environment and run an incremental crawl through Celery:
 
 ```sh
 docker compose exec backend uv run --locked --no-dev python -c \
@@ -57,7 +63,8 @@ docker compose exec backend uv run --locked --no-dev python -c \
 ```
 
 Compose runs a dedicated `beat` service alongside the worker. It dispatches
-the scheduled crawl, reconciles bounded route-extraction work, and retries
+the scheduled crawl, clears at most `BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE`
+expired response bodies every hour, reconciles bounded route-extraction work, and retries
 durable quarantined-payload deletions every 15 minutes. A discovered source is
 handed to extraction only after its database transaction commits; queued and
 failed attempts retain their history for reconciliation after a broker outage.
@@ -65,6 +72,14 @@ Route extraction remains off by default and requires all three independent
 deployment gates: `GPX_EXTRACTION_ENABLED`, `GPX_PROVIDER_AUTHORIZED`, and
 `GPX_LEGAL_APPROVED`. Keep them disabled in local and preview environments
 unless a synthetic adapter is being used.
+
+The cache body is raw upstream HTML and exists only to replay a recent page;
+the approved retention period is 24 hours (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS`).
+The hourly cleanup keeps one bounded batch and reports the cleared and
+remaining counts in the Celery log. It clears only `body`; URL, redirect,
+status, ETag, Last-Modified, checksum, and fetch time remain for conditional
+requests and diagnostics. A metadata-only `304 Not Modified` is followed by
+one unconditional bounded fetch so cleanup cannot break crawling.
 
 Historical work must always have an explicit page bound:
 

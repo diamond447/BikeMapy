@@ -30,6 +30,21 @@ Source entries link to the canonical Mapy.com URL and BikeForum post URL, and
 show the source status and check date when available. Attribution must remain
 with any future screenshots, exports, or map-derived products.
 
+## Crawler response-cache decision
+
+For the narrow operational purpose of replaying a recently fetched page after
+a worker interruption and completing a conditional HTTP request, the approved
+engineering retention boundary for raw `CrawlResponseCache.body` is 24 hours
+from the latest successful fetch. Celery Beat clears expired bodies hourly in
+bounded batches while retaining URL, redirect, status, validators, checksum,
+and fetch time as crawler metadata. Database backups can retain a pre-cleanup
+body until their documented 30-snapshot host or 90-snapshot encrypted-laptop
+expiry. This engineering decision does not itself grant a content licence or
+resolve the provider's terms; `BIKEFORUM_CRAWL_ENABLED=false`,
+`BIKEFORUM_PROVIDER_AUTHORIZED=false`, and
+`BIKEFORUM_OPERATOR_APPROVED=false` remain required until provider permission
+and operator approval are recorded.
+
 ## Launch blockers
 
 The following questions are intentionally unresolved and must not be silently
@@ -44,9 +59,9 @@ assumed away:
    jurisdiction for the Terms and Privacy notice.
 4. Complete a trademark/name clearance for “BikeMapy” and confirm the
    OpenFreeMap production arrangement, limits, and attribution wording.
-5. Define and implement a lawful retention/deletion policy for raw
-   `CrawlResponseCache.body` HTML and confirm how it is removed from database
-   and backup copies.
+5. Confirm that the documented 24-hour retention/deletion policy for raw
+   `CrawlResponseCache.body` HTML is lawful and verify its removal from live
+   database and backup copies.
 6. Confirm the hosted Sentry retention setting (the app requires 30 days) and
    the deployment's proxy/log retention before collecting production reports.
 
