@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from django.conf import settings
 from django.db import models
 from django.utils import timezone
+
+from .cache_policy import configured_body_retention_seconds
 
 
 class CrawlTaskStatus(models.TextChoices):
@@ -97,7 +98,8 @@ class CrawlResponseCache(models.Model):
     task. URL, redirect, status, validators, checksum, fetch time, and the
     body-specific expiry deadline are retained as crawler metadata so a later
     request can still use conditional HTTP semantics without retaining page
-    content. A validator refresh never extends the body deadline.
+    content. A validator refresh never extends the body deadline. Empty
+    responses have no body deadline and are excluded from expiry indexing.
     """
 
     url = models.URLField(max_length=1000, unique=True)
@@ -119,23 +121,30 @@ class CrawlResponseCache(models.Model):
                 condition=models.Q(body_expires_at__isnull=False),
             ),
         ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(body="", body_expires_at__isnull=True)
+                    | models.Q(body__gt="", body_expires_at__isnull=False)
+                ),
+                name="ingestion_cache_body_expiry_consistent",
+            )
+        ]
 
     def __str__(self) -> str:
         return self.url
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if self.body and self.body_expires_at is None:
-            retention_seconds = max(
-                1,
-                int(
-                    getattr(
-                        settings,
-                        "BIKEFORUM_CACHE_BODY_RETENTION_SECONDS",
-                        24 * 3600,
-                    )
-                ),
-            )
+            retention_seconds = configured_body_retention_seconds()
             self.body_expires_at = self.fetched_at + timedelta(seconds=retention_seconds)
+        elif not self.body:
+            self.body_expires_at = None
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "body_expires_at" not in update_fields:
+            # Keep the application-level invariant intact for callers that
+            # optimize writes with update_fields while changing the body.
+            kwargs["update_fields"] = set(update_fields) | {"body_expires_at"}
         super().save(*args, **kwargs)
 
 

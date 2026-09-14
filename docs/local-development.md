@@ -77,11 +77,14 @@ The cache body is raw upstream HTML and exists only to replay a recent page;
 the approved retention period is 24 hours from body acquisition
 (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS`). A validator-only `304` refreshes
 metadata but never extends that body deadline.
-The hourly cleanup keeps one bounded batch and reports the cleared and
-remaining counts in the Celery log. It clears only `body`; URL, redirect,
-status, ETag, Last-Modified, checksum, and fetch time remain for conditional
-requests and diagnostics. A metadata-only `304 Not Modified` is followed by
-one unconditional bounded fetch so cleanup cannot break crawling.
+The hourly cleanup attempts one bounded batch and reports the cleared and
+remaining counts in the Celery log. A body becomes ineligible for replay at
+24 hours, while physical clearing from the live database occurs in the next
+successful batch and can be delayed by backlog or an outage. Cleanup clears
+only `body` and its expiry marker; URL, redirect, status, ETag, Last-Modified,
+checksum, and fetch time remain for conditional requests and diagnostics. A
+metadata-only `304 Not Modified` is followed by one unconditional bounded
+fetch so cleanup cannot break crawling.
 
 Historical work must always have an explicit page bound:
 

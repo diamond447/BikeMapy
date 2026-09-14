@@ -79,7 +79,9 @@ The crawler temporarily persists each fetched page's raw HTML in the
 a worker interruption. The approved engineering retention period is 24 hours
 from body acquisition (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86400`); a
 validator-only refresh never extends the body deadline.
-An hourly bounded Celery cleanup clears expired bodies; it retains only the
+An hourly bounded Celery cleanup clears eligible expired bodies on its next
+successful batch; backlog or an outage can delay physical clearing from the
+live database. It retains only the
 source URL, final URL, status, HTTP validators, checksum, and fetch time needed
 for conditional requests and crawl diagnostics. The body is not rendered as
 public page text, but it can contain forum content and usernames while retained.
@@ -120,7 +122,9 @@ cache HTML created before cleanup, report records, catalogue records, and
 private GPX payloads. A body cleared from the live database can therefore remain
 in a backup until that backup expires: the host keeps the newest 30 complete
 snapshots and the laptop the newest 90 encrypted snapshots. These are counts,
-not exact elapsed-day guarantees. The operator must securely remove affected
+not exact elapsed-day guarantees, and apply after live cleanup. The fixed body
+expiry is an application boundary, not a promise of immediate physical
+erasure. The operator must securely remove affected
 backup artifacts for an urgent request, or record the request's expiry at the
 normal backup-retention point.
 

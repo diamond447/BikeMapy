@@ -44,4 +44,14 @@ class Migration(migrations.Migration):
                 name="ingestion_c_body_expiry_idx",
             ),
         ),
+        migrations.AddConstraint(
+            model_name="crawlresponsecache",
+            constraint=models.CheckConstraint(
+                condition=(
+                    models.Q(body="", body_expires_at__isnull=True)
+                    | models.Q(body__gt="", body_expires_at__isnull=False)
+                ),
+                name="ingestion_cache_body_expiry_consistent",
+            ),
+        ),
     ]

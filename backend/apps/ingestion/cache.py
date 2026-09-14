@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from django.conf import settings
 from django.utils import timezone
 
+from .cache_policy import configured_body_retention_seconds
 from .models import CrawlResponseCache
 
 logger = logging.getLogger(__name__)
@@ -25,9 +26,7 @@ def cleanup_expired_crawl_response_bodies(
     backlog observable without scanning an unbounded metadata table.
     """
 
-    retention_seconds = max(
-        1, int(getattr(settings, "BIKEFORUM_CACHE_BODY_RETENTION_SECONDS", 24 * 3600))
-    )
+    retention_seconds = configured_body_retention_seconds()
     batch_size = max(
         1,
         int(

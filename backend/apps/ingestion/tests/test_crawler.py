@@ -19,6 +19,7 @@ from apps.catalogue.models import (
     SourceDenylistEntry,
 )
 from apps.ingestion.cache import cleanup_expired_crawl_response_bodies
+from apps.ingestion.cache_policy import configured_body_retention_seconds
 from apps.ingestion.crawler import (
     BeautifulSoupBikeForumParser,
     CrawlBusy,
@@ -669,6 +670,19 @@ def test_cache_body_expiry_uses_a_partial_index() -> None:
     assert expiry_index.condition == models.Q(body_expires_at__isnull=False)
 
 
+@override_settings(BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86401)
+def test_cache_body_retention_setting_cannot_exceed_24_hours() -> None:
+    assert settings.CRAWLER_CACHE_BODY_RETENTION_MAX_SECONDS == 24 * 3600
+    with pytest.raises(ValueError, match="between 1 and 86400 seconds"):
+        configured_body_retention_seconds()
+
+
+@override_settings(BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=0)
+def test_cache_body_retention_setting_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="between 1 and 86400 seconds"):
+        configured_body_retention_seconds()
+
+
 def test_cache_cleanup_is_scheduled_and_real_crawl_is_disabled_by_default() -> None:
     from apps.ingestion.tasks import cleanup_crawl_response_cache, crawl_bikeforum
 
@@ -717,6 +731,35 @@ def test_metadata_only_cache_retries_without_validators_after_304() -> None:
     assert fetcher.fetch(THREAD_URL).body == "fresh body"
     assert seen[-2].headers["if-none-match"] == '"v1"'
     assert "if-none-match" not in seen[-1].headers
+    client.close()
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"],
+    BIKEFORUM_DNS_CHECK=False,
+)
+def test_empty_response_has_no_body_expiry_or_cleanup_index_entry() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text="")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0)
+
+    assert fetcher.fetch(THREAD_URL).body == ""
+
+    cache_entry = CrawlResponseCache.objects.get(url=THREAD_URL)
+    assert cache_entry.body_expires_at is None
+    assert not CrawlResponseCache.objects.filter(
+        pk=cache_entry.pk, body_expires_at__isnull=False
+    ).exists()
+    cache_entry.body = "restored temporarily"
+    cache_entry.save(update_fields=["body"])
+    cache_entry.body = ""
+    cache_entry.save(update_fields=["body"])
+    cache_entry.refresh_from_db()
+    assert cache_entry.body_expires_at is None
     client.close()
 
 

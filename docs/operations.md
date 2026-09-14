@@ -132,10 +132,13 @@ extraction-attempt ID, preventing stale cleanup from colliding with a later
 import; existing stored keys remain readable and removable.
 
 Celery Beat also runs `bikemapy.ingestion.cleanup_crawl_response_cache` every
-hour. It clears at most `BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE` (500 by default)
-`CrawlResponseCache.body` values past their fixed 24-hour-from-acquisition
-`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS` boundary. The task logs the cleared
-count, whether a backlog remains, cutoff, and configured batch/retention values.
+hour. It physically clears at most `BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE` (500
+by default) `CrawlResponseCache.body` values that are past their fixed
+24-hour-from-acquisition `BIKEFORUM_CACHE_BODY_RETENTION_SECONDS` boundary.
+The body is logically expired at that deadline; physical live-DB clearing can
+wait for the next successful batch and may be delayed by backlog or outage.
+The task logs the cleared count, whether a backlog remains, cutoff, and
+configured batch/retention values.
 It preserves URL, final URL, status, ETag, Last-Modified, checksum, and fetch
 time so conditional requests continue to work. For an operator-run cleanup,
 dispatch the same Celery task with a smaller `limit`; repeat until its logged

@@ -49,6 +49,7 @@ from apps.catalogue.services import (
     register_source,
 )
 
+from .cache_policy import configured_body_retention_seconds
 from .dispatch import dispatch_sources
 from .models import (
     CrawlCheckpoint,
@@ -487,10 +488,7 @@ class HttpxPageFetcher(PageFetcher):
         if expiry is None:
             # This fallback keeps rows created before the expiry migration safe
             # until the migration or the next model save supplies the deadline.
-            retention = max(
-                1,
-                int(getattr(settings, "BIKEFORUM_CACHE_BODY_RETENTION_SECONDS", 24 * 3600)),
-            )
+            retention = configured_body_retention_seconds()
             expiry = cached.fetched_at + timedelta(seconds=retention)
         return expiry > now
 
@@ -613,16 +611,7 @@ class HttpxPageFetcher(PageFetcher):
                         break
                     body = response.content.decode(response.encoding or "utf-8", errors="replace")
                     fetched_at = timezone.now()
-                    retention_seconds = max(
-                        1,
-                        int(
-                            getattr(
-                                settings,
-                                "BIKEFORUM_CACHE_BODY_RETENTION_SECONDS",
-                                24 * 3600,
-                            )
-                        ),
-                    )
+                    retention_seconds = configured_body_retention_seconds()
                     CrawlResponseCache.objects.update_or_create(
                         url=url,
                         defaults={
@@ -633,7 +622,9 @@ class HttpxPageFetcher(PageFetcher):
                             "last_modified": response.headers.get("last-modified", ""),
                             "checksum": hashlib.sha256(response.content).hexdigest(),
                             "fetched_at": fetched_at,
-                            "body_expires_at": fetched_at + timedelta(seconds=retention_seconds),
+                            "body_expires_at": (
+                                fetched_at + timedelta(seconds=retention_seconds) if body else None
+                            ),
                         },
                     )
                     return FetchedPage(url=current, body=body, status_code=response.status_code)

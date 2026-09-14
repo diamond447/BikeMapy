@@ -50,9 +50,10 @@ and removal metadata may be retained to prevent accidental re-import and to
 show why a decision was made; it does not preserve a removed GPX file.
 
 Removal requests that identify a BikeForum page also cover any raw HTML held in
-`CrawlResponseCache.body`. The live cache body is automatically cleared after
-24 hours by a bounded hourly cleanup; cache metadata may remain for conditional
-requests and auditability. Database backups made before that cleanup can retain
+`CrawlResponseCache.body`. The live cache body becomes ineligible after 24 hours
+and is physically cleared by the next successful bounded hourly cleanup;
+backlog or an outage can delay that operation. Cache metadata may remain for
+conditional requests and auditability. Database backups made before that cleanup can retain
 the body until their normal expiry (up to 30 daily host snapshots and 90
 encrypted laptop snapshots), unless the operator securely removes the affected
 backup artifacts sooner and records that action.
