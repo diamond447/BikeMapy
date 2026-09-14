@@ -340,11 +340,15 @@ Privacy follows data minimization:
 - An optional report email is removed 90 days after the report closes.
 - Report text and its decision are retained for 12 months, then personal
   details are anonymized.
-- Admin audit data currently has no automatic expiry; a lawful retention and
-  deletion policy is a launch blocker.
-- Fetched BikeForum HTML is stored verbatim in `CrawlResponseCache.body` with
-  no implemented expiry or cleanup task. Its retention and removal from
-  database/backups are launch blockers.
+- Administrative and moderation audit events have a proposed 24-month
+  retention from creation, with a recorded legal hold for an unresolved
+  incident, rights dispute, or required accounting record. Automatic expiry is
+  not implemented yet; implementation and verification remain a launch gate.
+- Fetched BikeForum HTML is stored verbatim in `CrawlResponseCache.body` and is
+  eligible for replay for at most 24 hours from acquisition. Physical clearing
+  is attempted in bounded hourly cleanup batches and may be delayed by
+  backlog or outage. Database backups can retain a pre-cleanup body until
+  their snapshot expiry, so backup deletion handling remains a launch gate.
 - Database and GPX backups retain their newest 30 complete host snapshots and
   newest 90 encrypted laptop snapshots. These are counts, not elapsed-day
   limits, so actual retention depends on scheduling and operator cleanup.
@@ -378,9 +382,10 @@ Before public launch, the project must review BikeForum terms, Mapy.com terms
 and unofficial interface risks, OpenFreeMap terms, OpenStreetMap/ODbL
 requirements, GPX redistribution rights, and possible BikeMapy/Mapy.com brand
 or trademark confusion. BikeMapy must not imply affiliation with Mapy.com.
-Public GPX downloads remain conditional on that review; if redistribution is
-not allowed, the product falls back to displaying the route with attribution
-and links to the original source.
+The owner intends to enable all product features, including public GPX
+downloads, at launch. They remain conditional on that review; if
+redistribution is not allowed, the product falls back to displaying the route
+with attribution and links to the original source.
 
 ## Quality direction
 
