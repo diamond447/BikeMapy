@@ -1,5 +1,8 @@
 const LOCAL_SITE_URL = 'http://localhost:5173'
 
+/** Stable branded raster image used by route previews and the homepage. */
+export const SOCIAL_IMAGE_PATH = '/og-image.png'
+
 /** Return the configured public origin, with a useful local-development default. */
 export function normalizePublicSiteUrl(value?: string): string {
   const candidate = value?.trim() || LOCAL_SITE_URL
@@ -18,6 +21,11 @@ export function routeUrl(siteUrl: string, routeId: string, slug: string): string
   url.searchParams.set('route', routeId)
   url.searchParams.set('slug', slug)
   return url.href
+}
+
+/** Return an absolute URL for the shared social preview image. */
+export function socialImageUrl(siteUrl: string): string {
+  return new URL(SOCIAL_IMAGE_PATH, `${normalizePublicSiteUrl(siteUrl)}/`).href
 }
 
 function escapeXml(value: string): string {
