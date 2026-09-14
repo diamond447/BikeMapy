@@ -1,4 +1,4 @@
-import { apiOrigin, siteOrigin } from './metadata'
+import { apiOrigin, fetchWithTimeout, siteOrigin } from './metadata'
 import type { PagesContext } from './types'
 
 type RoutePage = {
@@ -7,7 +7,8 @@ type RoutePage = {
 }
 
 const PAGE_SIZE = 100
-const MAX_PAGES = 500
+// Keep below the Pages subrequest budget and the sitemap protocol limit.
+const MAX_PAGES = 45
 
 function routeUrl(origin: string, id: string, slug: string): string {
   const url = new URL('/', `${origin}/`)
@@ -46,15 +47,22 @@ async function fetchRouteUrls(fetcher: typeof fetch, api: string, site: string):
     const endpoint = new URL('/api/v1/routes/', `${api}/`)
     endpoint.searchParams.set('page', String(page))
     endpoint.searchParams.set('page_size', String(PAGE_SIZE))
-    const response = await fetcher(endpoint, { headers: { Accept: 'application/json' } })
+    const response = await fetchWithTimeout(fetcher, endpoint, {
+      headers: { Accept: 'application/json' },
+    })
     if (!response.ok) throw new Error(`Route catalogue returned ${response.status}`)
     const payload = (await response.json()) as RoutePage
     for (const route of payload.results ?? []) {
-      if (typeof route.id === 'string' && typeof route.slug === 'string' && route.slug) {
+      if (route && typeof route.id === 'string' && typeof route.slug === 'string' && route.slug) {
         urls.push(routeUrl(site, route.id, route.slug))
       }
     }
     if (!payload.next || (payload.results ?? []).length < PAGE_SIZE) break
+    if (page === MAX_PAGES) {
+      // Never return an apparently valid but incomplete sitemap. The caller
+      // falls back to the generated homepage-only asset instead.
+      throw new Error('Route catalogue exceeds the sitemap capacity')
+    }
   }
   return urls
 }

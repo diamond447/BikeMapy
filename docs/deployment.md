@@ -85,6 +85,12 @@ route, Pages serves the normal homepage document, so unpublished, removed, and
 unknown routes are never advertised. The sitemap function paginates the public
 route API and emits the homepage plus the current stable route URLs; it falls
 back to the generated homepage-only sitemap during an API outage.
+It makes at most 45 API subrequests (100 routes per page, 4,500 routes total),
+which stays below the Pages subrequest budget and the sitemap protocol's
+50,000-URL limit. If the catalogue exceeds that capacity, the function falls
+back to the generated homepage-only asset rather than silently publishing a
+truncated sitemap; the limit must be raised deliberately with a sitemap-index
+design when the catalogue approaches it.
 
 Pages Functions need the read-only `PUBLIC_API_ORIGIN` and canonical
 `PUBLIC_SITE_URL` environment variables at runtime. Existing deployments may

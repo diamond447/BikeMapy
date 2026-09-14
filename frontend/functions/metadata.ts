@@ -6,6 +6,9 @@ export type PublicRoute = {
   title: string
 }
 
+/** Keep metadata requests short enough that an edge request cannot hang. */
+export const API_TIMEOUT_MS = 3000
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export function isRouteId(value: string | null): value is string {
@@ -34,6 +37,22 @@ export function siteOrigin(value: string | undefined, requestUrl: string): strin
 
 export function routeApiUrl(origin: string, routeId: string): string {
   return `${apiOrigin(origin)}/api/v1/routes/${encodeURIComponent(routeId)}/`
+}
+
+/** Fetch an API resource with a prompt, caller-cancellable deadline. */
+export async function fetchWithTimeout(
+  fetcher: typeof fetch,
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs = API_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetcher(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -114,7 +133,7 @@ export async function fetchPublicRoute(
   origin: string,
   routeId: string,
 ): Promise<PublicRoute | null> {
-  const response = await fetcher(routeApiUrl(origin, routeId), {
+  const response = await fetchWithTimeout(fetcher, routeApiUrl(origin, routeId), {
     headers: { Accept: 'application/json' },
   })
   if (!response.ok) return null
