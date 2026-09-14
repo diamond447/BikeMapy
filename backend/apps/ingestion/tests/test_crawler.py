@@ -796,6 +796,49 @@ def test_body_backed_304_does_not_extend_body_retention_deadline() -> None:
     client.close()
 
 
+def test_stale_metadata_save_cannot_restore_a_concurrent_cache_deadline() -> None:
+    now = timezone.now()
+    initial_expiry = now + timedelta(hours=1)
+    cache_entry = CrawlResponseCache.objects.create(
+        url="https://bikeforum.example/race",
+        status_code=200,
+        body="original",
+        fetched_at=now,
+        body_expires_at=initial_expiry,
+    )
+    stale = CrawlResponseCache.objects.get(pk=cache_entry.pk)
+
+    fresh_expiry = now + timedelta(days=1)
+    CrawlResponseCache.objects.filter(pk=cache_entry.pk).update(
+        body="fresh", body_expires_at=fresh_expiry
+    )
+    stale.fetched_at = now + timedelta(minutes=1)
+    stale.save(update_fields=["fetched_at"])
+
+    cache_entry.refresh_from_db()
+    assert (cache_entry.body, cache_entry.body_expires_at) == ("fresh", fresh_expiry)
+
+
+def test_stale_metadata_save_cannot_resurrect_body_after_cleanup() -> None:
+    now = timezone.now()
+    cache_entry = CrawlResponseCache.objects.create(
+        url="https://bikeforum.example/cleanup-race",
+        status_code=200,
+        body="original",
+        fetched_at=now - timedelta(days=1),
+        body_expires_at=now - timedelta(minutes=1),
+    )
+    stale = CrawlResponseCache.objects.get(pk=cache_entry.pk)
+
+    assert cleanup_expired_crawl_response_bodies(now=now)["cleared"] == 1
+    stale.fetched_at = now + timedelta(minutes=1)
+    stale.save(update_fields=["fetched_at"])
+
+    cache_entry.refresh_from_db()
+    assert cache_entry.body == ""
+    assert cache_entry.body_expires_at is None
+
+
 def test_http_fetcher_paces_requests() -> None:
     fetcher = HttpxPageFetcher(client=httpx.Client(), rate_limit=2)
     with patch("apps.ingestion.crawler.time.monotonic", side_effect=[0.0, 0.0, 2.0, 2.0]) as clock:

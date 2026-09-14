@@ -135,13 +135,18 @@ class CrawlResponseCache(models.Model):
         return self.url
 
     def save(self, *args: Any, **kwargs: Any) -> None:
+        previous_body_expiry = self.body_expires_at
         if self.body and self.body_expires_at is None:
             retention_seconds = configured_body_retention_seconds()
             self.body_expires_at = self.fetched_at + timedelta(seconds=retention_seconds)
         elif not self.body:
             self.body_expires_at = None
         update_fields = kwargs.get("update_fields")
-        if update_fields is not None and "body_expires_at" not in update_fields:
+        if (
+            update_fields is not None
+            and "body_expires_at" not in update_fields
+            and self.body_expires_at != previous_body_expiry
+        ):
             # Keep the application-level invariant intact for callers that
             # optimize writes with update_fields while changing the body.
             kwargs["update_fields"] = set(update_fields) | {"body_expires_at"}
