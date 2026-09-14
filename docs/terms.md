@@ -1,13 +1,14 @@
 # BikeMapy Terms of Use
 
-**Last reviewed:** 2026-09-06  
+**Last reviewed:** 2026-09-14
 **Status:** launch draft — operator identity and legal review are still
 required
 
 These terms describe the intended use of the BikeMapy route catalogue. They
 are not legal advice. They are not active launch terms until the maintainer
-adds the operator's legal identity, contact details, governing law, and an
-effective date after legal review.
+adds the operator's legal identity, private contact details, lawful basis,
+effective date, and final legal review. The owner has confirmed the Czech
+Republic as governing law and publication jurisdiction.
 
 ## Service
 
@@ -31,9 +32,12 @@ licensed by BikeMapy's MIT source-code licence. Use them only under their own
 terms or with permission from the relevant rights holder. Do not infer a
 licence from indexing, linking, or public availability.
 
-Public GPX redistribution is disabled. A download link may not be enabled by a
-client or user; it requires a recorded legal decision and an explicit
-deployment change. The map provider's attribution must not be removed.
+The owner intends to enable public GPX downloads at launch, but the technical
+gate remains disabled until BikeForum/Mapy.com permission or another
+documented rights basis is recorded. A download link may not be enabled by a
+client or user before that decision. The map provider's
+`OpenFreeMap © OpenMapTiles Data from OpenStreetMap` attribution must not be
+removed.
 
 ## Acceptable use and reports
 
@@ -63,4 +67,6 @@ For a route, rights, or attribution concern, use the repository's [public issue
 tracker](https://github.com/diamond447/BikeMapy/issues) and select a removal or
 legal report. Do not include private personal data in a public issue. The
 operator identity and a private legal contact are a launch blocker and will be
-published before activation.
+published before activation. The owner has confirmed the Czech Republic as
+governing-law and publication jurisdiction. The operator identity and
+`legal@bikemapy.cz` contact mailbox remain unconfirmed and inactive.

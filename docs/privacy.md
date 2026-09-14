@@ -1,8 +1,8 @@
 # BikeMapy Privacy Notice
 
-**Last reviewed:** 2026-09-06  
-**Status:** launch draft — operator identity, legal basis, and jurisdiction
-require legal review
+**Last reviewed:** 2026-09-14
+**Status:** launch draft — operator/controller identity, private contact,
+lawful basis, effective date, and final legal review remain pending
 
 This notice describes the current repository behavior. It is not legal advice
 and is not a substitute for the final notice naming the operator and lawful
@@ -25,16 +25,18 @@ The product also sends only three allow-listed aggregate events to the API:
 route-detail views, GPX download clicks, and original-source clicks. The API
 stores one counter per event and local calendar day. Events contain no route
 identifier, URL, session, user, network address, user-agent, or arbitrary
-metadata, and the response does not expose counter values publicly. GPX
-redistribution is disabled at launch, so the GPX click counter remains zero
-unless the legal deployment gate is later approved and a download link is
-explicitly enabled.
+metadata, and the response does not expose counter values publicly. The owner
+intends to enable all product features at launch, including public GPX
+downloads,
+but the legal deployment gate remains false until provider and rights evidence
+is recorded. While that gate is false, the GPX click counter remains zero and
+the API returns no download URL.
 
 ### Cloudflare Web Analytics vendor boundary
 
 Cloudflare's [Web Analytics about page](https://developers.cloudflare.com/web-analytics/about/)
 and [FAQ](https://developers.cloudflare.com/web-analytics/faq/) (reviewed
-2026-09-06) describe Web Analytics as not collecting or using visitors'
+2026-09-14) describe Web Analytics as not collecting or using visitors'
 personal data and as operating without cookies or fingerprinting. The
 operator's review is still required: Cloudflare receives the browser beacon
 request and its network/protocol data at Cloudflare's analytics service, and
@@ -54,9 +56,12 @@ beacon if that review fails.
 
 MapLibre loads the configured OpenFreeMap style and tiles. Those requests go
 to the map provider and may expose the visitor's network address to that
-provider under its terms. The app also loads the configured font stylesheet
-from Google Fonts. The operator must confirm the production font and tile
-arrangements before launch.
+provider under its terms. The map attribution uses the provider wording
+`OpenFreeMap © OpenMapTiles Data from OpenStreetMap` with links. The app loads the configured font stylesheet from
+Google Fonts, which is another third-party request boundary. The operator
+must confirm the production font, tile, and provider privacy arrangements
+before launch; the Google Fonts policy page was not accessible from the
+2026-09-14 sandbox review.
 
 ## Catalogue and source data
 
@@ -76,12 +81,12 @@ display.
 
 The crawler temporarily persists each fetched page's raw HTML in the
 `CrawlResponseCache.body` database field so a recent page can be replayed after
-a worker interruption. The approved engineering retention period is 24 hours
-from body acquisition (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86400`); a
-validator-only refresh never extends the body deadline.
-An hourly bounded Celery cleanup clears eligible expired bodies on its next
-successful batch; backlog or an outage can delay physical clearing from the
-live database. It retains only the
+a worker interruption. The approved engineering replay/eligibility deadline
+is 24 hours from body acquisition
+(`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86400`); a validator-only refresh
+never extends the body deadline. An hourly bounded Celery cleanup attempts to
+clear eligible expired bodies in its next successful batch; backlog or an
+outage can delay physical clearing from the live database. It retains only the
 source URL, final URL, status, HTTP validators, checksum, and fetch time needed
 for conditional requests and crawl diagnostics. The body is not rendered as
 public page text, but it can contain forum content and usernames while retained.
@@ -113,9 +118,12 @@ Closed reports retain their optional email for 90 days after closure. Report
 message and decision details are anonymized after 365 days; the daily Celery
 task performs these transitions and records an audit event. Reports that have
 not been closed are not automatically aged out by this task, so the owner
-must close or delete them when there is no ongoing need. Administrative audit
-records currently have no implemented automatic expiry; this is a launch
-blocker, not an omitted promise.
+must close or delete them when there is no ongoing need. The proposed
+administrative-audit policy is 24 months from event creation, with a recorded
+legal hold for an unresolved incident, rights dispute, or required accounting
+record. This policy is not yet implemented: current moderation and report
+audit rows have no automatic expiry and must not be represented as compliant
+until the maintenance job and migration are verified.
 
 Database and GPX backups also copy the data they contain, including raw crawl
 cache HTML created before cleanup, report records, catalogue records, and
@@ -135,8 +143,12 @@ source attribution by submitting the [Removal Policy](removal-policy.md) path.
 Use the public [issue tracker](https://github.com/diamond447/BikeMapy/issues)
 for a first contact, and do not post identity documents or other sensitive
 data publicly. A private operator contact, legal basis, controller identity,
-and response process must be confirmed before launch.
+and response process must be confirmed before launch. The owner has confirmed
+the Czech Republic as governing-law and publication jurisdiction. The
+`legal@bikemapy.cz` mailbox and operator identity have not been verified.
 
-The raw HTML cache has a documented 24-hour live retention and an implemented
-hourly cleanup, but provider/operator approval for crawling and the backup
-propagation process remain launch gates.
+The raw HTML cache has a documented 24-hour replay/eligibility deadline. Its
+physical live-database clearing is eventual, performed in bounded hourly
+batches, and may be delayed by backlog or outage; backups can retain copies.
+Provider/operator approval for crawling and the backup propagation process
+remain launch gates.

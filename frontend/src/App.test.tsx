@@ -230,7 +230,11 @@ describe('BikeMapy route discovery', () => {
       'href',
       'https://openfreemap.org/',
     )
-    expect(screen.getByRole('link', { name: 'OpenStreetMap contributors' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: '© OpenMapTiles' })).toHaveAttribute(
+      'href',
+      'https://www.openmaptiles.org/',
+    )
+    expect(screen.getByRole('link', { name: 'OpenStreetMap' })).toHaveAttribute(
       'href',
       'https://www.openstreetmap.org/copyright',
     )

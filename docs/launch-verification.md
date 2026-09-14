@@ -9,7 +9,8 @@ promise that the checks have passed merely because the commands are listed.
 The production frontend sets `VITE_PUBLIC_SITE_URL`, `VITE_API_URL`, and the
 public `VITE_CF_WEB_ANALYTICS_TOKEN`. The token enables the Cloudflare Web
 Analytics beacon, whose aggregate visits metric is the primary launch
-measurement. The API deployment keeps `GPX_REDISTRIBUTION_APPROVED=false` and
+measurement. The owner intends to enable all features, including GPX, but the
+API deployment must keep `GPX_REDISTRIBUTION_APPROVED=false` and
 `GPX_INTERNAL_REDIRECT=false` until a new documented legal approval is made.
 Reports, OAuth owner IDs, Turnstile, trusted proxy CIDRs, crawler limits,
 backup paths, and Sentry retention are configured only through the host-only
@@ -18,9 +19,9 @@ environment described in the deployment and operations runbooks.
 The event endpoint accepts only `route_detail_view`, `gpx_download_click`, and
 `original_source_click`. It stores a single day/event counter and no route ID,
 URL, visitor ID, IP address, user-agent, or arbitrary event metadata. Product
-events are best-effort and cannot block route browsing. The disabled GPX
-decision means no public download click can occur at launch; its counter is
-kept for a future legally approved configuration.
+events are best-effort and cannot block route browsing. Until the GPX rights
+gate is approved, no public download click can occur; its counter is kept for
+the intended legally approved configuration.
 
 The counters are directional product signals, not authenticated facts: a
 client can block or spoof a beacon and the API does not attempt to establish
@@ -43,7 +44,8 @@ boundary must not be copied into a production environment.
 | Frontend lint, types, tests, build | `cd frontend && pnpm lint && pnpm format && pnpm exec tsc -b --pretty false && pnpm test && VITE_PUBLIC_SITE_URL=http://localhost:5173 VITE_API_URL=https://api.example.invalid VITE_ENABLE_REPORTS=false pnpm build`; inspect the generated bundle. | Run locally for this change; owner/CI evidence remains separate. |
 | API contract and dependency audit | `make api-schema`; run `pip-audit`, `pnpm audit --audit-level high`, and repository security checks where tooling is available. | Record each command result; do not infer CI success from local output. |
 | Privacy analytics | Test empty-token and configured-token builds; POST each allow-listed event and verify only the day/event row changes. Inspect browser requests for payloads with no identifier or metadata. Verify allowed/disallowed Origin behavior and that throttle keys are global rather than IP-derived. | Automated unit/API checks are evidence; hosted Cloudflare dashboard and vendor-settings review is owner action. |
-| GPX legal gate | With default settings, request route detail and `/gpx/`; verify no download URL and a 404 response. | Automated backend test; production configuration is an owner gate. |
+| GPX legal gate | With default settings, request route detail and `/gpx/`; verify no download URL and a 404 response. If rights evidence is recorded, repeat with the approved production setting and retain the decision. | Automated backend test; provider permission and production configuration are owner gates. |
+| Administrative audit retention | Verify the proposed 24-month expiry, legal-hold exception, migration, and deletion job against moderation/report audit rows; retain a deletion count and rollback-safe backup evidence. | Not implemented or verified in this record; launch gate. |
 | Accessibility and localization | Run `pnpm e2e`; review axe output, keyboard focus, English/Czech copy, and reduced-motion behavior. | Automated tests are evidence; owner screenshot review is pending. |
 | Responsive acceptance | Run desktop and mobile Playwright evidence tests at representative viewport sizes; owner reviews screenshots for overlap, detail sheet, map, and footer. | Automated tests may pass; screenshot approval must be recorded by owner. |
 | Backup and restore | Run `deploy/backup.sh` in the production-like host window, verify its manifest, then run `deploy/restore-drill.sh <backup-id>` and the scheduled restore-drill workflow. Preserve row-count and checksum evidence. | Disposable drill is runnable here; production host execution is pending owner. |
@@ -57,16 +59,19 @@ The owner must review the production Cloudflare Web Analytics property and
 record its site token, retention settings, and a screenshot showing that no
 marketing cookies or fingerprinting feature is enabled. The owner must also
 review desktop/mobile screenshots, confirm legal and controller details in the
-public notices, verify backups and restore artifacts, and record image digests
-and endpoint responses after deployment.
+public notices, confirm the linked `OpenFreeMap © OpenMapTiles Data from
+OpenStreetMap` attribution,
+verify backups and restore artifacts, and record image digests and endpoint
+responses after deployment.
 
 Roll back the immutable frontend/backend pair to the last known-good digest if
 `/health/live/` or `/health/ready/` fails, representative route reads fail,
 the crawler corrupts or duplicates data, restore verification fails, or an
 unexpected analytics payload contains an identifier. Disable analytics by
 removing the public token if the hosted property behaves contrary to the
-privacy decision. Keep GPX redistribution disabled and remove any accidental
-download exposure immediately; a legal or rights-holder concern is an
+privacy decision. Keep GPX redistribution disabled until the documented rights
+decision exists and remove any accidental download exposure immediately; a
+legal or rights-holder concern is an
 immediate launch rollback trigger.
 
 ## Measurement hypothesis

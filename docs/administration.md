@@ -76,4 +76,8 @@ secret (it falls back to the report secret, then Django's secret key).
 Set `REPORT_TURNSTILE_SECRET_KEY` and `REPORT_RATE_LIMIT_HMAC_SECRET` in the
 runtime environment. The daily Celery beat task removes closed-report email
 after 90 days and replaces personal report details after 12 months. Both
-transitions are idempotent and audited.
+transitions are idempotent and audited. The launch retention target for
+administrative and moderation audit events is 24 months from creation, unless
+a documented legal hold applies. This target is not implemented yet: audit
+rows currently have no automatic expiry, so the owner must not treat this
+document as evidence that the retention gate has passed.
