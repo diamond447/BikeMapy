@@ -113,7 +113,10 @@ def runtime_env(
     forum_port: int | None = None,
     backup_dir: Path | None = None,
 ) -> None:
-    origin = f"http://host.docker.internal:{forum_port}" if forum_port else "http://localhost:1"
+    synthetic_crawler = forum_port is not None
+    origin = (
+        f"http://host.docker.internal:{forum_port}" if synthetic_crawler else "http://localhost:1"
+    )
     rehearsal_backup_dir = backup_dir or path.parent / "backup"
     rehearsal_backup_dir.mkdir(parents=True, exist_ok=True)
     values = {
@@ -134,7 +137,14 @@ def runtime_env(
         "CELERY_RESULT_BACKEND": "redis://redis:6379/0",
         "BIKEFORUM_ALLOWED_ORIGINS": origin,
         "BIKEFORUM_INCREMENTAL_URL": f"{origin}/t/42",
-        "REHEARSAL_FORUM_PORT": str(forum_port or ""),
+        "REHEARSAL_FORUM_PORT": str(forum_port if forum_port is not None else ""),
+        # The only enabled crawler runtime is this disposable local forum;
+        # it serves checked-in fixtures and never contacts a real provider.
+        # Keep all three production approval gates false in ordinary and
+        # rollback rehearsals, where no synthetic forum is configured.
+        "BIKEFORUM_CRAWL_ENABLED": str(synthetic_crawler).lower(),
+        "BIKEFORUM_PROVIDER_AUTHORIZED": str(synthetic_crawler).lower(),
+        "BIKEFORUM_OPERATOR_APPROVED": str(synthetic_crawler).lower(),
         "BIKEFORUM_DNS_CHECK": "false",
         "BIKEFORUM_CHECK_SOURCES": "false",
         "BIKEFORUM_LEASE_SECONDS": "5",

@@ -74,13 +74,17 @@ robots policy, and applies request/size/time limits. It does not intentionally
 collect private account pages, passwords, or forum message bodies for public
 display.
 
-The crawler also persists each fetched page's raw HTML in the
-`CrawlResponseCache.body` database field, together with its source URL, final
-URL, status, validators, checksum, and fetch time. The cache has no implemented
-expiry or cleanup task, so raw HTML (which can contain forum post content and
-usernames) remains in the database indefinitely unless an operator deletes it
-or removes the database. It is not rendered as public page text, but it is
-still collected and retained personal/content data.
+The crawler temporarily persists each fetched page's raw HTML in the
+`CrawlResponseCache.body` database field so a recent page can be replayed after
+a worker interruption. The approved engineering retention period is 24 hours
+from body acquisition (`BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86400`); a
+validator-only refresh never extends the body deadline.
+An hourly bounded Celery cleanup clears eligible expired bodies on its next
+successful batch; backlog or an outage can delay physical clearing from the
+live database. It retains only the
+source URL, final URL, status, HTTP validators, checksum, and fetch time needed
+for conditional requests and crawl diagnostics. The body is not rendered as
+public page text, but it can contain forum content and usernames while retained.
 
 ## Reports and security controls
 
@@ -114,12 +118,15 @@ records currently have no implemented automatic expiry; this is a launch
 blocker, not an omitted promise.
 
 Database and GPX backups also copy the data they contain, including raw crawl
-cache HTML, report records, catalogue records, and private GPX payloads. The
-host cleanup task keeps the newest 30 complete snapshots and the laptop keeps
-the newest 90 encrypted snapshots. These are counts rather than elapsed-day
-limits; actual backup retention depends on scheduling and operator cleanup.
-Backup copies therefore remain relevant to any deletion request until their
-retention point passes or the operator securely removes them.
+cache HTML created before cleanup, report records, catalogue records, and
+private GPX payloads. A body cleared from the live database can therefore remain
+in a backup until that backup expires: the host keeps the newest 30 complete
+snapshots and the laptop the newest 90 encrypted snapshots. These are counts,
+not exact elapsed-day guarantees, and apply after live cleanup. The fixed body
+expiry is an application boundary, not a promise of immediate physical
+erasure. The operator must securely remove affected
+backup artifacts for an urgent request, or record the request's expiry at the
+normal backup-retention point.
 
 ## Rights and contact
 
@@ -130,6 +137,6 @@ for a first contact, and do not post identity documents or other sensitive
 data publicly. A private operator contact, legal basis, controller identity,
 and response process must be confirmed before launch.
 
-The raw HTML cache's indefinite retention and the absence of an implemented
-audit/cache expiry policy must also be resolved before launch. No retention
-period is assumed for either store.
+The raw HTML cache has a documented 24-hour live retention and an implemented
+hourly cleanup, but provider/operator approval for crawling and the backup
+propagation process remain launch gates.

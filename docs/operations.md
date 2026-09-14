@@ -131,6 +131,20 @@ New GPX payload keys retain the checksum for diagnostics and add the immutable
 extraction-attempt ID, preventing stale cleanup from colliding with a later
 import; existing stored keys remain readable and removable.
 
+Celery Beat also runs `bikemapy.ingestion.cleanup_crawl_response_cache` every
+hour. It physically clears at most `BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE` (500
+by default) `CrawlResponseCache.body` values that are past their fixed
+24-hour-from-acquisition `BIKEFORUM_CACHE_BODY_RETENTION_SECONDS` boundary.
+The body is logically expired at that deadline; physical live-DB clearing can
+wait for the next successful batch and may be delayed by backlog or outage.
+The task logs the cleared count, whether a backlog remains, cutoff, and
+configured batch/retention values.
+It preserves URL, final URL, status, ETag, Last-Modified, checksum, and fetch
+time so conditional requests continue to work. For an operator-run cleanup,
+dispatch the same Celery task with a smaller `limit`; repeat until its logged
+`remaining` value is zero. Never delete the cache row solely to remove body
+content, because its validators are useful crawler state.
+
 ## Daily snapshots
 
 Create a restricted backup directory owned by the deployment operator and run
@@ -192,6 +206,15 @@ Run `deploy/retention.sh` after successful backups: the host keeps the newest
 It always preserves the newest recovery points and removes only older files
 with the same snapshot ID. The example schedules are in
 `deploy/retention.cron.example`.
+
+Backups taken before cache cleanup may contain the raw HTML body. Live deletion
+therefore does not immediately erase every copy: the host copy can retain it
+for up to 30 daily snapshots and the encrypted laptop copy up to 90 snapshots,
+subject to scheduler timing. For an approved urgent removal, identify and
+securely remove the affected snapshot sets (or document why the normal expiry
+is being followed), then record the backup IDs and operator action. Do not
+delete a complete recovery point without preserving the required newest
+snapshot coverage.
 
 This laptop is a separate physical copy, but it is not cloud storage,
 geographic disaster protection, high availability, or an immutable backup.

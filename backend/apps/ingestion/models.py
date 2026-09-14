@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from typing import Any
+
 from django.db import models
 from django.utils import timezone
+
+from .cache_policy import configured_body_retention_seconds
 
 
 class CrawlTaskStatus(models.TextChoices):
@@ -87,22 +92,65 @@ class CrawlCheckpoint(models.Model):
 
 
 class CrawlResponseCache(models.Model):
-    """Small HTTP cache used for conditional requests and replayable crawls."""
+    """Short-lived replay body plus durable metadata for conditional requests.
+
+    ``body`` is raw upstream HTML and is cleared by the scheduled retention
+    task. URL, redirect, status, validators, checksum, fetch time, and the
+    body-specific expiry deadline are retained as crawler metadata so a later
+    request can still use conditional HTTP semantics without retaining page
+    content. A validator refresh never extends the body deadline. Empty
+    responses have no body deadline and are excluded from expiry indexing.
+    """
 
     url = models.URLField(max_length=1000, unique=True)
     final_url = models.URLField(max_length=1000, blank=True)
     status_code = models.PositiveSmallIntegerField()
     body = models.TextField(blank=True)
+    body_expires_at = models.DateTimeField(blank=True, null=True)
     etag = models.CharField(max_length=500, blank=True)
     last_modified = models.CharField(max_length=255, blank=True)
     checksum = models.CharField(max_length=128, blank=True)
     fetched_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        indexes = [models.Index(fields=["fetched_at"], name="ingestion_c_fetched_6f7f6a_idx")]
+        indexes = [
+            models.Index(fields=["fetched_at"], name="ingestion_c_fetched_6f7f6a_idx"),
+            models.Index(
+                fields=["body_expires_at", "id"],
+                name="ingestion_c_body_expiry_idx",
+                condition=models.Q(body_expires_at__isnull=False),
+            ),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(body="", body_expires_at__isnull=True)
+                    | models.Q(body__gt="", body_expires_at__isnull=False)
+                ),
+                name="ingestion_cache_body_expiry_consistent",
+            )
+        ]
 
     def __str__(self) -> str:
         return self.url
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        previous_body_expiry = self.body_expires_at
+        if self.body and self.body_expires_at is None:
+            retention_seconds = configured_body_retention_seconds()
+            self.body_expires_at = self.fetched_at + timedelta(seconds=retention_seconds)
+        elif not self.body:
+            self.body_expires_at = None
+        update_fields = kwargs.get("update_fields")
+        if (
+            update_fields is not None
+            and "body_expires_at" not in update_fields
+            and self.body_expires_at != previous_body_expiry
+        ):
+            # Keep the application-level invariant intact for callers that
+            # optimize writes with update_fields while changing the body.
+            kwargs["update_fields"] = set(update_fields) | {"body_expires_at"}
+        super().save(*args, **kwargs)
 
 
 class CrawlPageWork(models.Model):

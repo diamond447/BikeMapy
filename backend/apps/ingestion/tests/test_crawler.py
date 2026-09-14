@@ -6,6 +6,8 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 import pytest
+from django.conf import settings
+from django.db import models
 from django.test import override_settings
 from django.utils import timezone
 
@@ -16,6 +18,8 @@ from apps.catalogue.models import (
     RouteSource,
     SourceDenylistEntry,
 )
+from apps.ingestion.cache import cleanup_expired_crawl_response_bodies
+from apps.ingestion.cache_policy import configured_body_retention_seconds
 from apps.ingestion.crawler import (
     BeautifulSoupBikeForumParser,
     CrawlBusy,
@@ -616,6 +620,223 @@ def test_http_fetcher_uses_conditional_cache_validators() -> None:
     assert seen[-1].headers["if-none-match"] == '"v1"'
     assert seen[-1].headers["if-modified-since"] == "Wed, 01 Jan 2025 00:00:00 GMT"
     client.close()
+
+
+@override_settings(BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=24 * 3600)
+def test_cache_cleanup_is_bounded_and_preserves_conditional_metadata() -> None:
+    now = timezone.now()
+    old = CrawlResponseCache.objects.create(
+        url="https://bikeforum.example/old",
+        final_url="https://bikeforum.example/final",
+        status_code=200,
+        body="old body",
+        etag='"old"',
+        last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+        checksum="old-checksum",
+        fetched_at=now - timedelta(days=2),
+    )
+    newer = CrawlResponseCache.objects.create(
+        url="https://bikeforum.example/newer",
+        status_code=200,
+        body="new body",
+        etag='"new"',
+        fetched_at=now - timedelta(days=2),
+    )
+
+    result = cleanup_expired_crawl_response_bodies(now=now, limit=1)
+
+    assert result["cleared"] == 1
+    assert result["remaining"] == 1
+    old.refresh_from_db()
+    assert old.body == ""
+    assert (old.final_url, old.etag, old.last_modified, old.checksum) == (
+        "https://bikeforum.example/final",
+        '"old"',
+        "Wed, 01 Jan 2025 00:00:00 GMT",
+        "old-checksum",
+    )
+    newer.refresh_from_db()
+    assert newer.body == "new body"
+
+
+def test_cache_body_expiry_uses_a_partial_index() -> None:
+    expiry_index = next(
+        index
+        for index in CrawlResponseCache._meta.indexes
+        if index.name == "ingestion_c_body_expiry_idx"
+    )
+
+    assert expiry_index.fields == ["body_expires_at", "id"]
+    assert expiry_index.condition == models.Q(body_expires_at__isnull=False)
+
+
+@override_settings(BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=86401)
+def test_cache_body_retention_setting_cannot_exceed_24_hours() -> None:
+    assert settings.CRAWLER_CACHE_BODY_RETENTION_MAX_SECONDS == 24 * 3600
+    with pytest.raises(ValueError, match="between 1 and 86400 seconds"):
+        configured_body_retention_seconds()
+
+
+@override_settings(BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=0)
+def test_cache_body_retention_setting_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="between 1 and 86400 seconds"):
+        configured_body_retention_seconds()
+
+
+def test_cache_cleanup_is_scheduled_and_real_crawl_is_disabled_by_default() -> None:
+    from apps.ingestion.tasks import cleanup_crawl_response_cache, crawl_bikeforum
+
+    assert settings.CELERY_BEAT_SCHEDULE["cleanup-crawler-response-cache"] == {
+        "task": "bikemapy.ingestion.cleanup_crawl_response_cache",
+        "schedule": 3600,
+    }
+    assert crawl_bikeforum()["status"] == "disabled"
+
+    old = CrawlResponseCache.objects.create(
+        url="https://bikeforum.example/scheduled-cleanup",
+        status_code=200,
+        body="old body",
+        fetched_at=timezone.now() - timedelta(days=2),
+    )
+    assert cleanup_crawl_response_cache(limit=1)["cleared"] == 1
+    old.refresh_from_db()
+    assert old.body == ""
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"],
+    BIKEFORUM_DNS_CHECK=False,
+)
+def test_metadata_only_cache_retries_without_validators_after_304() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if request.headers.get("if-none-match") == '"v1"':
+            return httpx.Response(304)
+        return httpx.Response(200, text="fresh body", headers={"ETag": '"v2"'})
+
+    CrawlResponseCache.objects.create(
+        url=THREAD_URL,
+        final_url=THREAD_URL,
+        status_code=200,
+        body="",
+        etag='"v1"',
+        fetched_at=timezone.now() - timedelta(days=2),
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, cache_ttl=1)
+    assert fetcher.fetch(THREAD_URL).body == "fresh body"
+    assert seen[-2].headers["if-none-match"] == '"v1"'
+    assert "if-none-match" not in seen[-1].headers
+    client.close()
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"],
+    BIKEFORUM_DNS_CHECK=False,
+)
+def test_empty_response_has_no_body_expiry_or_cleanup_index_entry() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(200, text="")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0)
+
+    assert fetcher.fetch(THREAD_URL).body == ""
+
+    cache_entry = CrawlResponseCache.objects.get(url=THREAD_URL)
+    assert cache_entry.body_expires_at is None
+    assert not CrawlResponseCache.objects.filter(
+        pk=cache_entry.pk, body_expires_at__isnull=False
+    ).exists()
+    cache_entry.body = "restored temporarily"
+    cache_entry.save(update_fields=["body"])
+    cache_entry.body = ""
+    cache_entry.save(update_fields=["body"])
+    cache_entry.refresh_from_db()
+    assert cache_entry.body_expires_at is None
+    client.close()
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"],
+    BIKEFORUM_DNS_CHECK=False,
+    BIKEFORUM_CACHE_BODY_RETENTION_SECONDS=24 * 3600,
+)
+def test_body_backed_304_does_not_extend_body_retention_deadline() -> None:
+    expiry = timezone.now() + timedelta(hours=1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return httpx.Response(304)
+
+    cache_entry = CrawlResponseCache.objects.create(
+        url=THREAD_URL,
+        final_url=THREAD_URL,
+        status_code=200,
+        body="cached",
+        etag='"v1"',
+        fetched_at=timezone.now() - timedelta(hours=2),
+        body_expires_at=expiry,
+    )
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, cache_ttl=1)
+
+    assert fetcher.fetch(THREAD_URL).body == "cached"
+
+    cache_entry.refresh_from_db()
+    assert cache_entry.fetched_at > expiry - timedelta(hours=2)
+    assert cache_entry.body_expires_at == expiry
+    client.close()
+
+
+def test_stale_metadata_save_cannot_restore_a_concurrent_cache_deadline() -> None:
+    now = timezone.now()
+    initial_expiry = now + timedelta(hours=1)
+    cache_entry = CrawlResponseCache.objects.create(
+        url="https://bikeforum.example/race",
+        status_code=200,
+        body="original",
+        fetched_at=now,
+        body_expires_at=initial_expiry,
+    )
+    stale = CrawlResponseCache.objects.get(pk=cache_entry.pk)
+
+    fresh_expiry = now + timedelta(days=1)
+    CrawlResponseCache.objects.filter(pk=cache_entry.pk).update(
+        body="fresh", body_expires_at=fresh_expiry
+    )
+    stale.fetched_at = now + timedelta(minutes=1)
+    stale.save(update_fields=["fetched_at"])
+
+    cache_entry.refresh_from_db()
+    assert (cache_entry.body, cache_entry.body_expires_at) == ("fresh", fresh_expiry)
+
+
+def test_stale_metadata_save_cannot_resurrect_body_after_cleanup() -> None:
+    now = timezone.now()
+    cache_entry = CrawlResponseCache.objects.create(
+        url="https://bikeforum.example/cleanup-race",
+        status_code=200,
+        body="original",
+        fetched_at=now - timedelta(days=1),
+        body_expires_at=now - timedelta(minutes=1),
+    )
+    stale = CrawlResponseCache.objects.get(pk=cache_entry.pk)
+
+    assert cleanup_expired_crawl_response_bodies(now=now)["cleared"] == 1
+    stale.fetched_at = now + timedelta(minutes=1)
+    stale.save(update_fields=["fetched_at"])
+
+    cache_entry.refresh_from_db()
+    assert cache_entry.body == ""
+    assert cache_entry.body_expires_at is None
 
 
 def test_http_fetcher_paces_requests() -> None:
