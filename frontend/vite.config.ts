@@ -3,7 +3,12 @@ import { resolve } from 'node:path'
 import { defineConfig } from 'vitest/config'
 import { loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { normalizePublicSiteUrl, renderRobots, renderSitemap } from './src/siteMetadata'
+import {
+  normalizePublicSiteUrl,
+  renderRobots,
+  renderSitemap,
+  socialImageUrl,
+} from './src/siteMetadata'
 import { validateProductionBuildEnvironment } from './src/buildConfig'
 
 function siteMetadataPlugin(siteUrl: string): Plugin {
@@ -13,7 +18,7 @@ function siteMetadataPlugin(siteUrl: string): Plugin {
       const homepage = `${siteUrl}/`
       return html.replace(
         '</head>',
-        `    <meta property="og:url" content="${homepage}" />\n    <link rel="canonical" href="${homepage}" />\n  </head>`,
+        `    <meta property="og:url" content="${homepage}" />\n    <meta property="og:image" content="${socialImageUrl(siteUrl)}" />\n    <meta property="og:image:alt" content="BikeMapy cycling routes" />\n    <meta property="og:image:type" content="image/png" />\n    <meta property="og:image:width" content="1200" />\n    <meta property="og:image:height" content="630" />\n    <meta name="twitter:card" content="summary_large_image" />\n    <meta name="twitter:image" content="${socialImageUrl(siteUrl)}" />\n    <link rel="canonical" href="${homepage}" />\n  </head>`,
       )
     },
     writeBundle(options) {

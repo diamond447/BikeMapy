@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">BikeMapy — routes with a source</title>
+  <desc id="description">A branded preview image for BikeMapy cycling routes.</desc>
+  <rect width="1200" height="630" fill="#102a43"/>
+  <path d="M0 460c180-110 290-22 470-106 190-89 319-169 514-95 91 35 151 84 216 80v291H0z" fill="#176b87"/>
+  <path d="M0 527c174-72 274-36 454-92 190-59 322-126 514-58 84 30 161 76 232 72v181H0z" fill="#1f8a70"/>
+  <circle cx="1012" cy="129" r="57" fill="#f5c451"/>
+  <g fill="none" stroke="#f5c451" stroke-linecap="round" stroke-linejoin="round" stroke-width="13">
+    <path d="M168 425h93l-46-91z"/>
+    <path d="M215 334l-46-76m46 76 65-74m-65 74h80"/>
+    <circle cx="168" cy="425" r="52"/>
+    <circle cx="261" cy="425" r="52"/>
+  </g>
+  <text x="112" y="157" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="82" font-weight="700">BikeMapy</text>
+  <text x="118" y="223" fill="#d8f3f0" font-family="Arial, Helvetica, sans-serif" font-size="30">Cycling routes with a source</text>
+</svg>

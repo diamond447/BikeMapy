@@ -212,9 +212,9 @@ offline map behavior.
 
 Basic SEO is part of the MVP: semantic HTML, localized metadata, canonical
 URLs, Open Graph metadata, `robots.txt`, a sitemap, and stable route
-permalinks. Dynamic server-rendered or edge-generated metadata for individual
-routes will be considered only if measured organic search traffic justifies
-the added complexity.
+permalinks. Cloudflare Pages Functions provide edge-generated metadata for
+published shared routes and generate the route sitemap from the public API;
+unpublished, removed, and unknown routes remain absent from crawler output.
 
 ## Administration and trust
 

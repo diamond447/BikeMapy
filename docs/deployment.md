@@ -77,6 +77,28 @@ production deployment disabled: after a reviewed change, a human may promote
 the tested production build from the Pages dashboard. This keeps production
 release approval separate from GitHub Actions and from pull-request previews.
 
+The `frontend/functions/` directory contains two Cloudflare Pages Functions.
+The root function fetches a route by its stable ID before returning the SPA
+shell and injects title, description, canonical, Open Graph, and Twitter
+metadata for published routes. If the API returns anything other than a public
+route, Pages serves the normal homepage document, so unpublished, removed, and
+unknown routes are never advertised. The sitemap function paginates the public
+route API and emits the homepage plus the current stable route URLs; it falls
+back to the generated homepage-only sitemap during an API outage.
+It makes at most 45 API subrequests (100 routes per page, 4,500 routes total),
+which stays below the Pages subrequest budget and the sitemap protocol's
+50,000-URL limit. If the catalogue exceeds that capacity, the function falls
+back to the generated homepage-only asset rather than silently publishing a
+truncated sitemap; the limit must be raised deliberately with a sitemap-index
+design when the catalogue approaches it.
+
+Pages Functions need the read-only `PUBLIC_API_ORIGIN` and canonical
+`PUBLIC_SITE_URL` environment variables at runtime. Existing deployments may
+reuse the build variables `VITE_API_URL` and `VITE_PUBLIC_SITE_URL`; preview
+requests use their request origin when `PUBLIC_SITE_URL` is not set. The
+branded preview image is the public 1200×630 `og-image.png` asset (with the
+deterministic SVG source retained as `og-image.svg`).
+
 ## Reverse proxy and Cloudflare Tunnel
 
 `deploy/nginx.conf` proxies health, API, account, owner-admin, and static asset

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizePublicSiteUrl, renderRobots, renderSitemap, routeUrl } from './siteMetadata'
+import {
+  normalizePublicSiteUrl,
+  renderRobots,
+  renderSitemap,
+  routeUrl,
+  socialImageUrl,
+} from './siteMetadata'
 
 describe('site metadata', () => {
   it('normalizes the configured public origin and defaults locally', () => {
@@ -15,6 +21,9 @@ describe('site metadata', () => {
   it('builds stable absolute route URLs', () => {
     expect(routeUrl('https://rides.example.test', 'route id', 'south ridge')).toBe(
       'https://rides.example.test/?route=route+id&slug=south+ridge',
+    )
+    expect(socialImageUrl('https://rides.example.test/')).toBe(
+      'https://rides.example.test/og-image.png',
     )
   })
 
