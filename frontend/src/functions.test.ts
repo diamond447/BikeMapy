@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   fetchPublicRoute,
-  fetchWithTimeout,
+  withAbortDeadline,
   isRouteId,
   renderRouteDocument,
   routeApiUrl,
@@ -108,7 +108,29 @@ describe('Pages metadata functions', () => {
           )
         }),
     )
-    const pending = fetchWithTimeout(fetcher, 'https://api.example.test/slow', {}, 25)
+    const pending = withAbortDeadline(
+      (signal) => fetcher('https://api.example.test/slow', { signal }),
+      25,
+    )
+    const rejection = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(25)
+    await rejection
+    expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+  })
+
+  it('aborts a route whose response body stalls after headers', async () => {
+    vi.useFakeTimers()
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener('abort', () =>
+            controller.error(new DOMException('Aborted', 'AbortError')),
+          )
+        },
+      })
+      return new Response(body, { headers: { 'content-type': 'application/json' } })
+    })
+    const pending = fetchPublicRoute(fetcher, 'https://api.example.test', routeId, 25)
     const rejection = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     await vi.advanceTimersByTimeAsync(25)
     await rejection

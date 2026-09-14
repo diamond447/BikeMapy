@@ -39,17 +39,15 @@ export function routeApiUrl(origin: string, routeId: string): string {
   return `${apiOrigin(origin)}/api/v1/routes/${encodeURIComponent(routeId)}/`
 }
 
-/** Fetch an API resource with a prompt, caller-cancellable deadline. */
-export async function fetchWithTimeout(
-  fetcher: typeof fetch,
-  input: RequestInfo | URL,
-  init: RequestInit,
+/** Run one async operation with a bounded abort deadline. */
+export async function withAbortDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs = API_TIMEOUT_MS,
-): Promise<Response> {
+): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetcher(input, { ...init, signal: controller.signal })
+    return await operation(controller.signal)
   } finally {
     clearTimeout(timeout)
   }
@@ -132,12 +130,16 @@ export async function fetchPublicRoute(
   fetcher: typeof fetch,
   origin: string,
   routeId: string,
+  timeoutMs = API_TIMEOUT_MS,
 ): Promise<PublicRoute | null> {
-  const response = await fetchWithTimeout(fetcher, routeApiUrl(origin, routeId), {
-    headers: { Accept: 'application/json' },
-  })
-  if (!response.ok) return null
-  return parsePublicRoute(await response.json(), routeId)
+  return withAbortDeadline(async (signal) => {
+    const response = await fetcher(routeApiUrl(origin, routeId), {
+      headers: { Accept: 'application/json' },
+      signal,
+    })
+    if (!response.ok) return null
+    return parsePublicRoute(await response.json(), routeId)
+  }, timeoutMs)
 }
 
 export function routeIdFromRequest(requestUrl: string): string | null {
