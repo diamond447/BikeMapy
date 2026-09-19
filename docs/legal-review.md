@@ -8,6 +8,11 @@ It is not a legal opinion and does not replace permission from a rights holder.
 The maintainer must repeat this review before enabling a new data source,
 changing the map provider, or publishing GPX files.
 
+The separate, dated [reference-route source decision](reference-route-sources.md)
+is the authority for Via Czechia and numbered Czech cycling-route imports in
+the private completion game. It does not expand the provider or public-GPX
+decisions recorded below.
+
 ## Outcomes
 
 | Material or provider      | Source checked                                                                                                                                                     | Dated finding and implementation outcome                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |

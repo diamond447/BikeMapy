@@ -376,9 +376,11 @@ actionable diagnostics. Required attribution is available to the authenticated
 completion interface.
 
 The existing [legal and attribution review](legal-review.md) remains the
-authority for current BikeMapy provider decisions and launch blockers. In
-particular, it does not approve future game reference-route ingestion merely
-because a source is publicly visible.
+authority for current BikeMapy provider decisions and launch blockers. The
+dated [reference-route source decision](reference-route-sources.md) records
+the separate OSM and Via Czechia evaluation required by this section. In
+particular, neither review approves future game reference-route ingestion
+merely because a source is publicly visible.
 
 ## Completion model
 
