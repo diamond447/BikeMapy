@@ -69,6 +69,12 @@ awards: they are deterministic derived views with documented evidence.
 
 ## Pre-implementation Strava agreement and display gate
 
+See the dated [Strava API and cross-member display review](strava-api-review.md)
+for the current decision. As of 2026-09-19, cross-member geometry, profile
+fields, and derived competition results are rejected or blocked by the current
+Strava API Agreement and API Policy. This specification remains a product
+design baseline, not permission to implement or enable those features.
+
 Before implementing #47 or #49, the operator must complete a dedicated,
 approved review of the current Strava API Agreement, developer terms,
 documentation, and display policies. The review must be recorded in a
@@ -98,14 +104,16 @@ import policy, not permission to redistribute activity data to other people or
 to publish derived results. This specification does not grant that permission.
 The review must record any limitations, required wording, retention/deletion
 conditions, and attribution obligations. If rights are unresolved or denied,
-keep the cross-member game slice disabled (`GAME_ENABLED=false`). A safe
-personal-only fallback may allow a connected player to view their own imported
-geometry and own derived completion/capture results, but it must not display
-traces, profile data, leaderboards, or derived aggregates across members or
-competitions. This fallback is a separately reviewed and separately flagged
-mode (for example, `PERSONAL_ONLY_MODE=false`), not an activation of `/game`;
-it requires its own privacy and retention decision. Personal-only behavior is
-not approval to activate the cross-member game.
+keep the cross-member game slice disabled (`GAME_ENABLED=false`). The current
+personal-only fallback is deliberately narrow: a connected player may view
+their own source geometry and date in an owner-scoped view, but not capture
+territory, profile data for other people, leaderboards, or any group/monthly/
+other derived aggregate. A user-specific completion or capture result remains
+blocked until Strava confirms that the derived use is permitted. This fallback
+is a separately reviewed and separately flagged mode (for example,
+`PERSONAL_ONLY_MODE=false`), not an activation of `/game`; it requires its own
+privacy and retention decision. Personal-only behavior is not approval to
+activate the cross-member game.
 
 The gate is a release blocker for cross-user display and derived processing.
 Any changed Strava policy or product sharing scope requires a new approved

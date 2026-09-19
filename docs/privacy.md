@@ -30,6 +30,23 @@ redistribution is disabled at launch, so the GPX click counter remains zero
 unless the legal deployment gate is later approved and a download link is
 explicitly enabled.
 
+## Future Strava module
+
+The private Strava module is disabled by default and is not part of the public
+catalogue. The current [Strava API and cross-member display review](strava-api-review.md)
+rejects or blocks cross-member activity geometry, profile fields, and derived
+competition results under the current Strava API Agreement and API Policy. No
+Strava OAuth credentials or activity data may be collected until the applicable
+implementation and privacy gates are approved.
+
+If the owner enables the separately reviewed personal-only fallback, this
+notice must be updated before collection to name the exact OAuth scopes, data
+categories, purpose, seven-day cache maximum, deletion/disconnection behavior,
+subprocessors, and user contact/deletion path. A Strava user's request,
+revocation, account deletion, or BikeMapy cessation of API use must remove the
+applicable Strava Data and derived Personal Data within the policy deadlines;
+an expired live-record deadline does not by itself erase backups or replicas.
+
 ### Cloudflare Web Analytics vendor boundary
 
 Cloudflare's [Web Analytics about page](https://developers.cloudflare.com/web-analytics/about/)
