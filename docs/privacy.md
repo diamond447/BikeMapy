@@ -1,6 +1,6 @@
 # BikeMapy Privacy Notice
 
-**Last reviewed:** 2026-09-06  
+**Last reviewed:** 2026-09-19  
 **Status:** launch draft — operator identity, legal basis, and jurisdiction
 require legal review
 
