@@ -1,6 +1,6 @@
 # Legal and attribution review
 
-**Review date:** 2026-09-06  
+**Review date:** 2026-09-06
 **Status:** launch gate; not legal advice
 
 This is a product and engineering record of the sources checked for BikeMapy.
