@@ -13,6 +13,11 @@ records the 2026-09-19 primary-source review for the future private game. Its
 current decision is to keep cross-member Strava data and derived results
 disabled; this document must not be read as permission to enable that module.
 
+The separate, dated [reference-route source decision](reference-route-sources.md)
+is the authority for Via Czechia and numbered Czech cycling-route imports in
+the private completion game. It does not expand the provider or public-GPX
+decisions recorded below.
+
 ## Outcomes
 
 | Material or provider      | Source checked                                                                                                                                                     | Dated finding and implementation outcome                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
