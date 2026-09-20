@@ -17,9 +17,13 @@ from apps.accounts.models import (
     Player,
     PlayerCredential,
     PlayerDeletionTombstone,
+    PlayerIdentityGuard,
     RevocationJob,
 )
 from apps.accounts.services import (
+    IDENTITY_GUARD_RETENTION,
+    _identity_digest,
+    cleanup_identity_guards,
     delete_player,
     disconnect_player,
     purge_expired_players,
@@ -36,6 +40,7 @@ def _settings() -> dict[str, object]:
         "STRAVA_OAUTH_CLIENT_ID": "client-id",
         "STRAVA_OAUTH_CLIENT_SECRET": "client-secret",
         "STRAVA_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+        "STRAVA_IDENTITY_GUARD_KEY": "strava-identity-guard-test-key-1234567890",
     }
 
 
@@ -531,6 +536,73 @@ def test_unrelated_anonymous_oauth_state_survives_other_athlete_lifecycle(
         )
     assert callback["Location"].endswith("/game?game_auth=success")
     assert Player.objects.filter(strava_athlete_id=123).exists()
+
+
+@override_settings(**_settings())
+@pytest.mark.parametrize("lifecycle", ["disconnect", "delete"])
+def test_stale_anonymous_state_cannot_overwrite_connection_after_fresh_reconnect(
+    lifecycle: str,
+) -> None:
+    player = save_connection(_payload())
+    stale_client = Client()
+    stale_authorize = stale_client.get(reverse("game-strava-authorize"))
+    stale_state = str(stale_authorize["Location"]).split("state=", 1)[1]
+    if lifecycle == "disconnect":
+        disconnect_player(player, revoke=False)
+    else:
+        with patch("apps.accounts.services.httpx.post"):
+            delete_player(player)
+
+    fresh_client = Client()
+    fresh_authorize = fresh_client.get(reverse("game-strava-authorize"))
+    fresh_state = str(fresh_authorize["Location"]).split("state=", 1)[1]
+    fresh_payload = {**_payload(), "access_token": "fresh-access", "refresh_token": "fresh-refresh"}
+    with patch("apps.accounts.game_api.exchange_code", return_value=fresh_payload):
+        fresh_callback = fresh_client.get(
+            reverse("game-strava-callback"), {"state": fresh_state, "code": "fresh"}
+        )
+    assert fresh_callback["Location"].endswith("/game?game_auth=success")
+
+    stale_payload = {**_payload(), "access_token": "stale-access", "refresh_token": "stale-refresh"}
+    with (
+        patch("apps.accounts.game_api.exchange_code", return_value=stale_payload),
+        patch("apps.accounts.game_api.revoke_or_schedule") as revoke,
+    ):
+        stale_callback = stale_client.get(
+            reverse("game-strava-callback"), {"state": stale_state, "code": "stale"}
+        )
+    assert stale_callback["Location"].endswith("/game?game_auth=error")
+    revoke.assert_called_once_with("stale-access")
+    fresh_player = Player.objects.get(strava_athlete_id=123)
+    credential = PlayerCredential.objects.get(player=fresh_player)
+    assert credential.access_token == "fresh-access"
+    assert credential.refresh_token == "fresh-refresh"
+
+
+@override_settings(**_settings())
+def test_identity_guard_cleanup_keeps_active_and_recent_rows() -> None:
+    now = timezone.now()
+    active = PlayerIdentityGuard.objects.create(identity_digest="a" * 64)
+    recent = PlayerIdentityGuard.objects.create(
+        identity_digest="b" * 64,
+        invalidated_at=now - IDENTITY_GUARD_RETENTION + timedelta(seconds=1),
+    )
+    old = PlayerIdentityGuard.objects.create(
+        identity_digest="c" * 64,
+        invalidated_at=now - IDENTITY_GUARD_RETENTION - timedelta(seconds=1),
+    )
+    result = cleanup_identity_guards(limit=10)
+    assert result == {"deleted": 1}
+    assert PlayerIdentityGuard.objects.filter(pk=active.pk).exists()
+    assert PlayerIdentityGuard.objects.filter(pk=recent.pk).exists()
+    assert not PlayerIdentityGuard.objects.filter(pk=old.pk).exists()
+
+
+@override_settings(**_settings())
+def test_identity_guard_digest_survives_django_secret_rotation() -> None:
+    original = _identity_digest(123)
+    with override_settings(SECRET_KEY="a-different-django-session-signing-key"):
+        assert _identity_digest(123) == original
 
 
 def test_configured_cors_credentials_require_explicit_allowlisted_origins() -> None:

@@ -6,7 +6,12 @@ from typing import Any
 
 from celery import shared_task  # type: ignore[import-untyped]
 
-from .services import purge_expired_players, retry_revocations
+from .services import cleanup_identity_guards, purge_expired_players, retry_revocations
+
+
+@shared_task(name="bikemapy.accounts.cleanup_identity_guards")  # type: ignore[untyped-decorator]
+def cleanup_identity_guards_task(limit: int = 100) -> dict[str, Any]:
+    return cleanup_identity_guards(limit=max(1, limit))
 
 
 @shared_task(name="bikemapy.accounts.purge_expired_players")  # type: ignore[untyped-decorator]

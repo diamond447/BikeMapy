@@ -144,6 +144,7 @@ GAME_ENABLED = env_bool("GAME_ENABLED", False)
 STRAVA_OAUTH_CLIENT_ID = os.getenv("STRAVA_OAUTH_CLIENT_ID", "")
 STRAVA_OAUTH_CLIENT_SECRET = os.getenv("STRAVA_OAUTH_CLIENT_SECRET", "")
 STRAVA_TOKEN_ENCRYPTION_KEY = os.getenv("STRAVA_TOKEN_ENCRYPTION_KEY", "")
+STRAVA_IDENTITY_GUARD_KEY = os.getenv("STRAVA_IDENTITY_GUARD_KEY", "")
 STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "STRAVA_OAUTH_REDIRECT_URI",
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
@@ -177,6 +178,7 @@ if GAME_ENABLED:
             ("STRAVA_OAUTH_CLIENT_ID", STRAVA_OAUTH_CLIENT_ID),
             ("STRAVA_OAUTH_CLIENT_SECRET", STRAVA_OAUTH_CLIENT_SECRET),
             ("STRAVA_TOKEN_ENCRYPTION_KEY", STRAVA_TOKEN_ENCRYPTION_KEY),
+            ("STRAVA_IDENTITY_GUARD_KEY", STRAVA_IDENTITY_GUARD_KEY),
         )
         if not value
     ]
@@ -190,6 +192,11 @@ if GAME_ENABLED:
         raise ImproperlyConfigured(
             "STRAVA_TOKEN_ENCRYPTION_KEY must be a valid Fernet key when GAME_ENABLED=true"
         ) from exc
+    if len(STRAVA_IDENTITY_GUARD_KEY) < 32 or len(set(STRAVA_IDENTITY_GUARD_KEY)) < 12:
+        raise ImproperlyConfigured(
+            "STRAVA_IDENTITY_GUARD_KEY must be at least 32 characters and "
+            "contain sufficient variation"
+        )
 
 # Authorization uses GitHub's immutable numeric account ID.  Keep this empty
 # by default so a deployment must explicitly opt in to owner administration.
@@ -396,6 +403,10 @@ CELERY_BEAT_SCHEDULE = {
     "purge-expired-player-accounts": {
         "task": "bikemapy.accounts.purge_expired_players",
         "schedule": 3600,
+    },
+    "cleanup-strava-identity-guards": {
+        "task": "bikemapy.accounts.cleanup_identity_guards",
+        "schedule": 900,
     },
     "retry-player-revocations": {
         "task": "bikemapy.accounts.retry_revocations",

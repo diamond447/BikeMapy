@@ -4,19 +4,23 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('accounts', '0003_deletion_tombstone_status'),
+        ("accounts", "0003_deletion_tombstone_status"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='PlayerIdentityGuard',
+            name="PlayerIdentityGuard",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('identity_digest', models.CharField(max_length=64, unique=True)),
-                ('invalidated_at', models.DateTimeField(blank=True, null=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True, primary_key=True, serialize=False, verbose_name="ID"
+                    ),
+                ),
+                ("identity_digest", models.CharField(max_length=64, unique=True)),
+                ("invalidated_at", models.DateTimeField(blank=True, null=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
             ],
         ),
     ]

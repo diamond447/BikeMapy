@@ -13,6 +13,8 @@ from django.utils import timezone
 
 from .fields import EncryptedSecretField
 
+OAUTH_STATE_TTL = timedelta(minutes=10)
+
 
 class Player(models.Model):
     class Lifecycle(models.TextChoices):
@@ -105,6 +107,9 @@ class PlayerIdentityGuard(models.Model):
     invalidated_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        indexes = [models.Index(fields=("invalidated_at",))]
+
     def __str__(self) -> str:
         return f"Player identity guard {self.pk}"
 
@@ -177,7 +182,7 @@ class OAuthState(models.Model):
             session_key=session_key,
             player=player,
             player_session_epoch=player.session_epoch if player else None,
-            expires_at=timezone.now() + timedelta(minutes=10),
+            expires_at=timezone.now() + OAUTH_STATE_TTL,
         )
         return state, raw
 

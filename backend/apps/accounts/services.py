@@ -18,6 +18,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import (
+    OAUTH_STATE_TTL,
     OAuthState,
     Player,
     PlayerCredential,
@@ -38,6 +39,7 @@ class StravaOAuthError(RuntimeError):
 RefreshOutcome = Literal["success", "retryable", "revoked"]
 REVOCATION_RETRY_LIMIT = 8
 REQUIRED_STRAVA_SCOPES = frozenset({"read", "activity:read"})
+IDENTITY_GUARD_RETENTION = OAUTH_STATE_TTL + timedelta(minutes=5)
 
 
 def game_is_available() -> bool:
@@ -46,6 +48,7 @@ def game_is_available() -> bool:
         and getattr(settings, "STRAVA_OAUTH_CLIENT_ID", "")
         and getattr(settings, "STRAVA_OAUTH_CLIENT_SECRET", "")
         and getattr(settings, "STRAVA_TOKEN_ENCRYPTION_KEY", "")
+        and getattr(settings, "STRAVA_IDENTITY_GUARD_KEY", "")
     )
 
 
@@ -154,8 +157,8 @@ def _identity_digest(athlete_id: int) -> str:
     """Return a stable, non-content key for synchronizing one athlete."""
 
     return hmac.new(
-        str(settings.SECRET_KEY).encode(),
-        str(athlete_id).encode(),
+        str(settings.STRAVA_IDENTITY_GUARD_KEY).encode(),
+        b"bikemapy:strava:identity-guard:v1:" + str(athlete_id).encode(),
         hashlib.sha256,
     ).hexdigest()
 
@@ -266,8 +269,6 @@ def save_connection(payload: dict[str, Any], *, oauth_state_id: int | None = Non
             oauth_state.player = player
             oauth_state.player_session_epoch = player.session_epoch
             oauth_state.save(update_fields=("player", "player_session_epoch"))
-        guard.invalidated_at = None
-        guard.save(update_fields=("invalidated_at", "updated_at"))
     return player
 
 
@@ -487,6 +488,22 @@ def purge_expired_players(*, limit: int = 100) -> dict[str, int]:
         purged += 1
     PlayerDeletionTombstone.objects.filter(expires_at__lte=timezone.now()).delete()
     return {"purged": purged}
+
+
+def cleanup_identity_guards(*, limit: int = 100) -> dict[str, int]:
+    """Remove invalidation cutoffs after all related OAuth states have expired."""
+
+    cutoff = timezone.now() - IDENTITY_GUARD_RETENTION
+    guard_ids = list(
+        PlayerIdentityGuard.objects.filter(
+            invalidated_at__isnull=False,
+            invalidated_at__lt=cutoff,
+        )
+        .order_by("invalidated_at", "pk")
+        .values_list("pk", flat=True)[: max(1, limit)]
+    )
+    deleted, _ = PlayerIdentityGuard.objects.filter(pk__in=guard_ids).delete()
+    return {"deleted": deleted}
 
 
 def retry_revocations(*, limit: int = 100) -> dict[str, int]:
