@@ -8,6 +8,22 @@ def test_pages_preview_allows_public_reads() -> None:
     assert response.status_code == 200
 
 
+def test_exact_trusted_origin_can_receive_credentialed_cors() -> None:
+    response = Client().get("/health/live/", headers={"Origin": "http://localhost:5173"})
+    assert response["Access-Control-Allow-Origin"] == "http://localhost:5173"
+    assert response["Access-Control-Allow-Credentials"] == "true"
+    assert "X-CSRFToken" in response["Access-Control-Expose-Headers"]
+
+
+def test_preview_regex_origin_never_receives_credentialed_cors() -> None:
+    response = Client().get(
+        "/health/live/", headers={"Origin": "https://feature-123.bikemapy.pages.dev"}
+    )
+    assert response["Access-Control-Allow-Origin"] == "https://feature-123.bikemapy.pages.dev"
+    assert "Access-Control-Allow-Credentials" not in response
+    assert "Access-Control-Expose-Headers" not in response
+
+
 def test_pages_preview_cannot_submit_mutations() -> None:
     response = Client().post(
         "/api/v1/routes/00000000-0000-4000-8000-000000000000/reports/",

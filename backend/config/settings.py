@@ -100,6 +100,7 @@ if DATABASE_ENGINE == "django.db.backends.sqlite3":
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "config.middleware.TrustedProxyClientIdentityMiddleware",
+    "config.middleware.CredentialedCorsOriginMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "config.middleware.PreviewReadOnlyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -262,6 +263,7 @@ if any(
 # Credentialed browser requests are enabled only for the explicit origin list;
 # preview regex origins remain read-only and cannot receive player cookies.
 CORS_ALLOW_CREDENTIALS = bool(CORS_ALLOWED_ORIGINS)
+CORS_EXPOSE_HEADERS = ["X-CSRFToken"]
 CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
 READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
     "READ_ONLY_PREVIEW_ORIGIN_REGEX",

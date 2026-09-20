@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { apiBaseUrl, apiClient, csrfHeaders } from '../api/client'
+import { apiBaseUrl, apiClient, csrfHeaders, rememberCsrfToken } from '../api/client'
 import type { components } from '../api/generated/schema'
 import type { Copy } from '../i18n/types'
 
@@ -50,6 +50,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     const result = await apiClient.GET('/api/v1/game/auth/session/', {
       credentials: 'include',
     })
+    rememberCsrfToken(result.response)
     if (result.response?.status === 404) {
       setPlayer(null)
       setStatus('unavailable')

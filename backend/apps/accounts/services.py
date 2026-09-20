@@ -28,6 +28,7 @@ class StravaOAuthError(RuntimeError):
 
 RefreshOutcome = Literal["success", "retryable", "revoked"]
 REVOCATION_RETRY_LIMIT = 8
+REQUIRED_STRAVA_SCOPES = frozenset({"read", "activity:read"})
 
 
 def game_is_available() -> bool:
@@ -109,6 +110,22 @@ def exchange_code(code: str) -> dict[str, Any]:
     return payload
 
 
+def granted_scopes(payload: dict[str, Any]) -> frozenset[str]:
+    value = payload.get("scope")
+    if isinstance(value, str):
+        values = value.replace(" ", ",").split(",")
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    return frozenset(str(scope).strip() for scope in values if str(scope).strip())
+
+
+def validate_granted_scopes(payload: dict[str, Any]) -> None:
+    if not REQUIRED_STRAVA_SCOPES.issubset(granted_scopes(payload)):
+        raise StravaOAuthError("Strava authorization did not grant the required scopes")
+
+
 def _expires_at(payload: dict[str, Any]) -> datetime:
     try:
         return datetime.fromtimestamp(int(payload["expires_at"]), tz=UTC)
@@ -135,6 +152,7 @@ def save_connection(payload: dict[str, Any]) -> Player:
     refresh_token = payload.get("refresh_token")
     if not access_token or not refresh_token:
         raise StravaOAuthError("Strava authorization returned incomplete credentials")
+    validate_granted_scopes(payload)
     with transaction.atomic():
         player = Player.objects.select_for_update().filter(strava_athlete_id=athlete_id).first()
         if player is None:
@@ -183,9 +201,7 @@ def save_connection(payload: dict[str, Any]) -> Player:
                 "access_token": str(access_token),
                 "refresh_token": str(refresh_token),
                 "expires_at": _expires_at(payload),
-                "scopes": (
-                    payload.get("scope", []) if isinstance(payload.get("scope", []), list) else []
-                ),
+                "scopes": sorted(granted_scopes(payload)),
             },
         )
         player.restore_connection()
@@ -200,16 +216,35 @@ def _display_name(athlete: dict[str, Any]) -> str:
 
 
 def _refresh_is_revoked(response: httpx.Response) -> bool:
-    if response.status_code not in (400, 401, 403):
+    if response.status_code in (401, 403):
+        return True
+    if response.status_code != 400:
         return False
     try:
         payload = response.json()
     except ValueError:
         return response.status_code in (401, 403)
     if not isinstance(payload, dict):
-        return response.status_code in (401, 403)
+        return False
     error = str(payload.get("error") or payload.get("error_type") or "").lower()
-    return error in {"invalid_grant", "revoked", "authorization_revoked"}
+    if error in {"invalid_grant", "revoked", "authorization_revoked"}:
+        return True
+    errors = payload.get("errors")
+    if not isinstance(errors, list):
+        return False
+    for item in errors:
+        if not isinstance(item, dict):
+            continue
+        resource = str(item.get("resource") or "").lower()
+        field = str(item.get("field") or "").lower()
+        code = str(item.get("code") or "").lower()
+        if (
+            resource in {"refreshtoken", "refresh_token"}
+            and field == "refresh_token"
+            and code in {"invalid", "revoked", "invalid_grant"}
+        ):
+            return True
+    return False
 
 
 def refresh_connection(player: Player) -> RefreshOutcome:
@@ -297,6 +332,16 @@ def _record_revocation_result(job: RevocationJob, *, success: bool) -> None:
     job.save(update_fields=("attempts", "status", "last_error", "next_attempt_at"))
 
 
+def revoke_or_schedule(access_token: str | None) -> None:
+    if not access_token:
+        return
+    job = RevocationJob.objects.create(
+        access_token=access_token,
+        expires_at=timezone.now() + timedelta(days=7),
+    )
+    _record_revocation_result(job, success=_revoke_access_token(access_token))
+
+
 def disconnect_player(
     player: Player,
     *,
@@ -319,7 +364,7 @@ def disconnect_player(
                 expires_at=timezone.now() + timedelta(days=7),
             )
         PlayerCredential.objects.filter(player=player).delete()
-        state_filter = Q(player=player)
+        state_filter = Q(player=player) | Q(player__isnull=True)
         if session_key:
             state_filter |= Q(session_key=session_key)
         OAuthState.objects.filter(state_filter).delete()
@@ -346,7 +391,7 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
                 expires_at=timezone.now() + timedelta(days=7),
             )
         PlayerCredential.objects.filter(player=player).delete()
-        state_filter = Q(player=player)
+        state_filter = Q(player=player) | Q(player__isnull=True)
         if session_key:
             state_filter |= Q(session_key=session_key)
         OAuthState.objects.filter(state_filter).delete()

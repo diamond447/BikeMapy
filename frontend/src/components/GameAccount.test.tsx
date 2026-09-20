@@ -16,8 +16,8 @@ const player = {
   connected_at: '2026-09-20T09:00:00Z',
 } as const
 
-function response(status: number) {
-  return new Response(null, { status })
+function response(status: number, headers?: Record<string, string>) {
+  return new Response(null, { status, headers })
 }
 
 describe('GameAccount', () => {
@@ -71,7 +71,7 @@ describe('GameAccount', () => {
     const get = vi.spyOn(apiClient, 'GET').mockResolvedValue({
       data: { player },
       error: undefined,
-      response: response(200),
+      response: response(200, { 'X-CSRFToken': 'header-csrf-token' }),
     } as never)
     const patch = vi.spyOn(apiClient, 'PATCH').mockResolvedValue({
       data: { player: { ...player, nickname: 'Trail Ada' } },
@@ -94,7 +94,7 @@ describe('GameAccount', () => {
     await waitFor(() => expect(patch).toHaveBeenCalled())
     expect(patch.mock.calls[0]?.[1]).toMatchObject({
       body: { nickname: 'Trail Ada' },
-      headers: { 'X-CSRFToken': 'test-csrf-token' },
+      headers: { 'X-CSRFToken': 'header-csrf-token' },
     })
     expect(await screen.findByText('Nickname saved.')).toBeInTheDocument()
 

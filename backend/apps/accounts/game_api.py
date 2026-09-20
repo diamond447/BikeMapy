@@ -28,7 +28,9 @@ from .services import (
     game_is_available,
     game_return_url,
     refresh_connection,
+    revoke_or_schedule,
     save_connection,
+    validate_granted_scopes,
 )
 
 
@@ -115,7 +117,9 @@ class GameEndpoint(APIView):
 
     def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Response:
         get_token(request)
-        return super().dispatch(request, *args, **kwargs)
+        response = super().dispatch(request, *args, **kwargs)
+        response["X-CSRFToken"] = get_token(request)
+        return response
 
     def unavailable(self) -> Response:
         return _private(
@@ -195,9 +199,16 @@ class StravaCallbackView(GameEndpoint):
         code = str(request.GET.get("code") or "")
         if not code:
             return redirect(game_return_url("error"))
+        exchanged_payload: dict[str, Any] | None = None
         try:
-            player = save_connection(exchange_code(code))
+            exchanged_payload = exchange_code(code)
+            validate_granted_scopes(exchanged_payload)
+            if not OAuthState.objects.filter(pk=state.pk).exists():
+                raise StravaOAuthError("OAuth state is no longer valid")
+            player = save_connection(exchanged_payload)
         except StravaOAuthError:
+            if exchanged_payload is not None:
+                revoke_or_schedule(str(exchanged_payload.get("access_token") or ""))
             return redirect(game_return_url("error"))
         request.session.cycle_key()
         request.session["player_id"] = player.pk

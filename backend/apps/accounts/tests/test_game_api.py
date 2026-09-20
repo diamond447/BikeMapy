@@ -321,6 +321,102 @@ def test_oauth_result_uses_only_the_validated_frontend_game_url() -> None:
     assert response["Location"] == "https://game.example.test/game?game_auth=denied"
 
 
+@override_settings(**_settings())
+def test_anonymous_state_is_invalidated_when_another_session_deletes_player() -> None:
+    stale_client = Client()
+    stale_authorize = stale_client.get(reverse("game-strava-authorize"))
+    stale_state = str(stale_authorize["Location"]).split("state=", 1)[1]
+    owner_client = Client()
+    owner_authorize = owner_client.get(reverse("game-strava-authorize"))
+    owner_state = str(owner_authorize["Location"]).split("state=", 1)[1]
+    token_response = Mock()
+    token_response.raise_for_status.return_value = None
+    token_response.json.return_value = _payload()
+    with patch("apps.accounts.services.httpx.post", return_value=token_response):
+        assert (
+            owner_client.get(
+                reverse("game-strava-callback"), {"state": owner_state, "code": "owner"}
+            ).status_code
+            == 302
+        )
+    with patch("apps.accounts.services.httpx.post"):
+        assert owner_client.delete(reverse("game-player-account")).status_code == 204
+    with patch("apps.accounts.services.exchange_code") as exchange:
+        callback = stale_client.get(
+            reverse("game-strava-callback"), {"state": stale_state, "code": "stale"}
+        )
+    assert callback["Location"].endswith("/game?game_auth=error")
+    exchange.assert_not_called()
+    assert not Player.objects.exists()
+
+
+@override_settings(**_settings())
+def test_partial_strava_scope_is_rejected_and_exchanged_grant_is_revoked() -> None:
+    client = Client()
+    authorize = client.get(reverse("game-strava-authorize"))
+    state = str(authorize["Location"]).split("state=", 1)[1]
+    token_response = Mock()
+    token_response.raise_for_status.return_value = None
+    token_response.json.return_value = {**_payload(), "scope": "read"}
+    revoke_response = Mock()
+    revoke_response.raise_for_status.return_value = None
+    with patch(
+        "apps.accounts.services.httpx.post", side_effect=[token_response, revoke_response]
+    ) as provider:
+        callback = client.get(reverse("game-strava-callback"), {"state": state, "code": "partial"})
+    assert callback["Location"].endswith("/game?game_auth=error")
+    assert not Player.objects.exists()
+    assert not PlayerCredential.objects.exists()
+    assert provider.call_args_list[1].kwargs["data"] == {"access_token": "access-secret"}
+
+
+@override_settings(**_settings())
+def test_anonymous_state_is_invalidated_when_another_session_disconnects_player() -> None:
+    stale_client = Client()
+    stale_authorize = stale_client.get(reverse("game-strava-authorize"))
+    stale_state = str(stale_authorize["Location"]).split("state=", 1)[1]
+    owner_client = Client()
+    owner_authorize = owner_client.get(reverse("game-strava-authorize"))
+    owner_state = str(owner_authorize["Location"]).split("state=", 1)[1]
+    token_response = Mock()
+    token_response.raise_for_status.return_value = None
+    token_response.json.return_value = _payload()
+    with patch("apps.accounts.services.httpx.post", return_value=token_response):
+        owner_client.get(reverse("game-strava-callback"), {"state": owner_state, "code": "owner"})
+    with patch("apps.accounts.services.httpx.post"):
+        assert owner_client.post(reverse("game-player-disconnect")).status_code == 200
+    with patch("apps.accounts.services.exchange_code") as exchange:
+        callback = stale_client.get(
+            reverse("game-strava-callback"), {"state": stale_state, "code": "stale"}
+        )
+    assert callback["Location"].endswith("/game?game_auth=error")
+    exchange.assert_not_called()
+
+
+@override_settings(**_settings())
+def test_state_deleted_during_exchange_revokes_grant_before_rejecting() -> None:
+    client = Client()
+    authorize = client.get(reverse("game-strava-authorize"))
+    state = str(authorize["Location"]).split("state=", 1)[1]
+
+    def exchange_and_delete_state(code: str) -> dict[str, object]:
+        del code
+        OAuthState.objects.filter(state_digest=OAuthState.digest(state)).delete()
+        return _payload()
+
+    revoke_response = Mock()
+    revoke_response.raise_for_status.return_value = None
+    with (
+        patch("apps.accounts.game_api.exchange_code", side_effect=exchange_and_delete_state),
+        patch("apps.accounts.services.httpx.post", return_value=revoke_response) as provider,
+    ):
+        callback = client.get(reverse("game-strava-callback"), {"state": state, "code": "race"})
+    assert callback["Location"].endswith("/game?game_auth=error")
+    assert not Player.objects.exists()
+    provider.assert_called_once()
+    assert provider.call_args.kwargs["data"] == {"access_token": "access-secret"}
+
+
 def test_configured_cors_credentials_require_explicit_allowlisted_origins() -> None:
     from django.conf import settings
 
@@ -485,6 +581,50 @@ def test_revoked_refresh_invalidates_player_and_removes_credentials() -> None:
     player.refresh_from_db()
     assert player.lifecycle == Player.Lifecycle.PENDING_DELETION
     assert not PlayerCredential.objects.filter(player=player).exists()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_payload"),
+    [
+        (
+            400,
+            {
+                "message": "Bad Request",
+                "errors": [
+                    {"resource": "RefreshToken", "field": "refresh_token", "code": "invalid"}
+                ],
+            },
+        ),
+        (401, {"message": "Authorization Error"}),
+    ],
+)
+@override_settings(**_settings())
+def test_actual_strava_refresh_revocation_errors_disconnect(
+    status_code: int, error_payload: dict[str, object]
+) -> None:
+    user = get_user_model().objects.create_user(username=f"strava-{status_code}")
+    player = Player.objects.create(user=user, strava_athlete_id=status_code)
+    PlayerCredential.objects.create(
+        player=player,
+        access_token="access-secret",
+        refresh_token="refresh-secret",
+        expires_at="2033-05-18T03:33:20Z",
+    )
+    client = Client()
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
+    session.save()
+    response = Mock(status_code=status_code)
+    response.json.return_value = error_payload
+    response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "provider rejected refresh", request=Mock(), response=response
+    )
+    with patch("apps.accounts.services.httpx.post", return_value=response):
+        refreshed = client.post(reverse("game-player-refresh"))
+    assert refreshed.status_code == 401
+    player.refresh_from_db()
+    assert player.lifecycle == Player.Lifecycle.PENDING_DELETION
 
 
 @override_settings(**_settings())
