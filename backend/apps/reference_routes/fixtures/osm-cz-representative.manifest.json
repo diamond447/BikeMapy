@@ -4,6 +4,12 @@
   "reviewed_source_decision": "docs/reference-route-sources.md in PR #164",
   "endpoint": "https://overpass-api.de/api/interpreter",
   "query": "see apps.reference_routes.services.OSM_DISCOVERY_QUERY",
-  "sha256": "becc5577897061188738cda4446c90ca52a9c332467c26abe78b313e9a75b791",
+  "retrieved_at": "2026-09-19T00:00:00Z",
+  "source_timestamp": "2026-09-19T00:00:00Z",
+  "selected_relation_ids": [101],
+  "expected_relation_count": 1,
+  "http_status": 200,
+  "http_headers": {"content-type": "application/json"},
+  "sha256": "d8c460bf71d181ed76ea7ded2afea9b54b2b47da351c080a7c5157178286880a",
   "purpose": "Deterministic validation and importer tests; not a live catalogue snapshot."
 }

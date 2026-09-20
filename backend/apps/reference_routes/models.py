@@ -27,6 +27,11 @@ class ReferenceImportStatus(models.TextChoices):
 
 
 class ImmutableReferenceImportQuerySet(models.QuerySet["ReferenceImport"]):
+    def update(self, **kwargs: object) -> int:
+        if set(kwargs) - {"status", "diagnostics"}:
+            raise ValidationError("Immutable source snapshot fields cannot be updated.")
+        return super().update(**kwargs)
+
     def delete(self) -> tuple[int, dict[str, int]]:
         raise ProtectedError("Source snapshots cannot be deleted.", set(self))
 
@@ -58,6 +63,7 @@ class ReferenceCollection(models.Model):
     derivative_offer_url = models.URLField(max_length=1000, blank=True)
     rightsholder = models.CharField(max_length=255, blank=True)
     contact_url = models.URLField(max_length=1000, blank=True)
+    permission_granted = models.BooleanField(default=False)
     active = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
@@ -84,6 +90,23 @@ class ReferenceCollection(models.Model):
             raise ValidationError(
                 {field: "ODbL provenance metadata is required." for field in missing}
             )
+        if self.source_kind == ReferenceSourceKind.OSM_NUMBERED:
+            attribution = f"{self.attribution_text} {self.attribution}"
+            if (
+                "openstreetmap" not in attribution.casefold()
+                or "contributor" not in attribution.casefold()
+            ):
+                raise ValidationError(
+                    {"attribution_text": "OSM contributor attribution is required."}
+                )
+            if "openstreetmap.org/copyright" not in self.attribution_url.casefold():
+                raise ValidationError({"attribution_url": "Use the OSM copyright URL."})
+            if "opendatacommons.org/licenses/odbl" not in self.licence_uri.casefold():
+                raise ValidationError({"licence_uri": "Use the ODbL licence URI."})
+            if "example.invalid" in self.derivative_offer_url.casefold():
+                raise ValidationError(
+                    {"derivative_offer_url": "A deployable alteration offer URL is required."}
+                )
 
 
 class ReferenceImport(models.Model):
@@ -215,8 +238,27 @@ class ReferenceRoute(models.Model):
     def __str__(self) -> str:
         return self.title or self.source_identifier
 
+    def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
+        if self.active or self.publication_status == ReferencePublicationStatus.APPROVED:
+            collection = self.collection if self.collection_id else None
+            if collection is None:
+                collection = ReferenceCollection.objects.get(pk=self.collection_id)
+            if (
+                collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
+                or not collection.permission_granted
+            ):
+                raise ValidationError(
+                    "A blocked reference source cannot be published or activated."
+                )
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
 
 class ImmutableReferenceVersionQuerySet(models.QuerySet["ReferenceRouteVersion"]):
+    def update(self, **kwargs: object) -> int:
+        if set(kwargs) - {"active"}:
+            raise ValidationError("Immutable reference version fields cannot be updated.")
+        return super().update(**kwargs)
+
     def delete(self) -> tuple[int, dict[str, int]]:
         raise ProtectedError("Reference route versions cannot be deleted.", set(self))
 
@@ -234,6 +276,7 @@ class ReferenceRouteVersion(models.Model):
     source_geometry = models.JSONField(default=dict)
     normalized_geometry = RouteGeometryField(srid=4326, spatial_index=True, blank=True, null=True)
     provenance = models.JSONField(default=dict)
+    attribution_metadata = models.JSONField(default=dict)
     attribution = models.TextField()
     validation_status = models.CharField(max_length=16, choices=ReferenceValidationStatus.choices)
     diagnostics = models.JSONField(default=list, blank=True)
@@ -263,6 +306,13 @@ class ReferenceRouteVersion(models.Model):
         return f"{self.route} v{self.version_number}"
 
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
+        if self.active:
+            collection = self.route.collection
+            if (
+                collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
+                or not collection.permission_granted
+            ):
+                raise ValidationError("A blocked reference source cannot activate a version.")
         if self.pk:
             old = type(self).objects.get(pk=self.pk)
             immutable = (
@@ -274,6 +324,7 @@ class ReferenceRouteVersion(models.Model):
                 "source_geometry",
                 "normalized_geometry",
                 "provenance",
+                "attribution_metadata",
                 "attribution",
                 "validation_status",
                 "diagnostics",

@@ -79,11 +79,20 @@ class ReferenceRouteListSerializer(serializers.ModelSerializer[ReferenceRoute]):
 
 class ReferenceRouteSerializer(ReferenceRouteListSerializer):
     version = serializers.IntegerField(source="current_version.version_number", read_only=True)
+    version_attribution_metadata = serializers.SerializerMethodField()
     geometry = serializers.SerializerMethodField()
     stages = ReferenceStageSerializer(many=True, read_only=True)
 
     class Meta(ReferenceRouteListSerializer.Meta):
-        fields = ReferenceRouteListSerializer.Meta.fields + ("version", "geometry", "stages")  # type: ignore[assignment]
+        fields = ReferenceRouteListSerializer.Meta.fields + (
+            "version",
+            "version_attribution_metadata",
+            "geometry",
+            "stages",
+        )  # type: ignore[assignment]
+
+    def get_version_attribution_metadata(self, route: ReferenceRoute) -> dict[str, Any]:
+        return dict(route.current_version.attribution_metadata) if route.current_version else {}
 
     def get_geometry(self, route: ReferenceRoute) -> Any:
         version = route.current_version

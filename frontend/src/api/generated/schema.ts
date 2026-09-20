@@ -219,16 +219,14 @@ export interface components {
      */
     ModeEnum: 'heatmap' | 'routes'
     PaginatedReferenceRouteListList: {
-      /** @example 123 */
-      count: number
       /**
        * Format: uri
-       * @example http://api.example.org/accounts/?offset=400&limit=100
+       * @example http://api.example.org/accounts/?cursor=cD00ODY%3D"
        */
       next?: string | null
       /**
        * Format: uri
-       * @example http://api.example.org/accounts/?offset=200&limit=100
+       * @example http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
        */
       previous?: string | null
       results: components['schemas']['ReferenceRouteList'][]
@@ -278,6 +276,9 @@ export interface components {
         [key: string]: unknown
       }
       readonly version: number
+      readonly version_attribution_metadata: {
+        [key: string]: unknown
+      }
       readonly geometry: unknown
       readonly stages: components['schemas']['ReferenceStage'][]
     }
@@ -430,8 +431,8 @@ export interface operations {
   v1_game_reference_routes_list: {
     parameters: {
       query?: {
-        limit?: number
-        offset?: number
+        cursor?: string
+        page_size?: number
         route_number?: string
         source?: string
       }

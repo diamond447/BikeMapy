@@ -196,8 +196,10 @@ def _assemble_geometry(
         )
     way_ids: list[int] = []
     segments: list[list[tuple[float, float]]] = []
+    fixed_direction: list[bool] = []
     seen_ids: set[int] = set()
     seen_segments: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+    seen_full_segments: set[tuple[tuple[float, float], ...]] = set()
     coordinate_count = 0
     for member in members:
         if not isinstance(member, dict) or member.get("type") != "way":
@@ -235,7 +237,7 @@ def _assemble_geometry(
             diagnostics.append(
                 RouteDiagnostic("missing_nodes", f"Way {way_id} node and geometry counts differ.")
             )
-        if isinstance(nodes, list) and node_ids and any(node not in node_ids for node in nodes):
+        if isinstance(nodes, list) and any(node not in (node_ids or set()) for node in nodes):
             diagnostics.append(
                 RouteDiagnostic(
                     "missing_nodes", f"Way {way_id} references nodes absent from the response."
@@ -256,7 +258,9 @@ def _assemble_geometry(
             )
             continue
         concrete = [point for point in points if point is not None]
-        if len(set(concrete)) < 2:
+        if len(set(concrete)) < 2 or any(
+            left == right for left, right in zip(concrete, concrete[1:], strict=False)
+        ):
             diagnostics.append(RouteDiagnostic("zero_length", f"Way {way_id} has zero length."))
             continue
         for lon, lat in concrete:
@@ -272,22 +276,51 @@ def _assemble_geometry(
                 break
         if normalize_source_text(member.get("role")) == "backward":
             concrete.reverse()
+        role = normalize_source_text(member.get("role"))
+        tags = relation.get("tags")
+        if (
+            isinstance(tags, dict)
+            and normalize_source_text(tags.get("signed_direction")) == "yes"
+            and role not in {"forward", "backward"}
+        ):
+            diagnostics.append(
+                RouteDiagnostic(
+                    "signed_direction_missing_role",
+                    f"Way {way_id} lacks a signed direction role.",
+                )
+            )
         canonical_segment = tuple(sorted((concrete[0], concrete[-1])))
         if canonical_segment in seen_segments:
             diagnostics.append(
                 RouteDiagnostic("duplicate_segment", f"Way {way_id} duplicates another segment.")
             )
         seen_segments.add(canonical_segment)
+        full_segment = tuple(concrete)
+        reverse_segment = tuple(reversed(concrete))
+        if full_segment in seen_full_segments or reverse_segment in seen_full_segments:
+            diagnostics.append(
+                RouteDiagnostic(
+                    "duplicate_segment", f"Way {way_id} duplicates an internal segment."
+                )
+            )
+        seen_full_segments.add(full_segment)
         segments.append(concrete)
+        fixed_direction.append(role in {"forward", "backward"})
     if not segments:
         diagnostics.append(
             RouteDiagnostic("empty_geometry", "Route contains no usable way geometry.")
         )
         return None, diagnostics, {"way_ids": way_ids}
-    endpoints = [(segment[0], index) for index, segment in enumerate(segments)] + [
-        (segment[-1], index) for index, segment in enumerate(segments)
-    ]
-    start, _ = min(endpoints)
+    degree: dict[tuple[float, float], int] = {}
+    for segment in segments:
+        degree[segment[0]] = degree.get(segment[0], 0) + 1
+        degree[segment[-1]] = degree.get(segment[-1], 0) + 1
+    if any(value > 2 for value in degree.values()):
+        diagnostics.append(
+            RouteDiagnostic("branching_geometry", "Route members form a branching graph.")
+        )
+    endpoints = sorted(point for point, value in degree.items() if value == 1)
+    start = endpoints[0] if endpoints else min(degree)
     assembled = [start]
     unused = set(range(len(segments)))
     current = start
@@ -297,7 +330,7 @@ def _assemble_geometry(
             segment = segments[index]
             if segment[0] == current:
                 options.append((index, False))
-            if segment[-1] == current:
+            if not fixed_direction[index] and segment[-1] == current:
                 options.append((index, True))
         if not options:
             diagnostics.append(
@@ -316,7 +349,67 @@ def _assemble_geometry(
         diagnostics.append(
             RouteDiagnostic("self_invalid_geometry", "Assembled route geometry is invalid.")
         )
-    return assembled if not diagnostics else None, diagnostics, {"way_ids": way_ids}
+    for first_index, first in enumerate(zip(assembled, assembled[1:], strict=False)):
+        if first[0] == first[1]:
+            diagnostics.append(
+                RouteDiagnostic("zero_length", "Assembled geometry contains a zero-length segment.")
+            )
+        for second_index, second in enumerate(zip(assembled, assembled[1:], strict=False)):
+            if second_index <= first_index + 1:
+                continue
+            shares_endpoint = (
+                first[0] == second[0]
+                or first[0] == second[1]
+                or first[1] == second[0]
+                or first[1] == second[1]
+            )
+            if shares_endpoint:
+                is_closed_loop_join = (
+                    first_index == 0
+                    and second_index == len(assembled) - 2
+                    and assembled[0] == assembled[-1]
+                )
+                if not is_closed_loop_join:
+                    diagnostics.append(
+                        RouteDiagnostic("self_intersection", "Assembled geometry self-intersects.")
+                    )
+                    break
+                continue
+            if _segments_intersect(first[0], first[1], second[0], second[1]):
+                diagnostics.append(
+                    RouteDiagnostic("self_intersection", "Assembled geometry self-intersects.")
+                )
+                break
+    normalized = [[lon, lat] for lon, lat in assembled]
+    return normalized if not diagnostics else None, diagnostics, {"way_ids": way_ids}
+
+
+def _segments_intersect(
+    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float], d: tuple[float, float]
+) -> bool:
+    def orientation(
+        p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]
+    ) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    def on_segment(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> bool:
+        return min(p[0], r[0]) <= q[0] <= max(p[0], r[0]) and min(p[1], r[1]) <= q[1] <= max(
+            p[1], r[1]
+        )
+
+    first = orientation(a, b, c)
+    second = orientation(a, b, d)
+    third = orientation(c, d, a)
+    fourth = orientation(c, d, b)
+    if first == 0 and on_segment(a, c, b):
+        return True
+    if second == 0 and on_segment(a, d, b):
+        return True
+    if third == 0 and on_segment(c, a, d):
+        return True
+    if fourth == 0 and on_segment(c, b, d):
+        return True
+    return (first > 0) != (second > 0) and (third > 0) != (fourth > 0)
 
 
 def _geometry_value(coordinates: list[list[float]] | None) -> Any:
@@ -350,10 +443,13 @@ def import_osm_snapshot(
     query_text: str = OSM_DISCOVERY_QUERY,
     retrieved_at: datetime | None = None,
     response_metadata: dict[str, Any] | None = None,
+    stored_import_id: int | None = None,
 ) -> dict[str, Any]:
     """Process one bounded snapshot. Invalid records are isolated per relation."""
     if collection.source_kind != ReferenceSourceKind.OSM_NUMBERED:
         raise ValueError("Only the approved OSM numbered-route source can be imported")
+    if not collection.permission_granted:
+        raise PermissionError("This source collection is not approved for ingestion")
     collection.full_clean()
     raw, parsed = _response_bytes(payload)
     metadata = response_metadata or {}
@@ -371,20 +467,39 @@ def import_osm_snapshot(
         except ValueError:
             metadata = {**metadata, "source_timestamp_parse_error": str(source_base)}
     with transaction.atomic():
-        source_import, created = ReferenceImport.objects.get_or_create(
-            collection=collection,
-            checksum=checksum,
-            defaults={
-                "endpoint": endpoint,
-                "query_text": query_text,
-                "retrieved_at": retrieved,
-                "source_timestamp": source_timestamp,
-                "response_metadata": metadata,
-                "raw_payload": parsed,
-                "raw_response": raw,
-                "raw_response_sha256": checksum,
-            },
-        )
+        if stored_import_id is not None:
+            source_import = ReferenceImport.objects.select_for_update().get(pk=stored_import_id)
+            if (
+                source_import.collection_id != collection.pk
+                or source_import.raw_response_sha256 != checksum
+            ):
+                raise ValueError(
+                    "Stored source snapshot does not match the supplied collection or bytes"
+                )
+            if source_import.status != ReferenceImportStatus.DISCOVERED:
+                return {
+                    "status": "unchanged",
+                    "import_id": source_import.pk,
+                    "created": 0,
+                    "invalid": 0,
+                    "recomputations": 0,
+                }
+            created = True
+        else:
+            source_import, created = ReferenceImport.objects.get_or_create(
+                collection=collection,
+                checksum=checksum,
+                defaults={
+                    "endpoint": endpoint,
+                    "query_text": query_text,
+                    "retrieved_at": retrieved,
+                    "source_timestamp": source_timestamp,
+                    "response_metadata": metadata,
+                    "raw_payload": parsed,
+                    "raw_response": raw,
+                    "raw_response_sha256": checksum,
+                },
+            )
         if not created:
             return {
                 "status": "unchanged",
@@ -447,6 +562,11 @@ def import_osm_snapshot(
                 "recomputations": 0,
             }
         expected = metadata.get("expected_relation_count")
+        expected_ids = metadata.get("expected_relation_ids")
+        if expected_ids is not None and sorted(int(value) for value in expected_ids) != sorted(
+            int(relation["id"]) for relation in selected
+        ):
+            expected = -1
         if expected is not None and int(expected) != len(selected):
             source_import.status = ReferenceImportStatus.FAILED
             source_import.diagnostics = [
@@ -472,11 +592,6 @@ def import_osm_snapshot(
                 relation, ways, node_ids
             )
             diagnostics.extend(geometry_diagnostics)
-            status = (
-                ReferenceValidationStatus.VALID
-                if not diagnostics
-                else ReferenceValidationStatus.INVALID
-            )
             source_geometry = {
                 "relation": relation,
                 "members": member_meta,
@@ -487,6 +602,15 @@ def import_osm_snapshot(
             version_checksum = hashlib.sha256(
                 json.dumps(source_geometry, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
+            if diagnostics:
+                invalid += 1
+                import_diagnostics.append(
+                    {
+                        "source_identifier": f"osm-relation:{relation['id']}",
+                        "diagnostics": [diagnostic.as_dict() for diagnostic in diagnostics],
+                    }
+                )
+                continue
             route, _ = ReferenceRoute.objects.get_or_create(
                 collection=collection,
                 source_identifier=f"osm-relation:{relation['id']}",
@@ -550,23 +674,21 @@ def import_osm_snapshot(
                         "member_way_ids": member_meta["way_ids"],
                     },
                     attribution=collection.attribution_text or collection.attribution,
-                    validation_status=status,
-                    diagnostics=[diagnostic.as_dict() for diagnostic in diagnostics],
+                    attribution_metadata={
+                        "attribution_text": collection.attribution_text,
+                        "attribution_url": collection.attribution_url,
+                        "licence": collection.licence,
+                        "licence_uri": collection.licence_uri,
+                        "derivative_offer_url": collection.derivative_offer_url,
+                        "rightsholder": collection.rightsholder,
+                        "contact_url": collection.contact_url,
+                        "source_url": collection.source_url,
+                    },
+                    validation_status=ReferenceValidationStatus.VALID,
+                    diagnostics=[],
                     active=False,
                 )
                 imported += 1
-                if diagnostics:
-                    invalid += 1
-                    route.active = False
-                    route.publication_status = ReferencePublicationStatus.PENDING
-                    route.save(update_fields=["active", "publication_status", "updated_at"])
-                    import_diagnostics.append(
-                        {
-                            "source_identifier": route.source_identifier,
-                            "diagnostics": version.diagnostics,
-                        }
-                    )
-                    continue
                 old = route.current_version
                 if old is not None and _canonical_geometry(
                     old.normalized_geometry
@@ -601,8 +723,45 @@ def import_osm_snapshot(
         }
 
 
+def store_pending_snapshot(
+    *,
+    collection: ReferenceCollection,
+    raw_response: bytes,
+    endpoint: str,
+    query_text: str,
+    retrieved_at: datetime,
+    response_metadata: dict[str, Any],
+) -> ReferenceImport:
+    """Persist a bounded upload for an operator/Celery worker to process later."""
+    if (
+        collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
+        or not collection.permission_granted
+    ):
+        raise PermissionError("This source collection is not approved for ingestion")
+    collection.full_clean()
+    raw, parsed = _response_bytes(raw_response)
+    checksum = hashlib.sha256(raw).hexdigest()
+    return ReferenceImport.objects.get_or_create(
+        collection=collection,
+        checksum=checksum,
+        defaults={
+            "endpoint": endpoint,
+            "query_text": query_text,
+            "retrieved_at": retrieved_at,
+            "response_metadata": response_metadata,
+            "raw_payload": parsed,
+            "raw_response": raw,
+            "raw_response_sha256": checksum,
+        },
+    )[0]
+
+
 def approve_reference_route(route: ReferenceRoute, *, reviewer: str) -> ReferenceRoute:
     """Explicit human-review/publication action; imports never call this."""
+    if route.collection.source_kind != ReferenceSourceKind.OSM_NUMBERED:
+        raise PermissionError("This source kind is not approved for publication")
+    if not route.collection.permission_granted:
+        raise PermissionError("This source collection is not approved for publication")
     if (
         route.current_version_id is None
         or route.current_version.validation_status != ReferenceValidationStatus.VALID

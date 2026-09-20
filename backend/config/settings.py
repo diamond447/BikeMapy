@@ -60,6 +60,10 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
 GAME_ENABLED = env_bool("GAME_ENABLED", False)
+REFERENCE_ROUTE_AUTHORIZER = os.getenv(
+    "REFERENCE_ROUTE_AUTHORIZER",
+    "apps.api.reference_authorization.default_reference_route_authorizer",
+)
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")

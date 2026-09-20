@@ -9,11 +9,12 @@ from uuid import UUID
 
 from django.conf import settings
 from django.db.models import Prefetch, QuerySet
+from django.utils.module_loading import import_string
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.exceptions import NotFound
 from rest_framework.generics import ListAPIView
-from rest_framework.pagination import LimitOffsetPagination
+from rest_framework.pagination import CursorPagination
 from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -28,6 +29,11 @@ from apps.reference_routes.models import (
 from .serializers_reference_routes import ReferenceRouteListSerializer, ReferenceRouteSerializer
 
 
+def reference_route_authorizer() -> Any:
+    """Resolve the authoritative competition-membership checker per request."""
+    return import_string(settings.REFERENCE_ROUTE_AUTHORIZER)
+
+
 class GameReferencePermission(BasePermission):
     """Require the future game session contract, not any arbitrary Django user."""
 
@@ -35,18 +41,23 @@ class GameReferencePermission(BasePermission):
         if not getattr(settings, "GAME_ENABLED", False) or not request.user.is_authenticated:
             return False
         claims = request.session.get("game_session")
-        return bool(
+        if not bool(
             isinstance(claims, dict)
             and claims.get("competition_id")
             and claims.get("reference_route_read") is True
+        ):
+            return False
+        return bool(
+            reference_route_authorizer()(request.user, str(claims["competition_id"]), request)
         )
 
 
-class ReferenceRoutePagination(LimitOffsetPagination):
-    default_limit = 50
-    max_limit = 100
-    limit_query_param = "limit"
-    offset_query_param = "offset"
+class ReferenceRoutePagination(CursorPagination):
+    page_size = 50
+    max_page_size = 100
+    page_size_query_param = "page_size"
+    cursor_query_param = "cursor"
+    ordering = ("route_number", "id")
 
 
 def reference_queryset() -> QuerySet[ReferenceRoute]:
@@ -65,6 +76,7 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
             current_version__isnull=False,
             current_version__validation_status=ReferenceValidationStatus.VALID,
             collection__active=True,
+            collection__permission_granted=True,
             parent__isnull=True,
         )
         .select_related("collection", "current_version")
@@ -81,8 +93,8 @@ def _private_headers(response: Response) -> Response:
 REFERENCE_PARAMETERS = [
     OpenApiParameter("source", OpenApiTypes.STR, OpenApiParameter.QUERY),
     OpenApiParameter("route_number", OpenApiTypes.STR, OpenApiParameter.QUERY),
-    OpenApiParameter("limit", OpenApiTypes.INT, OpenApiParameter.QUERY),
-    OpenApiParameter("offset", OpenApiTypes.INT, OpenApiParameter.QUERY),
+    OpenApiParameter("cursor", OpenApiTypes.STR, OpenApiParameter.QUERY),
+    OpenApiParameter("page_size", OpenApiTypes.INT, OpenApiParameter.QUERY),
 ]
 
 

@@ -1,24 +1,32 @@
+import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.db import close_old_connections, connection
 from django.test import Client, override_settings
+from django.utils import timezone
 
 from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.reference_routes.models import (
     ReferenceCollection,
+    ReferenceImport,
     ReferenceRecomputation,
     ReferenceRoute,
     ReferenceRouteVersion,
     ReferenceSourceKind,
 )
 from apps.reference_routes.services import (
+    _assemble_geometry,
     approve_reference_route,
     blocked_via_czechia_import,
     import_osm_snapshot,
     link_stage,
+    store_pending_snapshot,
     validate_osm_candidate,
 )
 from apps.reference_routes.tasks import refresh_reference_routes
@@ -47,9 +55,14 @@ def payload(*, changed: bool = False) -> dict[str, Any]:
         "type": "way",
         "id": 501,
         "version": 3,
+        "nodes": [9001, 9002],
         "geometry": [{"lat": 49.2, "lon": 16.6}, {"lat": 49.3 if changed else 49.25, "lon": 16.7}],
     }
-    return {"version": 0.6, "elements": [relation, way]}
+    nodes = [
+        {"type": "node", "id": 9001, "lat": 49.2, "lon": 16.6},
+        {"type": "node", "id": 9002, "lat": 49.3 if changed else 49.25, "lon": 16.7},
+    ]
+    return {"version": 0.6, "elements": [relation, way, *nodes]}
 
 
 def collection() -> ReferenceCollection:
@@ -63,9 +76,10 @@ def collection() -> ReferenceCollection:
         attribution_text="© OpenStreetMap contributors",
         attribution_url="https://www.openstreetmap.org/copyright",
         licence_uri="https://opendatacommons.org/licenses/odbl/1-0/",
-        derivative_offer_url="https://example.invalid/bikemapy/osm-alterations",
+        derivative_offer_url="https://github.com/diamond447/BikeMapy/tree/main/docs/osm-alterations",
         rightsholder="OpenStreetMap contributors",
         contact_url="https://www.openstreetmap.org/fixthemap",
+        permission_granted=True,
         active=True,
     )
 
@@ -92,10 +106,8 @@ def test_invalid_record_isolated_with_diagnostics() -> None:
     data["elements"][0]["tags"]["network"] = "icn"
     result = import_osm_snapshot(collection=item, payload=data)
     assert result["invalid"] == 1
-    version = ReferenceRouteVersion.objects.get()
-    assert version.validation_status == "invalid"
-    assert version.diagnostics[0]["code"] == "unsupported_network"
-    assert not version.route.active
+    assert item.routes.count() == 0
+    assert item.imports.get().diagnostics[0]["diagnostics"][0]["code"] == "unsupported_network"
 
 
 def test_via_czechia_is_blocked_without_request() -> None:
@@ -110,15 +122,41 @@ def test_via_czechia_is_blocked_without_request() -> None:
     assert blocked_via_czechia_import(collection=item)["status"] == "blocked"
 
 
+def test_source_gate_blocks_import_and_activation() -> None:
+    item = collection()
+    item.permission_granted = False
+    with pytest.raises(PermissionError):
+        import_osm_snapshot(collection=item, payload=payload())
+    route = ReferenceRoute(
+        collection=item, source_identifier="blocked", title="Blocked", active=True
+    )
+    with pytest.raises(ValidationError):
+        route.save()
+
+
 def test_operator_and_human_review_are_required_before_activation() -> None:
     item = collection()
     data = payload()
     del data["elements"][0]["tags"]["operator"]
     result = import_osm_snapshot(collection=item, payload=data)
-    route = ReferenceRoute.objects.get()
     assert result["invalid"] == 1
-    assert route.active is False
-    assert route.publication_status == "pending"
+    assert item.routes.count() == 0
+
+
+def test_invalid_refresh_does_not_replace_published_route() -> None:
+    item = collection()
+    import_osm_snapshot(collection=item, payload=payload())
+    route = ReferenceRoute.objects.get(collection=item)
+    approve_reference_route(route, reviewer="reviewer")
+    current_id = route.current_version_id
+    invalid = payload(changed=True)
+    invalid["elements"][0]["tags"]["network"] = "icn"
+    result = import_osm_snapshot(collection=item, payload=invalid)
+    route.refresh_from_db()
+    assert result["invalid"] == 1
+    assert route.current_version_id == current_id
+    assert route.active is True
+    assert route.publication_status == "approved"
 
 
 def test_raw_bytes_and_snapshot_are_immutable() -> None:
@@ -136,17 +174,64 @@ def test_raw_bytes_and_snapshot_are_immutable() -> None:
         source_import.save()
 
 
+def test_bulk_updates_cannot_rewrite_import_or_version_content() -> None:
+    item = collection()
+    result = import_osm_snapshot(collection=item, payload=payload())
+    source_import = ReferenceImport.objects.get(pk=result["import_id"])
+    version = ReferenceRouteVersion.objects.get()
+    with pytest.raises(ValidationError):
+        ReferenceImport.objects.filter(pk=source_import.pk).update(raw_response=b"changed")
+    with pytest.raises(ValidationError):
+        ReferenceRouteVersion.objects.filter(pk=version.pk).update(checksum="changed")
+
+
+def test_internal_zero_length_geometry_is_rejected() -> None:
+    relation = {"members": [{"type": "way", "ref": 1, "role": ""}]}
+    ways = {
+        1: {
+            "geometry": [
+                {"lon": 16.4, "lat": 49.2},
+                {"lon": 16.4, "lat": 49.2},
+                {"lon": 16.5, "lat": 49.2},
+            ]
+        }
+    }
+    _, diagnostics, _ = _assemble_geometry(relation, ways)
+    assert any(item.code == "zero_length" for item in diagnostics)
+
+
 def test_operator_command_and_celery_task_use_bounded_stored_snapshot(tmp_path: Any) -> None:
     item = collection()
     path = tmp_path / "snapshot.json"
     path.write_bytes(
         b'{"elements":[{"type":"relation","id":101,"tags":{"route":"bicycle","ref":"1","network":"rcn","operator":"operator"},"members":[]}]}'
     )
-    call_command("refresh_reference_routes", "--collection", item.slug, "--payload-file", path)
+    call_command(
+        "refresh_reference_routes",
+        "--collection",
+        item.slug,
+        "--payload-file",
+        path,
+        "--expected-relation-count",
+        "1",
+        "--expected-relation-id",
+        "101",
+        "--retrieved-at",
+        "2026-09-19T00:00:00Z",
+    )
     source_import = item.imports.get()
-    task_result = refresh_reference_routes.apply(args=[source_import.pk]).get()
-    assert task_result["import_id"] == source_import.pk
-    assert task_result["raw_response_sha256"] == source_import.raw_response_sha256
+    assert source_import.status == "invalid"
+    pending = store_pending_snapshot(
+        collection=item,
+        raw_response=json.dumps(payload(), separators=(",", ":")).encode(),
+        endpoint="https://overpass-api.de/api/interpreter",
+        query_text="query",
+        retrieved_at=timezone.now(),
+        response_metadata={"complete": True, "expected_relation_count": 1},
+    )
+    task_result = refresh_reference_routes.apply(args=[pending.pk]).get()
+    assert task_result["import_id"] == pending.pk
+    assert task_result["created"] == 1
 
 
 def test_duplicate_missing_and_disconnected_members_are_diagnostics() -> None:
@@ -159,7 +244,7 @@ def test_duplicate_missing_and_disconnected_members_are_diagnostics() -> None:
     ]
     result = import_osm_snapshot(collection=item, payload=data)
     assert result["invalid"] == 1
-    codes = {item["code"] for item in ReferenceRouteVersion.objects.get().diagnostics}
+    codes = {item["code"] for item in ReferenceImport.objects.get().diagnostics[0]["diagnostics"]}
     assert {"duplicate_member", "missing_way"} <= codes
 
 
@@ -219,6 +304,72 @@ def test_allow_deny_normalization_matrix(tags: dict[str, Any], code: str) -> Non
     assert code in {diagnostic.code for diagnostic in validate_osm_candidate(tags)}
 
 
+def test_graph_assembly_handles_internal_minimum_and_undirected_reversal() -> None:
+    relation = {
+        "tags": {"signed_direction": "no"},
+        "members": [
+            {"type": "way", "ref": 2, "role": ""},
+            {"type": "way", "ref": 1, "role": ""},
+            {"type": "way", "ref": 3, "role": ""},
+        ],
+    }
+    ways = {
+        1: {"geometry": [{"lon": 16.5, "lat": 49.2}, {"lon": 16.4, "lat": 49.2}]},
+        2: {"geometry": [{"lon": 16.6, "lat": 49.2}, {"lon": 16.5, "lat": 49.2}]},
+        3: {"geometry": [{"lon": 16.6, "lat": 49.2}, {"lon": 16.7, "lat": 49.2}]},
+    }
+    coordinates, diagnostics, _ = _assemble_geometry(relation, ways)
+    assert not diagnostics
+    assert coordinates == [[16.4, 49.2], [16.5, 49.2], [16.6, 49.2], [16.7, 49.2]]
+
+
+def test_signed_roles_cannot_be_reversed_and_closed_loop_is_deterministic() -> None:
+    signed = {
+        "tags": {"signed_direction": "yes"},
+        "members": [
+            {"type": "way", "ref": 1, "role": "forward"},
+            {"type": "way", "ref": 2, "role": "forward"},
+        ],
+    }
+    ways = {
+        1: {"geometry": [{"lon": 16.5, "lat": 49.2}, {"lon": 16.4, "lat": 49.2}]},
+        2: {"geometry": [{"lon": 16.6, "lat": 49.2}, {"lon": 16.5, "lat": 49.2}]},
+    }
+    _, diagnostics, _ = _assemble_geometry(signed, ways)
+    assert any(item.code == "disconnected_geometry" for item in diagnostics)
+    loop = {
+        "members": [
+            {"type": "way", "ref": 1, "role": ""},
+            {"type": "way", "ref": 2, "role": ""},
+            {"type": "way", "ref": 3, "role": ""},
+        ]
+    }
+    loop_ways = {
+        1: {"geometry": [{"lon": 16.4, "lat": 49.2}, {"lon": 16.5, "lat": 49.2}]},
+        2: {"geometry": [{"lon": 16.5, "lat": 49.2}, {"lon": 16.4, "lat": 49.3}]},
+        3: {"geometry": [{"lon": 16.4, "lat": 49.3}, {"lon": 16.4, "lat": 49.2}]},
+    }
+    coordinates, diagnostics, _ = _assemble_geometry(loop, loop_ways)
+    assert not diagnostics
+    assert coordinates is not None and coordinates[0] == [16.4, 49.2]
+
+
+def test_self_intersection_and_internal_duplicate_are_rejected() -> None:
+    relation = {"members": [{"type": "way", "ref": 1, "role": ""}]}
+    ways = {
+        1: {
+            "geometry": [
+                {"lon": 16.4, "lat": 49.2},
+                {"lon": 16.6, "lat": 49.4},
+                {"lon": 16.4, "lat": 49.4},
+                {"lon": 16.6, "lat": 49.2},
+            ]
+        }
+    }
+    _, diagnostics, _ = _assemble_geometry(relation, ways)
+    assert any(item.code == "self_intersection" for item in diagnostics)
+
+
 @pytest.mark.skipif(not _GIS_AVAILABLE, reason="PostGIS/GeoDjango is not available")
 def test_postgis_geometry_is_linestring_with_srid() -> None:
     item = collection()
@@ -231,7 +382,10 @@ def test_postgis_geometry_is_linestring_with_srid() -> None:
     assert version.normalized_geometry.srid == 4326
 
 
-@override_settings(GAME_ENABLED=True)
+@override_settings(
+    GAME_ENABLED=True,
+    REFERENCE_ROUTE_AUTHORIZER="apps.api.reference_authorization.allow_session_claim_for_tests",
+)
 def test_reference_endpoints_require_game_session_claim() -> None:
     item = collection()
     import_osm_snapshot(collection=item, payload=payload())
@@ -241,24 +395,46 @@ def test_reference_endpoints_require_game_session_claim() -> None:
     user = get_user_model().objects.create_user(username="player")
     client.force_login(user)
     session = client.session
-    session["game_session"] = {"competition_id": "competition-1", "reference_route_read": True}
+    session["game_session"] = {
+        "competition_id": "competition-1",
+        "reference_route_read": True,
+        "test_authorized_competition": "competition-1",
+    }
     session.save()
     response = client.get("/api/v1/game/reference-routes/")
     assert response.status_code == 200
     body = response.json()
-    assert body["count"] == 1
+    assert len(body["results"]) == 1
     assert body["results"][0]["route_number"] == "1"
     assert "geometry" not in body["results"][0]
     assert response["Cache-Control"] == "private, no-store"
     assert response["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+    session["game_session"]["test_authorized_competition"] = "revoked"
+    session.save()
+    assert client.get("/api/v1/game/reference-routes/").status_code == 403
 
 
-@override_settings(GAME_ENABLED=True)
+@override_settings(
+    GAME_ENABLED=True,
+    REFERENCE_ROUTE_AUTHORIZER="apps.api.reference_authorization.allow_session_claim_for_tests",
+)
 def test_reference_api_paginates_and_filters_active_stages() -> None:
     item = collection()
     import_osm_snapshot(collection=item, payload=payload())
     parent = ReferenceRoute.objects.get(collection=item)
     approve_reference_route(parent, reviewer="reviewer")
+    for route_number in ("2", "3"):
+        extra = payload()
+        relation = extra["elements"][0]
+        way = extra["elements"][1]
+        relation["id"] = 100 + int(route_number)
+        relation["tags"]["ref"] = route_number
+        relation["members"][0]["ref"] = 500 + int(route_number)
+        way["id"] = 500 + int(route_number)
+        import_osm_snapshot(collection=item, payload=extra)
+        approve_reference_route(
+            ReferenceRoute.objects.get(route_number=route_number), reviewer="reviewer"
+        )
     stage = ReferenceRoute.objects.create(
         collection=item,
         source_identifier="osm-stage:1",
@@ -290,12 +466,49 @@ def test_reference_api_paginates_and_filters_active_stages() -> None:
     user = get_user_model().objects.create_user(username="paged-player")
     client.force_login(user)
     session = client.session
-    session["game_session"] = {"competition_id": "competition-1", "reference_route_read": True}
+    session["game_session"] = {
+        "competition_id": "competition-1",
+        "reference_route_read": True,
+        "test_authorized_competition": "competition-1",
+    }
     session.save()
-    response = client.get("/api/v1/game/reference-routes/?limit=1&offset=0")
+    response = client.get("/api/v1/game/reference-routes/?page_size=1")
     assert response.status_code == 200
-    assert response.json()["count"] == 1
+    assert len(response.json()["results"]) == 1
     assert "stages" not in response.json()["results"][0]
+    route_numbers = [response.json()["results"][0]["route_number"]]
+    next_url = response.json()["next"]
+    while next_url:
+        parsed = urlparse(next_url)
+        page = client.get(parsed.path + (f"?{parsed.query}" if parsed.query else ""))
+        assert page.status_code == 200
+        route_numbers.extend(item["route_number"] for item in page.json()["results"])
+        next_url = page.json()["next"]
+    assert route_numbers == ["1", "2", "3"]
     detail = client.get(f"/api/v1/game/reference-routes/{parent.pk}/").json()
     assert detail["stages"][0]["id"] == str(stage.pk)
     assert detail["stages"][0]["geometry"]["type"] == "LineString"
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locking")
+def test_concurrent_imports_allocate_distinct_versions() -> None:
+    item = collection()
+    base = payload()
+    changed = payload(changed=True)
+
+    def import_snapshot(data: dict[str, Any]) -> dict[str, Any]:
+        close_old_connections()
+        try:
+            return import_osm_snapshot(
+                collection=ReferenceCollection.objects.get(pk=item.pk), payload=data
+            )
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(import_snapshot, [base, changed]))
+
+    assert sorted(result["created"] for result in results) == [1, 1]
+    route = ReferenceRoute.objects.get(collection=item)
+    assert list(route.versions.values_list("version_number", flat=True)) == [1, 2]
