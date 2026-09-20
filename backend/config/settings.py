@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.api",
     "apps.analytics",
+    "apps.reference_routes",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
     # Host-side smoke checks can run without native GeoDjango libraries. The
