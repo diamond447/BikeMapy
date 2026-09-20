@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -11,6 +12,20 @@ from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
 from apps.catalogue.fields import RouteGeometryField
+
+
+def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == hostname
+        and parsed.port is None
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path == path
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 class ReferenceSourceKind(models.TextChoices):
@@ -99,14 +114,30 @@ class ReferenceCollection(models.Model):
                 raise ValidationError(
                     {"attribution_text": "OSM contributor attribution is required."}
                 )
-            if "openstreetmap.org/copyright" not in self.attribution_url.casefold():
+            if not _is_exact_https_url(self.source_url, hostname="www.openstreetmap.org", path=""):
+                raise ValidationError({"source_url": "Use the exact OSM source URL."})
+            if not _is_exact_https_url(
+                self.attribution_url, hostname="www.openstreetmap.org", path="/copyright"
+            ):
                 raise ValidationError({"attribution_url": "Use the OSM copyright URL."})
-            if "opendatacommons.org/licenses/odbl" not in self.licence_uri.casefold():
+            if not _is_exact_https_url(
+                self.licence_uri,
+                hostname="opendatacommons.org",
+                path="/licenses/odbl/1-0/",
+            ):
                 raise ValidationError({"licence_uri": "Use the ODbL licence URI."})
-            if "example.invalid" in self.derivative_offer_url.casefold():
+            if not _is_exact_https_url(
+                self.derivative_offer_url,
+                hostname="github.com",
+                path="/diamond447/BikeMapy/blob/main/docs/osm-alterations.md",
+            ):
                 raise ValidationError(
-                    {"derivative_offer_url": "A deployable alteration offer URL is required."}
+                    {"derivative_offer_url": "Use the tracked OSM alteration offer document."}
                 )
+            if not _is_exact_https_url(
+                self.contact_url, hostname="www.openstreetmap.org", path="/fixthemap"
+            ):
+                raise ValidationError({"contact_url": "Use the OSM contact URL."})
 
 
 class ReferenceImport(models.Model):
@@ -177,6 +208,14 @@ class ReferenceImport(models.Model):
         raise ProtectedError("Source snapshots cannot be deleted.", {self})
 
 
+class ProtectedReferenceRouteQuerySet(models.QuerySet["ReferenceRoute"]):
+    def update(self, **kwargs: object) -> int:
+        raise ValidationError("Reference routes must be changed through source-aware services.")
+
+    def delete(self) -> tuple[int, dict[str, int]]:
+        raise ProtectedError("Reference routes cannot be deleted.", set(self))
+
+
 class ReferenceRoute(models.Model):
     """Stable route identity; a number is scoped to collection and source ID."""
 
@@ -215,6 +254,7 @@ class ReferenceRoute(models.Model):
     )
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
+    objects = ProtectedReferenceRouteQuerySet.as_manager()
 
     class Meta:
         ordering = ["route_number", "title", "id"]
@@ -240,9 +280,7 @@ class ReferenceRoute(models.Model):
 
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
         if self.active or self.publication_status == ReferencePublicationStatus.APPROVED:
-            collection = self.collection if self.collection_id else None
-            if collection is None:
-                collection = ReferenceCollection.objects.get(pk=self.collection_id)
+            collection = ReferenceCollection.objects.get(pk=self.collection_id)
             if (
                 collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
                 or not collection.permission_granted
@@ -255,9 +293,7 @@ class ReferenceRoute(models.Model):
 
 class ImmutableReferenceVersionQuerySet(models.QuerySet["ReferenceRouteVersion"]):
     def update(self, **kwargs: object) -> int:
-        if set(kwargs) - {"active"}:
-            raise ValidationError("Immutable reference version fields cannot be updated.")
-        return super().update(**kwargs)
+        raise ValidationError("Reference versions must be changed through source-aware services.")
 
     def delete(self) -> tuple[int, dict[str, int]]:
         raise ProtectedError("Reference route versions cannot be deleted.", set(self))
@@ -307,12 +343,30 @@ class ReferenceRouteVersion(models.Model):
 
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
         if self.active:
-            collection = self.route.collection
+            collection = ReferenceCollection.objects.get(pk=self.route.collection_id)
             if (
                 collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
                 or not collection.permission_granted
             ):
                 raise ValidationError("A blocked reference source cannot activate a version.")
+        if self.validation_status == ReferenceValidationStatus.VALID or self.active:
+            required_attribution = (
+                "attribution_text",
+                "attribution_url",
+                "licence",
+                "licence_uri",
+                "derivative_offer_url",
+                "rightsholder",
+                "contact_url",
+                "source_url",
+            )
+            missing_attribution = [
+                field for field in required_attribution if not self.attribution_metadata.get(field)
+            ]
+            if missing_attribution:
+                raise ValidationError(
+                    {"attribution_metadata": "Structured attribution metadata is incomplete."}
+                )
         if self.pk:
             old = type(self).objects.get(pk=self.pk)
             immutable = (

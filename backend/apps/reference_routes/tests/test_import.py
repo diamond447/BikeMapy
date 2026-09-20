@@ -1,5 +1,7 @@
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -7,7 +9,9 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import close_old_connections, connection
+from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
@@ -62,7 +66,11 @@ def payload(*, changed: bool = False) -> dict[str, Any]:
         {"type": "node", "id": 9001, "lat": 49.2, "lon": 16.6},
         {"type": "node", "id": 9002, "lat": 49.3 if changed else 49.25, "lon": 16.7},
     ]
-    return {"version": 0.6, "elements": [relation, way, *nodes]}
+    return {
+        "version": 0.6,
+        "osm3s": {"timestamp_osm_base": "2026-09-19T00:00:00Z"},
+        "elements": [relation, way, *nodes],
+    }
 
 
 def collection() -> ReferenceCollection:
@@ -76,7 +84,7 @@ def collection() -> ReferenceCollection:
         attribution_text="© OpenStreetMap contributors",
         attribution_url="https://www.openstreetmap.org/copyright",
         licence_uri="https://opendatacommons.org/licenses/odbl/1-0/",
-        derivative_offer_url="https://github.com/diamond447/BikeMapy/tree/main/docs/osm-alterations",
+        derivative_offer_url="https://github.com/diamond447/BikeMapy/blob/main/docs/osm-alterations.md",
         rightsholder="OpenStreetMap contributors",
         contact_url="https://www.openstreetmap.org/fixthemap",
         permission_granted=True,
@@ -125,6 +133,7 @@ def test_via_czechia_is_blocked_without_request() -> None:
 def test_source_gate_blocks_import_and_activation() -> None:
     item = collection()
     item.permission_granted = False
+    item.save(update_fields=["permission_granted", "updated_at"])
     with pytest.raises(PermissionError):
         import_osm_snapshot(collection=item, payload=payload())
     route = ReferenceRoute(
@@ -183,6 +192,43 @@ def test_bulk_updates_cannot_rewrite_import_or_version_content() -> None:
         ReferenceImport.objects.filter(pk=source_import.pk).update(raw_response=b"changed")
     with pytest.raises(ValidationError):
         ReferenceRouteVersion.objects.filter(pk=version.pk).update(checksum="changed")
+    route = ReferenceRoute.objects.get()
+    with pytest.raises(ValidationError):
+        ReferenceRoute.objects.filter(pk=route.pk).update(active=True)
+    with pytest.raises(ProtectedError):
+        ReferenceRoute.objects.filter(pk=route.pk).delete()
+    with pytest.raises(ValidationError):
+        ReferenceRouteVersion.objects.filter(pk=version.pk).update(active=True)
+
+
+def test_valid_version_requires_structured_attribution_metadata() -> None:
+    item = collection()
+    import_osm_snapshot(collection=item, payload=payload())
+    route = ReferenceRoute.objects.get()
+    source_import = ReferenceImport.objects.get()
+    with pytest.raises(ValidationError):
+        ReferenceRouteVersion.objects.create(
+            route=route,
+            source_import=source_import,
+            version_number=99,
+            checksum="missing-attribution",
+            source_geometry={},
+            attribution="OSM",
+            validation_status="valid",
+        )
+
+
+def test_osm_urls_and_attribution_offer_are_exact_and_deployable() -> None:
+    item = collection()
+    item.attribution_url = "https://evil.example/openstreetmap.org/copyright"
+    with pytest.raises(ValidationError):
+        item.full_clean()
+    item.refresh_from_db()
+    item.derivative_offer_url = (
+        "https://github.com/diamond447/BikeMapy/tree/main/docs/osm-alterations.md"
+    )
+    with pytest.raises(ValidationError):
+        item.full_clean()
 
 
 def test_internal_zero_length_geometry_is_rejected() -> None:
@@ -203,35 +249,82 @@ def test_internal_zero_length_geometry_is_rejected() -> None:
 def test_operator_command_and_celery_task_use_bounded_stored_snapshot(tmp_path: Any) -> None:
     item = collection()
     path = tmp_path / "snapshot.json"
-    path.write_bytes(
-        b'{"elements":[{"type":"relation","id":101,"tags":{"route":"bicycle","ref":"1","network":"rcn","operator":"operator"},"members":[]}]}'
+    manifest_path = tmp_path / "snapshot.manifest.json"
+    fixture_path = Path("backend/apps/reference_routes/fixtures/osm-cz-representative.json")
+    fixture_manifest_path = Path(
+        "backend/apps/reference_routes/fixtures/osm-cz-representative.manifest.json"
     )
+    path.write_bytes(fixture_path.read_bytes())
+    manifest_path.write_bytes(fixture_manifest_path.read_bytes())
     call_command(
         "refresh_reference_routes",
         "--collection",
         item.slug,
         "--payload-file",
         path,
-        "--expected-relation-count",
-        "1",
-        "--expected-relation-id",
-        "101",
-        "--retrieved-at",
-        "2026-09-19T00:00:00Z",
+        "--manifest",
+        manifest_path,
     )
     source_import = item.imports.get()
-    assert source_import.status == "invalid"
+    assert source_import.status == "valid"
+    assert source_import.response_metadata["http_headers"]["content-encoding"] == "identity"
+    assert source_import.source_timestamp is not None
     pending = store_pending_snapshot(
         collection=item,
         raw_response=json.dumps(payload(), separators=(",", ":")).encode(),
-        endpoint="https://overpass-api.de/api/interpreter",
+        endpoint="https://www.openstreetmap.org/api/0.6/relation/7689870/full.json",
         query_text="query",
         retrieved_at=timezone.now(),
-        response_metadata={"complete": True, "expected_relation_count": 1},
+        response_metadata={
+            "complete": True,
+            "expected_relation_count": 1,
+            "expected_relation_ids": [101],
+            "http_status": 200,
+        },
     )
     task_result = refresh_reference_routes.apply(args=[pending.pk]).get()
     assert task_result["import_id"] == pending.pk
     assert task_result["created"] == 1
+
+
+def test_manifest_fails_closed_for_http_error_and_missing_evidence(tmp_path: Any) -> None:
+    item = collection()
+    payload_path = tmp_path / "snapshot.json"
+    manifest_path = tmp_path / "snapshot.manifest.json"
+    payload_path.write_bytes(
+        Path("backend/apps/reference_routes/fixtures/osm-cz-representative.json").read_bytes()
+    )
+    manifest = json.loads(
+        Path(
+            "backend/apps/reference_routes/fixtures/osm-cz-representative.manifest.json"
+        ).read_text()
+    )
+    manifest["http_status"] = 500
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(CommandError, match="HTTP status"):
+        call_command(
+            "refresh_reference_routes",
+            "--collection",
+            item.slug,
+            "--payload-file",
+            payload_path,
+            "--manifest",
+            manifest_path,
+        )
+    manifest.pop("source_timestamp")
+    manifest["http_status"] = 200
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(CommandError, match="missing required fields"):
+        call_command(
+            "refresh_reference_routes",
+            "--collection",
+            item.slug,
+            "--payload-file",
+            payload_path,
+            "--manifest",
+            manifest_path,
+        )
+    assert not item.imports.exists()
 
 
 def test_duplicate_missing_and_disconnected_members_are_diagnostics() -> None:
@@ -275,6 +368,35 @@ def test_recursive_child_relations_are_not_imported_as_routes() -> None:
     data["elements"][0]["members"].append({"type": "relation", "ref": 102, "role": "stage"})
     import_osm_snapshot(collection=item, payload=data)
     assert list(item.routes.values_list("source_identifier", flat=True)) == ["osm-relation:101"]
+
+
+def test_manifest_selected_child_relation_is_imported_exactly() -> None:
+    item = collection()
+    data = payload()
+    data["elements"].append(
+        {
+            "type": "relation",
+            "id": 102,
+            "version": 1,
+            "tags": {"route": "bicycle", "ref": "2", "network": "rcn", "operator": "operator"},
+            "members": [{"type": "way", "ref": 501, "role": "stage"}],
+        }
+    )
+    data["elements"][0]["members"].append({"type": "relation", "ref": 102, "role": "stage"})
+    result = import_osm_snapshot(
+        collection=item,
+        payload=data,
+        response_metadata={
+            "expected_relation_count": 2,
+            "expected_relation_ids": [101, 102],
+            "http_status": 200,
+            "raw_sha256": hashlib.sha256(
+                json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        },
+    )
+    assert result["created"] == 2
+    assert item.routes.count() == 2
 
 
 def test_stage_linking_rejects_cycles() -> None:
@@ -336,7 +458,7 @@ def test_signed_roles_cannot_be_reversed_and_closed_loop_is_deterministic() -> N
         2: {"geometry": [{"lon": 16.6, "lat": 49.2}, {"lon": 16.5, "lat": 49.2}]},
     }
     _, diagnostics, _ = _assemble_geometry(signed, ways)
-    assert any(item.code == "disconnected_geometry" for item in diagnostics)
+    assert any(item.code == "signed_direction_order" for item in diagnostics)
     loop = {
         "members": [
             {"type": "way", "ref": 1, "role": ""},
@@ -354,7 +476,47 @@ def test_signed_roles_cannot_be_reversed_and_closed_loop_is_deterministic() -> N
     assert coordinates is not None and coordinates[0] == [16.4, 49.2]
 
 
+def test_signed_member_order_is_preserved_and_wrong_order_reports_way_ids() -> None:
+    relation = {
+        "tags": {"signed_direction": "yes"},
+        "members": [
+            {"type": "way", "ref": 2, "role": "forward"},
+            {"type": "way", "ref": 1, "role": "forward"},
+        ],
+    }
+    ways = {
+        1: {"geometry": [{"lon": 16.4, "lat": 49.2}, {"lon": 16.5, "lat": 49.2}]},
+        2: {"geometry": [{"lon": 16.5, "lat": 49.2}, {"lon": 16.6, "lat": 49.2}]},
+    }
+    coordinates, diagnostics, _ = _assemble_geometry(relation, ways)
+    assert coordinates is None
+    order = next(item for item in diagnostics if item.code == "signed_direction_order")
+    assert order.details == {
+        "previous_way_id": 2,
+        "offending_way_id": 1,
+        "expected_endpoint": [16.6, 49.2],
+        "actual_endpoint": [16.4, 49.2],
+    }
+
+
 def test_self_intersection_and_internal_duplicate_are_rejected() -> None:
+    relation = {"members": [{"type": "way", "ref": 1, "role": ""}]}
+    ways = {
+        1: {
+            "geometry": [
+                {"lon": 16.4, "lat": 49.2},
+                {"lon": 16.6, "lat": 49.4},
+                {"lon": 16.4, "lat": 49.4},
+                {"lon": 16.6, "lat": 49.2},
+            ]
+        }
+    }
+    _, diagnostics, _ = _assemble_geometry(relation, ways)
+    assert any(item.code == "self_intersection" for item in diagnostics)
+
+
+@pytest.mark.skipif(not _GIS_AVAILABLE, reason="GEOS is not available")
+def test_geos_rejects_non_simple_linestring() -> None:
     relation = {"members": [{"type": "way", "ref": 1, "role": ""}]}
     ways = {
         1: {
@@ -457,6 +619,7 @@ def test_reference_api_paginates_and_filters_active_stages() -> None:
         normalized_geometry=parent_version.normalized_geometry,
         provenance=parent_version.provenance,
         attribution=parent_version.attribution,
+        attribution_metadata=parent_version.attribution_metadata,
         validation_status="valid",
         active=True,
     )

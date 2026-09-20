@@ -151,8 +151,13 @@ def _relation_elements(
 
 
 def _selected_relations(
-    relations: list[dict[str, Any]], payload: dict[str, Any]
+    relations: list[dict[str, Any]],
+    payload: dict[str, Any],
+    selected_relation_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
+    if selected_relation_ids is not None:
+        selected_ids = set(selected_relation_ids)
+        return [relation for relation in relations if relation.get("id") in selected_ids]
     explicit = payload.get("selected_relation_ids")
     if isinstance(explicit, list):
         selected_ids = {int(value) for value in explicit if str(value).isdigit()}
@@ -185,6 +190,7 @@ def _assemble_geometry(
     relation: dict[str, Any],
     ways: dict[int, dict[str, Any]],
     node_ids: set[int] | None = None,
+    node_points: dict[int, dict[str, Any]] | None = None,
 ) -> tuple[list[list[float]] | None, list[RouteDiagnostic], dict[str, Any]]:
     diagnostics: list[RouteDiagnostic] = []
     members = relation.get("members", [])
@@ -195,6 +201,7 @@ def _assemble_geometry(
             {"way_ids": []},
         )
     way_ids: list[int] = []
+    segment_way_ids: list[int] = []
     segments: list[list[tuple[float, float]]] = []
     fixed_direction: list[bool] = []
     seen_ids: set[int] = set()
@@ -227,12 +234,18 @@ def _assemble_geometry(
             )
             continue
         raw_geometry = way.get("geometry")
+        nodes = way.get("nodes")
+        if (
+            not isinstance(raw_geometry, list)
+            and isinstance(nodes, list)
+            and node_points is not None
+        ):
+            raw_geometry = [node_points.get(node, {}) for node in nodes]
         if not isinstance(raw_geometry, list) or len(raw_geometry) < 2:
             diagnostics.append(
                 RouteDiagnostic("missing_nodes", f"Way {way_id} has no complete geometry.")
             )
             continue
-        nodes = way.get("nodes")
         if isinstance(nodes, list) and len(nodes) != len(raw_geometry):
             diagnostics.append(
                 RouteDiagnostic("missing_nodes", f"Way {way_id} node and geometry counts differ.")
@@ -305,46 +318,69 @@ def _assemble_geometry(
             )
         seen_full_segments.add(full_segment)
         segments.append(concrete)
+        segment_way_ids.append(way_id)
         fixed_direction.append(role in {"forward", "backward"})
     if not segments:
         diagnostics.append(
             RouteDiagnostic("empty_geometry", "Route contains no usable way geometry.")
         )
         return None, diagnostics, {"way_ids": way_ids}
-    degree: dict[tuple[float, float], int] = {}
-    for segment in segments:
-        degree[segment[0]] = degree.get(segment[0], 0) + 1
-        degree[segment[-1]] = degree.get(segment[-1], 0) + 1
-    if any(value > 2 for value in degree.values()):
-        diagnostics.append(
-            RouteDiagnostic("branching_geometry", "Route members form a branching graph.")
-        )
-    endpoints = sorted(point for point, value in degree.items() if value == 1)
-    start = endpoints[0] if endpoints else min(degree)
-    assembled = [start]
-    unused = set(range(len(segments)))
-    current = start
-    while unused:
-        options: list[tuple[int, bool]] = []
-        for index in unused:
-            segment = segments[index]
-            if segment[0] == current:
-                options.append((index, False))
-            if not fixed_direction[index] and segment[-1] == current:
-                options.append((index, True))
-        if not options:
-            diagnostics.append(
-                RouteDiagnostic(
-                    "disconnected_geometry",
-                    "Route members cannot be assembled into one connected line.",
+    tags = relation.get("tags")
+    signed_direction = (
+        isinstance(tags, dict) and normalize_source_text(tags.get("signed_direction")) == "yes"
+    )
+    if signed_direction:
+        assembled = list(segments[0])
+        for index, segment in enumerate(segments[1:], start=1):
+            if assembled[-1] != segment[0]:
+                diagnostics.append(
+                    RouteDiagnostic(
+                        "signed_direction_order",
+                        "Signed route members are not consecutive in source order.",
+                        {
+                            "previous_way_id": segment_way_ids[index - 1],
+                            "offending_way_id": segment_way_ids[index],
+                            "expected_endpoint": list(assembled[-1]),
+                            "actual_endpoint": list(segment[0]),
+                        },
+                    )
                 )
+            assembled.extend(segment[1:])
+    else:
+        degree: dict[tuple[float, float], int] = {}
+        for segment in segments:
+            degree[segment[0]] = degree.get(segment[0], 0) + 1
+            degree[segment[-1]] = degree.get(segment[-1], 0) + 1
+        if any(value > 2 for value in degree.values()):
+            diagnostics.append(
+                RouteDiagnostic("branching_geometry", "Route members form a branching graph.")
             )
-            break
-        index, reverse = min(options)
-        segment = list(reversed(segments[index])) if reverse else segments[index]
-        assembled.extend(segment[1:])
-        current = segment[-1]
-        unused.remove(index)
+        endpoints = sorted(point for point, value in degree.items() if value == 1)
+        start = endpoints[0] if endpoints else min(degree)
+        assembled = [start]
+        unused = set(range(len(segments)))
+        current = start
+        while unused:
+            options: list[tuple[int, bool]] = []
+            for index in unused:
+                segment = segments[index]
+                if segment[0] == current:
+                    options.append((index, False))
+                if not fixed_direction[index] and segment[-1] == current:
+                    options.append((index, True))
+            if not options:
+                diagnostics.append(
+                    RouteDiagnostic(
+                        "disconnected_geometry",
+                        "Route members cannot be assembled into one connected line.",
+                    )
+                )
+                break
+            index, reverse = min(options)
+            segment = list(reversed(segments[index])) if reverse else segments[index]
+            assembled.extend(segment[1:])
+            current = segment[-1]
+            unused.remove(index)
     if len(assembled) < 2 or len(set(map(tuple, assembled))) < 2:
         diagnostics.append(
             RouteDiagnostic("self_invalid_geometry", "Assembled route geometry is invalid.")
@@ -380,6 +416,7 @@ def _assemble_geometry(
                     RouteDiagnostic("self_intersection", "Assembled geometry self-intersects.")
                 )
                 break
+    diagnostics.extend(_geometry_diagnostics([[lon, lat] for lon, lat in assembled]))
     normalized = [[lon, lat] for lon, lat in assembled]
     return normalized if not diagnostics else None, diagnostics, {"way_ids": way_ids}
 
@@ -424,6 +461,24 @@ def _geometry_value(coordinates: list[list[float]] | None) -> Any:
     return {"type": "LineString", "coordinates": coordinates}
 
 
+def _geometry_diagnostics(coordinates: list[list[float]]) -> list[RouteDiagnostic]:
+    if not _GIS_AVAILABLE:
+        return []
+    from django.contrib.gis.geos import GEOSGeometry
+
+    geometry = GEOSGeometry(
+        json.dumps({"type": "LineString", "coordinates": coordinates}), srid=4326
+    )
+    diagnostics: list[RouteDiagnostic] = []
+    if not geometry.valid:
+        diagnostics.append(
+            RouteDiagnostic("invalid_geometry", f"GEOS rejected the line: {geometry.valid_reason}")
+        )
+    if not geometry.simple:
+        diagnostics.append(RouteDiagnostic("self_intersection", "GEOS found a non-simple line."))
+    return diagnostics
+
+
 def _canonical_geometry(value: Any) -> Any:
     if hasattr(value, "geojson"):
         return json.loads(value.geojson)
@@ -452,8 +507,26 @@ def import_osm_snapshot(
         raise PermissionError("This source collection is not approved for ingestion")
     collection.full_clean()
     raw, parsed = _response_bytes(payload)
-    metadata = response_metadata or {}
+    metadata = dict(response_metadata or {})
     checksum = hashlib.sha256(raw).hexdigest()
+    manifest_hash = metadata.get("raw_sha256") or metadata.get("sha256")
+    if manifest_hash is not None and str(manifest_hash) != checksum:
+        raise ValueError("Source response hash does not match the manifest")
+    http_status = metadata.get("http_status")
+    if http_status is not None and not 200 <= int(http_status) < 300:
+        raise ValueError("Source response HTTP status is not successful")
+    expected_ids = metadata.get("expected_relation_ids")
+    if expected_ids is not None:
+        if (
+            not isinstance(expected_ids, list)
+            or not expected_ids
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in expected_ids)
+        ):
+            raise ValueError("Manifest must contain non-empty integer relation IDs")
+        if len(set(expected_ids)) != len(expected_ids):
+            raise ValueError("Manifest relation IDs must be unique")
+        if metadata.get("expected_relation_count") is None:
+            raise ValueError("Manifest relation count is required with selected IDs")
     retrieved = retrieved_at or timezone.now()
     source_timestamp = None
     source_base = (
@@ -461,11 +534,20 @@ def import_osm_snapshot(
         if isinstance(parsed.get("osm3s"), dict)
         else None
     )
+    source_base = source_base or metadata.get("source_timestamp")
     if source_base:
         try:
             source_timestamp = datetime.fromisoformat(str(source_base).replace("Z", "+00:00"))
         except ValueError:
             metadata = {**metadata, "source_timestamp_parse_error": str(source_base)}
+    manifest_timestamp = metadata.get("source_timestamp")
+    if manifest_timestamp is not None:
+        if (
+            source_timestamp is None
+            or not source_base
+            or str(manifest_timestamp) != str(source_base)
+        ):
+            raise ValueError("OSM timestamp does not match the manifest")
     with transaction.atomic():
         if stored_import_id is not None:
             source_import = ReferenceImport.objects.select_for_update().get(pk=stored_import_id)
@@ -521,14 +603,15 @@ def import_osm_snapshot(
                 "invalid": 0,
                 "recomputations": 0,
             }
-        selected = _selected_relations(relations, parsed)
-        node_ids = {
-            int(item["id"])
+        selected = _selected_relations(relations, parsed, expected_ids)
+        node_points = {
+            int(item["id"]): item
             for item in parsed.get("elements", [])
             if isinstance(item, dict)
             and item.get("type") == "node"
             and isinstance(item.get("id"), int)
         }
+        node_ids = set(node_points)
         if metadata.get("complete") is False or parsed.get("remark") or parsed.get("error"):
             source_import.status = ReferenceImportStatus.FAILED
             source_import.diagnostics = [
@@ -562,7 +645,6 @@ def import_osm_snapshot(
                 "recomputations": 0,
             }
         expected = metadata.get("expected_relation_count")
-        expected_ids = metadata.get("expected_relation_ids")
         if expected_ids is not None and sorted(int(value) for value in expected_ids) != sorted(
             int(relation["id"]) for relation in selected
         ):
@@ -589,7 +671,7 @@ def import_osm_snapshot(
             tags = relation.get("tags") if isinstance(relation.get("tags"), dict) else {}
             diagnostics = validate_osm_candidate(tags)
             coordinates, geometry_diagnostics, member_meta = _assemble_geometry(
-                relation, ways, node_ids
+                relation, ways, node_ids, node_points
             )
             diagnostics.extend(geometry_diagnostics)
             source_geometry = {
@@ -700,9 +782,13 @@ def import_osm_snapshot(
                     )
                     recomputations += 1
                 if old is not None:
-                    ReferenceRouteVersion.objects.filter(route=route).exclude(pk=version.pk).update(
-                        active=False
-                    )
+                    for historical_version in (
+                        ReferenceRouteVersion.objects.select_for_update()
+                        .filter(route=route)
+                        .exclude(pk=version.pk)
+                    ):
+                        historical_version.active = False
+                        historical_version.save(update_fields=["active"])
                 route.current_version = version
                 route.active = False
                 route.publication_status = ReferencePublicationStatus.PENDING
@@ -741,6 +827,17 @@ def store_pending_snapshot(
     collection.full_clean()
     raw, parsed = _response_bytes(raw_response)
     checksum = hashlib.sha256(raw).hexdigest()
+    source_base = (
+        parsed.get("osm3s", {}).get("timestamp_osm_base")
+        if isinstance(parsed.get("osm3s"), dict)
+        else None
+    ) or response_metadata.get("source_timestamp")
+    if not source_base:
+        raise ValueError("OSM snapshot is missing its source timestamp")
+    try:
+        source_timestamp = datetime.fromisoformat(str(source_base).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("OSM snapshot has an invalid osm3s timestamp") from exc
     return ReferenceImport.objects.get_or_create(
         collection=collection,
         checksum=checksum,
@@ -748,6 +845,7 @@ def store_pending_snapshot(
             "endpoint": endpoint,
             "query_text": query_text,
             "retrieved_at": retrieved_at,
+            "source_timestamp": source_timestamp,
             "response_metadata": response_metadata,
             "raw_payload": parsed,
             "raw_response": raw,

@@ -1,15 +1,24 @@
 {
-  "status": "non-production-representative",
-  "source": "OpenStreetMap Overpass response shape",
-  "reviewed_source_decision": "docs/reference-route-sources.md in PR #164",
-  "endpoint": "https://overpass-api.de/api/interpreter",
-  "query": "see apps.reference_routes.services.OSM_DISCOVERY_QUERY",
-  "retrieved_at": "2026-09-19T00:00:00Z",
-  "source_timestamp": "2026-09-19T00:00:00Z",
-  "selected_relation_ids": [101],
-  "expected_relation_count": 1,
+  "status": "reviewed-primary-source-evidence",
+  "source": "OpenStreetMap API v0.6 full relation response",
+  "source_policy": "docs/osm-alterations.md",
+  "endpoint": "https://www.openstreetmap.org/api/0.6/relation/7689870/full.json",
+  "query": "GET /api/0.6/relation/7689870/full.json",
+  "retrieved_at": "2026-09-20T21:36:47Z",
+  "source_timestamp": "2026-09-17T07:11:41Z",
   "http_status": 200,
-  "http_headers": {"content-type": "application/json"},
-  "sha256": "d8c460bf71d181ed76ea7ded2afea9b54b2b47da351c080a7c5157178286880a",
-  "purpose": "Deterministic validation and importer tests; not a live catalogue snapshot."
+  "http_headers": {
+    "content-type": "application/json; charset=utf-8",
+    "content-encoding": "identity"
+  },
+  "sha256": "f4ae6f3d3ffbeb65cccf752287634f51d753533a24b049d7a9cebeaede563300",
+  "selected_relation_ids": [7689870],
+  "expected_relation_count": 1,
+  "expected_way_count": 19,
+  "expected_node_count": 167,
+  "relation_version": 8,
+  "relation_changeset": 189143929,
+  "relation_timestamp": "2026-09-17T07:11:41Z",
+  "purpose": "Bounded test evidence from one primary OSM request; not a production catalogue refresh.",
+  "overpass_status": "unavailable-403-at-review-time"
 }

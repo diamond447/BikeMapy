@@ -23,6 +23,7 @@ from rest_framework.views import APIView
 from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
+    ReferenceSourceKind,
     ReferenceValidationStatus,
 )
 
@@ -68,6 +69,7 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
         active=True,
         publication_status="approved",
         current_version__isnull=False,
+        current_version__validation_status=ReferenceValidationStatus.VALID,
     ).prefetch_related(Prefetch("current_version", queryset=active_stage_versions))
     return (
         ReferenceRoute.objects.filter(
@@ -77,6 +79,7 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
             current_version__validation_status=ReferenceValidationStatus.VALID,
             collection__active=True,
             collection__permission_granted=True,
+            collection__source_kind=ReferenceSourceKind.OSM_NUMBERED,
             parent__isnull=True,
         )
         .select_related("collection", "current_version")
