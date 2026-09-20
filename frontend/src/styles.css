@@ -943,6 +943,242 @@ h1 {
   }
 }
 
+/* Player account dock: a quiet atlas control with a single clear state signal. */
+.game-account-dock {
+  position: relative;
+  z-index: 8;
+}
+
+.game-account-trigger {
+  align-items: center;
+  background: var(--atlas-paper-strong);
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-ink);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.64rem;
+  gap: 8px;
+  padding: 6px 9px 6px 6px;
+}
+
+.game-account-trigger::after {
+  background: var(--atlas-orange);
+  content: '';
+  height: 6px;
+  width: 6px;
+}
+
+.game-account-trigger-unavailable::after,
+.game-account-trigger-checking::after {
+  background: var(--atlas-line);
+}
+
+.game-account-trigger-error::after {
+  background: #b55a3e;
+}
+
+.game-account-trigger-mark {
+  align-items: center;
+  background: var(--atlas-yellow);
+  display: inline-flex;
+  font-family: Manrope, sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.game-account-panel {
+  background: var(--atlas-paper-strong);
+  border: 1px solid var(--atlas-line);
+  box-shadow: 0 12px 30px rgba(24, 60, 53, 0.16);
+  color: var(--atlas-ink);
+  padding: 17px;
+  position: absolute;
+  right: 0;
+  top: 39px;
+  width: min(330px, calc(100vw - 32px));
+}
+
+.game-account-panel-heading {
+  align-items: center;
+  border-bottom: 1px solid var(--atlas-line);
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+}
+
+.game-account-kicker {
+  color: var(--atlas-orange);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.59rem;
+}
+
+.game-account-close {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-ink);
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0 3px;
+}
+
+.game-account-message h2 {
+  font-size: 1.18rem;
+  letter-spacing: -0.035em;
+  margin: 0 0 8px;
+}
+
+.game-account-message p,
+.game-account-status,
+.game-account-feedback {
+  color: var(--atlas-moss);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  margin: 0 0 13px;
+}
+
+.game-account-message [role='alert'] {
+  color: var(--atlas-orange);
+}
+
+.game-account-primary {
+  background: var(--atlas-ink);
+  border: 0;
+  color: var(--atlas-paper-strong);
+  cursor: pointer;
+  display: inline-block;
+  font-size: 0.68rem;
+  padding: 9px 11px;
+  text-decoration: none;
+}
+
+.game-account-primary:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.game-account-identity {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.game-account-identity img,
+.game-account-avatar {
+  align-items: center;
+  background: var(--atlas-yellow);
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  object-fit: cover;
+  width: 42px;
+}
+
+.game-account-identity strong {
+  display: block;
+  font-size: 0.88rem;
+  margin-bottom: 4px;
+}
+
+.game-account-chip {
+  color: var(--atlas-orange);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.56rem;
+}
+
+.game-account-form {
+  border-top: 1px solid var(--atlas-line);
+  display: grid;
+  gap: 6px;
+  padding-top: 13px;
+}
+
+.game-account-form label,
+.game-account-details dt {
+  color: var(--atlas-moss);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.57rem;
+}
+
+.game-account-form input {
+  background: #f0f3ed;
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-ink);
+  font-size: 0.76rem;
+  padding: 8px;
+}
+
+.game-account-form small {
+  color: var(--atlas-moss);
+  font-size: 0.61rem;
+  line-height: 1.35;
+  margin-bottom: 4px;
+}
+
+.game-account-details {
+  border-bottom: 1px solid var(--atlas-line);
+  border-top: 1px solid var(--atlas-line);
+  margin: 15px 0;
+  padding: 11px 0;
+}
+
+.game-account-details div {
+  display: grid;
+  gap: 4px;
+}
+
+.game-account-details dd {
+  font-size: 0.72rem;
+  margin: 0;
+}
+
+.game-account-feedback {
+  color: var(--atlas-orange);
+}
+
+.game-account-actions {
+  display: grid;
+  gap: 5px;
+}
+
+.game-account-actions button {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-moss);
+  cursor: pointer;
+  font-size: 0.67rem;
+  padding: 6px 0;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.game-account-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.game-account-actions .game-account-danger {
+  color: var(--atlas-orange);
+}
+
+@media (max-width: 700px) {
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .game-account-panel {
+    right: -3px;
+    top: 36px;
+  }
+}
+
 /* Final atlas shell: an edge-to-edge desktop dock and a quiet map-first phone. */
 @media (min-width: 701px) {
   .topbar {
@@ -1770,5 +2006,29 @@ h1 {
     font-family: 'DM Mono', monospace;
     font-size: 0.75rem;
     padding: 0;
+  }
+}
+
+/* Account dock placement follows the atlas wordmark at the final breakpoints. */
+@media (min-width: 701px) {
+  .topbar .wordmark {
+    right: 212px;
+  }
+
+  .topbar .game-account-dock {
+    position: absolute;
+    right: 26px;
+    top: 17px;
+  }
+}
+
+@media (max-width: 700px) {
+  .topbar .wordmark {
+    left: 16px;
+    right: auto;
+  }
+
+  .topbar .game-account-dock {
+    margin-left: auto;
   }
 }
