@@ -502,7 +502,13 @@ def cleanup_identity_guards(*, limit: int = 100) -> dict[str, int]:
         .order_by("invalidated_at", "pk")
         .values_list("pk", flat=True)[: max(1, limit)]
     )
-    deleted, _ = PlayerIdentityGuard.objects.filter(pk__in=guard_ids).delete()
+    # Re-assert the cutoff in the DELETE: a lifecycle operation may refresh a
+    # guard after the candidate IDs were selected but before this statement.
+    deleted, _ = PlayerIdentityGuard.objects.filter(
+        pk__in=guard_ids,
+        invalidated_at__isnull=False,
+        invalidated_at__lt=cutoff,
+    ).delete()
     return {"deleted": deleted}
 
 

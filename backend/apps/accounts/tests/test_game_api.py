@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 from unittest.mock import Mock, patch
 
 import httpx
@@ -596,6 +597,26 @@ def test_identity_guard_cleanup_keeps_active_and_recent_rows() -> None:
     assert PlayerIdentityGuard.objects.filter(pk=active.pk).exists()
     assert PlayerIdentityGuard.objects.filter(pk=recent.pk).exists()
     assert not PlayerIdentityGuard.objects.filter(pk=old.pk).exists()
+
+
+@override_settings(**_settings())
+def test_identity_guard_cleanup_rechecks_cutoff_after_candidate_selection() -> None:
+    old = PlayerIdentityGuard.objects.create(
+        identity_digest="d" * 64,
+        invalidated_at=timezone.now() - IDENTITY_GUARD_RETENTION - timedelta(seconds=1),
+    )
+    manager_filter = PlayerIdentityGuard.objects.filter
+
+    def refresh_before_delete(*args: object, **kwargs: object) -> Any:
+        if "pk__in" in kwargs:
+            old.invalidated_at = timezone.now()
+            old.save(update_fields=("invalidated_at", "updated_at"))
+        return manager_filter(*args, **kwargs)
+
+    with patch.object(PlayerIdentityGuard.objects, "filter", side_effect=refresh_before_delete):
+        result = cleanup_identity_guards(limit=10)
+    assert result == {"deleted": 0}
+    assert PlayerIdentityGuard.objects.filter(pk=old.pk).exists()
 
 
 @override_settings(**_settings())
