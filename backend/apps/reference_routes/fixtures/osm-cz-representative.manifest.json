@@ -1,0 +1,9 @@
+{
+  "status": "non-production-representative",
+  "source": "OpenStreetMap Overpass response shape",
+  "reviewed_source_decision": "docs/reference-route-sources.md in PR #164",
+  "endpoint": "https://overpass-api.de/api/interpreter",
+  "query": "see apps.reference_routes.services.OSM_DISCOVERY_QUERY",
+  "sha256": "becc5577897061188738cda4446c90ca52a9c332467c26abe78b313e9a75b791",
+  "purpose": "Deterministic validation and importer tests; not a live catalogue snapshot."
+}

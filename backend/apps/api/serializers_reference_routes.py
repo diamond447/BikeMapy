@@ -4,17 +4,20 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from rest_framework import serializers
 
-from apps.reference_routes.models import ReferenceRoute
+from apps.reference_routes.models import ReferenceCollection, ReferenceRoute
 
 
 def geometry_json(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "geojson"):
+        return json.loads(value.geojson)
     if isinstance(value, str):
-        import json
-
         try:
             return json.loads(value)
         except json.JSONDecodeError:
@@ -22,25 +25,40 @@ def geometry_json(value: Any) -> Any:
     return value
 
 
+class ReferenceAttributionSerializer(serializers.ModelSerializer[ReferenceCollection]):
+    class Meta:
+        model = ReferenceCollection
+        fields = (
+            "attribution",
+            "attribution_text",
+            "attribution_url",
+            "licence",
+            "licence_uri",
+            "derivative_offer_url",
+            "rightsholder",
+            "contact_url",
+            "source_url",
+        )
+
+
 class ReferenceStageSerializer(serializers.ModelSerializer[ReferenceRoute]):
+    attribution = serializers.SerializerMethodField()
     geometry = serializers.SerializerMethodField()
-    attribution = serializers.CharField(source="current_version.attribution", read_only=True)
 
     class Meta:
         model = ReferenceRoute
         fields = ("id", "source_identifier", "route_number", "title", "geometry", "attribution")
+
+    def get_attribution(self, route: ReferenceRoute) -> dict[str, Any]:
+        return dict(ReferenceAttributionSerializer(route.collection).data)
 
     def get_geometry(self, route: ReferenceRoute) -> Any:
         version = route.current_version
         return geometry_json(version.normalized_geometry) if version else None
 
 
-class ReferenceRouteSerializer(serializers.ModelSerializer[ReferenceRoute]):
-    geometry = serializers.SerializerMethodField()
-    attribution = serializers.CharField(source="current_version.attribution", read_only=True)
-    source = serializers.CharField(source="collection.source_kind", read_only=True)
-    stages = ReferenceStageSerializer(many=True, read_only=True)
-    version = serializers.IntegerField(source="current_version.version_number", read_only=True)
+class ReferenceRouteListSerializer(serializers.ModelSerializer[ReferenceRoute]):
+    attribution = serializers.SerializerMethodField()
 
     class Meta:
         model = ReferenceRoute
@@ -51,15 +69,22 @@ class ReferenceRouteSerializer(serializers.ModelSerializer[ReferenceRoute]):
             "title",
             "operator",
             "network",
-            "source",
-            "version",
-            "geometry",
+            "publication_status",
             "attribution",
-            "stages",
         )
 
+    def get_attribution(self, route: ReferenceRoute) -> dict[str, Any]:
+        return dict(ReferenceAttributionSerializer(route.collection).data)
+
+
+class ReferenceRouteSerializer(ReferenceRouteListSerializer):
+    version = serializers.IntegerField(source="current_version.version_number", read_only=True)
+    geometry = serializers.SerializerMethodField()
+    stages = ReferenceStageSerializer(many=True, read_only=True)
+
+    class Meta(ReferenceRouteListSerializer.Meta):
+        fields = ReferenceRouteListSerializer.Meta.fields + ("version", "geometry", "stages")  # type: ignore[assignment]
+
     def get_geometry(self, route: ReferenceRoute) -> Any:
-        if not self.context.get("include_geometry", False):
-            return None
         version = route.current_version
         return geometry_json(version.normalized_geometry) if version else None

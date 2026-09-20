@@ -26,9 +26,21 @@ class ReferenceImportStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class ImmutableReferenceImportQuerySet(models.QuerySet["ReferenceImport"]):
+    def delete(self) -> tuple[int, dict[str, int]]:
+        raise ProtectedError("Source snapshots cannot be deleted.", set(self))
+
+
 class ReferenceValidationStatus(models.TextChoices):
+    PENDING_REVIEW = "pending_review", "Pending human review"
     VALID = "valid", "Valid"
     INVALID = "invalid", "Invalid"
+
+
+class ReferencePublicationStatus(models.TextChoices):
+    PENDING = "pending", "Pending publication review"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
 
 
 class ReferenceCollection(models.Model):
@@ -40,6 +52,12 @@ class ReferenceCollection(models.Model):
     source_url = models.URLField(max_length=1000)
     attribution = models.TextField()
     licence = models.CharField(max_length=255)
+    attribution_text = models.TextField(blank=True)
+    attribution_url = models.URLField(max_length=1000, blank=True)
+    licence_uri = models.URLField(max_length=1000, blank=True)
+    derivative_offer_url = models.URLField(max_length=1000, blank=True)
+    rightsholder = models.CharField(max_length=255, blank=True)
+    contact_url = models.URLField(max_length=1000, blank=True)
     active = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
@@ -50,6 +68,22 @@ class ReferenceCollection(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    def clean(self) -> None:
+        super().clean()
+        required = (
+            "attribution_text",
+            "attribution_url",
+            "licence_uri",
+            "derivative_offer_url",
+            "rightsholder",
+            "contact_url",
+        )
+        missing = [field for field in required if not getattr(self, field)]
+        if self.source_kind == ReferenceSourceKind.OSM_NUMBERED and missing:
+            raise ValidationError(
+                {field: "ODbL provenance metadata is required." for field in missing}
+            )
 
 
 class ReferenceImport(models.Model):
@@ -65,6 +99,8 @@ class ReferenceImport(models.Model):
     source_timestamp = models.DateTimeField(blank=True, null=True)
     response_metadata = models.JSONField(default=dict, blank=True)
     raw_payload = models.JSONField(default=dict)
+    raw_response = models.BinaryField(default=bytes)
+    raw_response_sha256 = models.CharField(max_length=64, blank=True)
     status = models.CharField(
         max_length=16,
         choices=ReferenceImportStatus.choices,
@@ -72,6 +108,7 @@ class ReferenceImport(models.Model):
     )
     diagnostics = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
+    objects = ImmutableReferenceImportQuerySet.as_manager()
 
     class Meta:
         ordering = ["-retrieved_at", "-pk"]
@@ -89,6 +126,32 @@ class ReferenceImport(models.Model):
 
     def __str__(self) -> str:
         return f"{self.collection.slug}:{self.checksum[:12]}"
+
+    def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
+        if self.pk:
+            old = type(self).objects.get(pk=self.pk)
+            immutable = (
+                "collection_id",
+                "checksum",
+                "endpoint",
+                "query_text",
+                "retrieved_at",
+                "source_timestamp",
+                "response_metadata",
+                "raw_payload",
+                "raw_response",
+                "raw_response_sha256",
+                "created_at",
+            )
+            changed = [field for field in immutable if getattr(old, field) != getattr(self, field)]
+            if changed:
+                raise ValidationError(
+                    {"import": f"Source snapshots are immutable: {', '.join(changed)}."}
+                )
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def delete(self, *args: object, **kwargs: object) -> tuple[int, dict[str, int]]:
+        raise ProtectedError("Source snapshots cannot be deleted.", {self})
 
 
 class ReferenceRoute(models.Model):
@@ -113,6 +176,13 @@ class ReferenceRoute(models.Model):
     )
     source_tags = models.JSONField(default=dict, blank=True)
     active = models.BooleanField(default=False)
+    publication_status = models.CharField(
+        max_length=16,
+        choices=ReferencePublicationStatus.choices,
+        default=ReferencePublicationStatus.PENDING,
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    reviewed_by = models.CharField(max_length=255, blank=True)
     current_version = models.ForeignKey(
         "ReferenceRouteVersion",
         on_delete=models.SET_NULL,
@@ -162,7 +232,7 @@ class ReferenceRouteVersion(models.Model):
     source_version_identifier = models.CharField(max_length=255, blank=True)
     checksum = models.CharField(max_length=64)
     source_geometry = models.JSONField(default=dict)
-    normalized_geometry = RouteGeometryField(srid=4326, spatial_index=True)
+    normalized_geometry = RouteGeometryField(srid=4326, spatial_index=True, blank=True, null=True)
     provenance = models.JSONField(default=dict)
     attribution = models.TextField()
     validation_status = models.CharField(max_length=16, choices=ReferenceValidationStatus.choices)

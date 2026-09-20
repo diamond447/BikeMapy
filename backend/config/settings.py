@@ -59,6 +59,7 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
         "DJANGO_DEBUG must be explicitly set to false in production deployments"
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
+GAME_ENABLED = env_bool("GAME_ENABLED", False)
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")

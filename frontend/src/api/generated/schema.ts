@@ -218,6 +218,21 @@ export interface components {
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
+    PaginatedReferenceRouteListList: {
+      /** @example 123 */
+      count: number
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?offset=400&limit=100
+       */
+      next?: string | null
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?offset=200&limit=100
+       */
+      previous?: string | null
+      results: components['schemas']['ReferenceRouteList'][]
+    }
     PaginatedRouteList: {
       /** @example 123 */
       count: number
@@ -233,6 +248,13 @@ export interface components {
       previous?: string | null
       results: components['schemas']['Route'][]
     }
+    /**
+     * @description * `pending` - Pending publication review
+     *     * `approved` - Approved
+     *     * `rejected` - Rejected
+     * @enum {string}
+     */
+    PublicationStatusEnum: 'pending' | 'approved' | 'rejected'
     /**
      * @description * `incorrect_route` - Incorrect route
      *     * `source_attribution` - Source or attribution
@@ -251,11 +273,26 @@ export interface components {
       title: string
       operator?: string
       network?: string
-      readonly source: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
       readonly version: number
       readonly geometry: unknown
-      readonly attribution: string
       readonly stages: components['schemas']['ReferenceStage'][]
+    }
+    ReferenceRouteList: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
     }
     ReferenceStage: {
       /** Format: uuid */
@@ -264,7 +301,9 @@ export interface components {
       route_number?: string
       title: string
       readonly geometry: unknown
-      readonly attribution: string
+      readonly attribution: {
+        [key: string]: unknown
+      }
     }
     ReportSubmission: {
       reason: components['schemas']['ReasonEnum']
@@ -390,7 +429,12 @@ export interface operations {
   }
   v1_game_reference_routes_list: {
     parameters: {
-      query?: never
+      query?: {
+        limit?: number
+        offset?: number
+        route_number?: string
+        source?: string
+      }
       header?: never
       path?: never
       cookie?: never
@@ -402,7 +446,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['ReferenceRoute'][]
+          'application/json': components['schemas']['PaginatedReferenceRouteListList']
         }
       }
     }

@@ -1,4 +1,4 @@
-"""Bounded authenticated completion-reference read endpoints."""
+"""Bounded, private completion-reference read endpoints."""
 
 # mypy: disable-error-code="import-untyped,misc"
 
@@ -7,58 +7,118 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from django.db.models import QuerySet
+from django.conf import settings
+from django.db.models import Prefetch, QuerySet
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework.exceptions import NotFound
 from rest_framework.generics import ListAPIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import LimitOffsetPagination
+from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.reference_routes.models import ReferenceRoute
+from apps.reference_routes.models import (
+    ReferenceRoute,
+    ReferenceRouteVersion,
+    ReferenceValidationStatus,
+)
 
-from .serializers_reference_routes import ReferenceRouteSerializer
+from .serializers_reference_routes import ReferenceRouteListSerializer, ReferenceRouteSerializer
+
+
+class GameReferencePermission(BasePermission):
+    """Require the future game session contract, not any arbitrary Django user."""
+
+    def has_permission(self, request: Request, view: object) -> bool:
+        if not getattr(settings, "GAME_ENABLED", False) or not request.user.is_authenticated:
+            return False
+        claims = request.session.get("game_session")
+        return bool(
+            isinstance(claims, dict)
+            and claims.get("competition_id")
+            and claims.get("reference_route_read") is True
+        )
+
+
+class ReferenceRoutePagination(LimitOffsetPagination):
+    default_limit = 50
+    max_limit = 100
+    limit_query_param = "limit"
+    offset_query_param = "offset"
 
 
 def reference_queryset() -> QuerySet[ReferenceRoute]:
+    active_stage_versions = ReferenceRouteVersion.objects.filter(
+        active=True, validation_status=ReferenceValidationStatus.VALID
+    )
+    active_stages = ReferenceRoute.objects.filter(
+        active=True,
+        publication_status="approved",
+        current_version__isnull=False,
+    ).prefetch_related(Prefetch("current_version", queryset=active_stage_versions))
     return (
         ReferenceRoute.objects.filter(
-            active=True, current_version__isnull=False, collection__active=True
+            active=True,
+            publication_status="approved",
+            current_version__isnull=False,
+            current_version__validation_status=ReferenceValidationStatus.VALID,
+            collection__active=True,
+            parent__isnull=True,
         )
         .select_related("collection", "current_version")
-        .prefetch_related("stages__current_version")
+        .prefetch_related(Prefetch("stages", queryset=active_stages))
     )
 
 
+def _private_headers(response: Response) -> Response:
+    response["Cache-Control"] = "private, no-store"
+    response["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    return response
+
+
+REFERENCE_PARAMETERS = [
+    OpenApiParameter("source", OpenApiTypes.STR, OpenApiParameter.QUERY),
+    OpenApiParameter("route_number", OpenApiTypes.STR, OpenApiParameter.QUERY),
+    OpenApiParameter("limit", OpenApiTypes.INT, OpenApiParameter.QUERY),
+    OpenApiParameter("offset", OpenApiTypes.INT, OpenApiParameter.QUERY),
+]
+
+
+@extend_schema(parameters=REFERENCE_PARAMETERS)
 class ReferenceRouteListView(ListAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = ReferenceRouteSerializer
+    permission_classes = [GameReferencePermission]
+    serializer_class = ReferenceRouteListSerializer
+    pagination_class = ReferenceRoutePagination
 
     def get_queryset(self) -> QuerySet[ReferenceRoute]:
-        queryset = reference_queryset().filter(parent__isnull=True)
+        queryset = reference_queryset()
         number = self.request.query_params.get("route_number", "").strip()
         if number:
             queryset = queryset.filter(route_number=number)
         source = self.request.query_params.get("source", "").strip()
         if source:
             queryset = queryset.filter(collection__source_kind=source)
-        return queryset.order_by("route_number", "id")[:500]
+        return queryset.order_by("route_number", "id")
 
-    def get_serializer_context(self) -> dict[str, Any]:
-        return {**super().get_serializer_context(), "include_geometry": False}
+    def finalize_response(
+        self, request: Request, response: Response, *args: Any, **kwargs: Any
+    ) -> Response:
+        return _private_headers(super().finalize_response(request, response, *args, **kwargs))
 
 
 class ReferenceRouteDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [GameReferencePermission]
     serializer_class = ReferenceRouteSerializer
+
+    def finalize_response(
+        self, request: Request, response: Response, *args: Any, **kwargs: Any
+    ) -> Response:
+        return _private_headers(super().finalize_response(request, response, *args, **kwargs))
 
     def get(self, request: Request, route_id: UUID) -> Response:
         route = reference_queryset().filter(pk=route_id).first()
         if route is None:
-            from rest_framework.exceptions import NotFound
-
             raise NotFound
-        return Response(
-            ReferenceRouteSerializer(
-                route, context={"request": request, "include_geometry": True}
-            ).data
-        )
+        return Response(ReferenceRouteSerializer(route, context={"request": request}).data)

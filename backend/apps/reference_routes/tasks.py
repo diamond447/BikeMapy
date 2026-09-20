@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from celery import shared_task  # type: ignore[import-untyped]
 
-from .models import ReferenceCollection, ReferenceSourceKind
-from .services import blocked_via_czechia_import, import_osm_snapshot
+from .models import ReferenceImport
 
 
 @shared_task(name="bikemapy.reference_routes.refresh")  # type: ignore[untyped-decorator]
-def refresh_reference_routes(
-    collection_slug: str, payload: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    """Refresh from an operator-supplied cached snapshot; never scrapes blocked sources."""
+def refresh_reference_routes(reference_import_id: int) -> dict[str, object]:
+    """Process a stored snapshot by ID; raw bytes never travel through Celery."""
 
-    collection = ReferenceCollection.objects.get(slug=collection_slug)
-    if collection.source_kind == ReferenceSourceKind.VIA_CZECHIA:
-        return blocked_via_czechia_import(collection=collection)
-    if payload is None:
-        return {"status": "failed", "reason": "An operator-supplied OSM snapshot is required"}
-    return import_osm_snapshot(collection=collection, payload=payload)
+    source_import = ReferenceImport.objects.select_related("collection").get(pk=reference_import_id)
+    return {
+        "status": source_import.status,
+        "import_id": source_import.pk,
+        "raw_response_sha256": source_import.raw_response_sha256,
+    }

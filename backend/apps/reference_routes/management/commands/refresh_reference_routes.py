@@ -33,7 +33,8 @@ class Command(BaseCommand):
                 "OSM refresh requires --payload-file; network fetching is intentionally bounded"
             )
         try:
-            payload = json.loads(payload_file.read_text(encoding="utf-8"))
+            payload = payload_file.read_bytes()
+            json.loads(payload)
         except (OSError, json.JSONDecodeError) as exc:
             raise CommandError(f"Could not read source snapshot: {exc}") from exc
         self.stdout.write(
