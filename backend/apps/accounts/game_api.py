@@ -203,9 +203,7 @@ class StravaCallbackView(GameEndpoint):
         try:
             exchanged_payload = exchange_code(code)
             validate_granted_scopes(exchanged_payload)
-            if not OAuthState.objects.filter(pk=state.pk).exists():
-                raise StravaOAuthError("OAuth state is no longer valid")
-            player = save_connection(exchanged_payload)
+            player = save_connection(exchanged_payload, oauth_state_id=state.pk)
         except StravaOAuthError:
             if exchanged_payload is not None:
                 revoke_or_schedule(str(exchanged_payload.get("access_token") or ""))

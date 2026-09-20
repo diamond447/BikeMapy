@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -15,7 +17,14 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import OAuthState, Player, PlayerCredential, PlayerDeletionTombstone, RevocationJob
+from .models import (
+    OAuthState,
+    Player,
+    PlayerCredential,
+    PlayerDeletionTombstone,
+    PlayerIdentityGuard,
+    RevocationJob,
+)
 
 STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
@@ -141,7 +150,32 @@ def _athlete_id(value: Any) -> int | None:
     return athlete_id if athlete_id > 0 else None
 
 
-def save_connection(payload: dict[str, Any]) -> Player:
+def _identity_digest(athlete_id: int) -> str:
+    """Return a stable, non-content key for synchronizing one athlete."""
+
+    return hmac.new(
+        str(settings.SECRET_KEY).encode(),
+        str(athlete_id).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _locked_identity_guard(athlete_id: int) -> PlayerIdentityGuard:
+    """Get the per-athlete lock row, including for its first connection."""
+
+    digest = _identity_digest(athlete_id)
+    try:
+        guard = PlayerIdentityGuard.objects.select_for_update().get(identity_digest=digest)
+    except PlayerIdentityGuard.DoesNotExist:
+        try:
+            with transaction.atomic():
+                guard = PlayerIdentityGuard.objects.create(identity_digest=digest)
+        except IntegrityError:
+            guard = PlayerIdentityGuard.objects.select_for_update().get(identity_digest=digest)
+    return guard
+
+
+def save_connection(payload: dict[str, Any], *, oauth_state_id: int | None = None) -> Player:
     athlete = payload.get("athlete")
     if not isinstance(athlete, dict):
         raise StravaOAuthError("Strava authorization did not return an athlete identity")
@@ -154,8 +188,21 @@ def save_connection(payload: dict[str, Any]) -> Player:
         raise StravaOAuthError("Strava authorization returned incomplete credentials")
     validate_granted_scopes(payload)
     with transaction.atomic():
+        guard = _locked_identity_guard(athlete_id)
+        oauth_state = None
+        if oauth_state_id is not None:
+            oauth_state = OAuthState.objects.filter(
+                pk=oauth_state_id,
+                used_at__isnull=False,
+            ).first()
+            if oauth_state is None:
+                raise StravaOAuthError("OAuth state is no longer valid")
+            if guard.invalidated_at is not None and oauth_state.created_at <= guard.invalidated_at:
+                raise StravaOAuthError("OAuth state is no longer valid")
         player = Player.objects.select_for_update().filter(strava_athlete_id=athlete_id).first()
         if player is None:
+            if oauth_state is not None and oauth_state.player_id is not None:
+                raise StravaOAuthError("OAuth state is no longer valid")
             for attempt in range(3):
                 username = (
                     f"strava-{athlete_id}"
@@ -190,6 +237,16 @@ def save_connection(payload: dict[str, Any]) -> Player:
         elif player.lifecycle == Player.Lifecycle.DELETED:
             raise StravaOAuthError("This Strava identity is no longer available")
         else:
+            if (
+                oauth_state is not None
+                and oauth_state.player_id is not None
+                and (
+                    oauth_state.player_id != player.pk
+                    or oauth_state.player_session_epoch != player.session_epoch
+                    or player.lifecycle != Player.Lifecycle.CONNECTED
+                )
+            ):
+                raise StravaOAuthError("OAuth state is no longer valid")
             player.strava_display_name = _display_name(athlete)
             player.strava_profile_image_url = str(athlete.get("profile") or "")
             player.save(
@@ -205,6 +262,12 @@ def save_connection(payload: dict[str, Any]) -> Player:
             },
         )
         player.restore_connection()
+        if oauth_state is not None:
+            oauth_state.player = player
+            oauth_state.player_session_epoch = player.session_epoch
+            oauth_state.save(update_fields=("player", "player_session_epoch"))
+        guard.invalidated_at = None
+        guard.save(update_fields=("invalidated_at", "updated_at"))
     return player
 
 
@@ -350,6 +413,9 @@ def disconnect_player(
 ) -> Player:
     access_token = None
     with transaction.atomic():
+        # Lock the identity before the player so callbacks and lifecycle changes
+        # share one portable serialization boundary.
+        guard = _locked_identity_guard(player.strava_athlete_id)
         player = Player.objects.select_for_update().get(pk=player.pk)
         try:
             access_token = (
@@ -364,9 +430,11 @@ def disconnect_player(
                 expires_at=timezone.now() + timedelta(days=7),
             )
         PlayerCredential.objects.filter(player=player).delete()
-        state_filter = Q(player=player) | Q(player__isnull=True)
+        guard.invalidated_at = timezone.now()
+        guard.save(update_fields=("invalidated_at", "updated_at"))
+        state_filter = Q(player=player)
         if session_key:
-            state_filter |= Q(session_key=session_key)
+            state_filter |= Q(player__isnull=True, session_key=session_key)
         OAuthState.objects.filter(state_filter).delete()
         player.mark_disconnected()
     if job is not None:
@@ -377,6 +445,7 @@ def disconnect_player(
 def delete_player(player: Player, *, session_key: str | None = None) -> None:
     access_token = None
     with transaction.atomic():
+        guard = _locked_identity_guard(player.strava_athlete_id)
         player = Player.objects.select_for_update().get(pk=player.pk)
         try:
             access_token = (
@@ -391,9 +460,11 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
                 expires_at=timezone.now() + timedelta(days=7),
             )
         PlayerCredential.objects.filter(player=player).delete()
-        state_filter = Q(player=player) | Q(player__isnull=True)
+        guard.invalidated_at = timezone.now()
+        guard.save(update_fields=("invalidated_at", "updated_at"))
+        state_filter = Q(player=player)
         if session_key:
-            state_filter |= Q(session_key=session_key)
+            state_filter |= Q(player__isnull=True, session_key=session_key)
         OAuthState.objects.filter(state_filter).delete()
         PlayerDeletionTombstone.objects.create(expires_at=timezone.now() + timedelta(days=90))
         player.lifecycle = Player.Lifecycle.DELETED

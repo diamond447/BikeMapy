@@ -98,6 +98,17 @@ class PlayerCredential(models.Model):
         return f"Credentials for player {self.player_id}"
 
 
+class PlayerIdentityGuard(models.Model):
+    """Non-content synchronization state keyed by a one-way athlete digest."""
+
+    identity_digest = models.CharField(max_length=64, unique=True)
+    invalidated_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Player identity guard {self.pk}"
+
+
 class RevocationJob(models.Model):
     """Bounded, encrypted retry state for provider deauthorization."""
 

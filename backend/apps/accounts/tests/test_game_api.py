@@ -19,7 +19,13 @@ from apps.accounts.models import (
     PlayerDeletionTombstone,
     RevocationJob,
 )
-from apps.accounts.services import purge_expired_players, retry_revocations, save_connection
+from apps.accounts.services import (
+    delete_player,
+    disconnect_player,
+    purge_expired_players,
+    retry_revocations,
+    save_connection,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -415,6 +421,116 @@ def test_state_deleted_during_exchange_revokes_grant_before_rejecting() -> None:
     assert not Player.objects.exists()
     provider.assert_called_once()
     assert provider.call_args.kwargs["data"] == {"access_token": "access-secret"}
+
+
+@override_settings(**_settings())
+def test_disconnect_injected_after_state_validation_rejects_and_revokes_grant() -> None:
+    player = save_connection(_payload())
+    client = Client()
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
+    session.save()
+    authorize = client.get(reverse("game-strava-authorize"))
+    state = str(authorize["Location"]).split("state=", 1)[1]
+
+    def exchange_and_disconnect(code: str) -> dict[str, object]:
+        del code
+        disconnect_player(player, revoke=False)
+        return _payload()
+
+    with (
+        patch("apps.accounts.game_api.exchange_code", side_effect=exchange_and_disconnect),
+        patch("apps.accounts.game_api.revoke_or_schedule") as revoke,
+        patch("apps.accounts.services.httpx.post"),
+    ):
+        callback = client.get(reverse("game-strava-callback"), {"state": state, "code": "race"})
+    assert callback["Location"].endswith("/game?game_auth=error")
+    revoke.assert_called_once_with("access-secret")
+    assert not PlayerCredential.objects.filter(player_id=player.pk).exists()
+
+
+@override_settings(**_settings())
+def test_deletion_injected_after_state_validation_rejects_and_revokes_grant() -> None:
+    player = save_connection(_payload())
+    client = Client()
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
+    session.save()
+    authorize = client.get(reverse("game-strava-authorize"))
+    state = str(authorize["Location"]).split("state=", 1)[1]
+
+    def exchange_and_delete(code: str) -> dict[str, object]:
+        del code
+        delete_player(player, session_key=None)
+        return _payload()
+
+    with (
+        patch("apps.accounts.game_api.exchange_code", side_effect=exchange_and_delete),
+        patch("apps.accounts.game_api.revoke_or_schedule") as revoke,
+        patch("apps.accounts.services.httpx.post"),
+    ):
+        callback = client.get(reverse("game-strava-callback"), {"state": state, "code": "race"})
+    assert callback["Location"].endswith("/game?game_auth=error")
+    revoke.assert_called_once_with("access-secret")
+    assert not Player.objects.exists()
+
+
+@override_settings(**_settings())
+def test_callback_first_then_deletion_leaves_player_deleted() -> None:
+    client = Client()
+    authorize = client.get(reverse("game-strava-authorize"))
+    state = str(authorize["Location"]).split("state=", 1)[1]
+    with patch("apps.accounts.game_api.exchange_code", return_value=_payload()):
+        callback = client.get(reverse("game-strava-callback"), {"state": state, "code": "first"})
+    assert callback["Location"].endswith("/game?game_auth=success")
+    player = Player.objects.get()
+    with patch("apps.accounts.services.httpx.post"):
+        delete_player(player)
+    assert not Player.objects.exists()
+
+
+@override_settings(**_settings())
+def test_deletion_first_then_callback_rejects_and_revokes_grant() -> None:
+    player = save_connection(_payload())
+    client = Client()
+    authorize = client.get(reverse("game-strava-authorize"))
+    state = str(authorize["Location"]).split("state=", 1)[1]
+    with patch("apps.accounts.services.httpx.post"):
+        delete_player(player)
+    with (
+        patch("apps.accounts.game_api.exchange_code", return_value=_payload()),
+        patch("apps.accounts.game_api.revoke_or_schedule") as revoke,
+    ):
+        callback = client.get(reverse("game-strava-callback"), {"state": state, "code": "second"})
+    assert callback["Location"].endswith("/game?game_auth=error")
+    revoke.assert_called_once_with("access-secret")
+    assert not Player.objects.exists()
+
+
+@override_settings(**_settings())
+@pytest.mark.parametrize("lifecycle", ["disconnect", "delete"])
+def test_unrelated_anonymous_oauth_state_survives_other_athlete_lifecycle(
+    lifecycle: str,
+) -> None:
+    owner = save_connection(_payload(athlete_id=456))
+    stale_client = Client()
+    stale_authorize = stale_client.get(reverse("game-strava-authorize"))
+    stale_state = str(stale_authorize["Location"]).split("state=", 1)[1]
+    owner_session = Client().session
+    owner_session.create()
+    if lifecycle == "disconnect":
+        disconnect_player(owner, revoke=False, session_key=owner_session.session_key)
+    else:
+        delete_player(owner, session_key=owner_session.session_key)
+    assert OAuthState.objects.filter(state_digest=OAuthState.digest(stale_state)).exists()
+    with patch("apps.accounts.game_api.exchange_code", return_value=_payload(athlete_id=123)):
+        callback = stale_client.get(
+            reverse("game-strava-callback"), {"state": stale_state, "code": "unrelated"}
+        )
+    assert callback["Location"].endswith("/game?game_auth=success")
+    assert Player.objects.filter(strava_athlete_id=123).exists()
 
 
 def test_configured_cors_credentials_require_explicit_allowlisted_origins() -> None:
