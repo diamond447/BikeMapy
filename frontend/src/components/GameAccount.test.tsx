@@ -23,6 +23,7 @@ function response(status: number) {
 describe('GameAccount', () => {
   beforeEach(() => {
     window.history.replaceState({}, '', '/game')
+    document.cookie = 'csrftoken=test-csrf-token'
   })
 
   afterEach(() => {
@@ -91,7 +92,10 @@ describe('GameAccount', () => {
     await user.click(screen.getByRole('button', { name: /save nickname/i }))
 
     await waitFor(() => expect(patch).toHaveBeenCalled())
-    expect(patch.mock.calls[0]?.[1]).toMatchObject({ body: { nickname: 'Trail Ada' } })
+    expect(patch.mock.calls[0]?.[1]).toMatchObject({
+      body: { nickname: 'Trail Ada' },
+      headers: { 'X-CSRFToken': 'test-csrf-token' },
+    })
     expect(await screen.findByText('Nickname saved.')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /^log out$/i }))

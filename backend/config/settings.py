@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -83,7 +84,6 @@ INSTALLED_APPS = [
     "allauth.account",
     "allauth.socialaccount",
     "allauth.socialaccount.providers.github",
-    "allauth.socialaccount.providers.strava",
     "apps.catalogue",
     "apps.ingestion",
     "apps.moderation",
@@ -147,16 +147,28 @@ STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "STRAVA_OAUTH_REDIRECT_URI",
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
 )
-if GAME_ENABLED and STRAVA_OAUTH_CLIENT_ID and STRAVA_OAUTH_CLIENT_SECRET:
-    SOCIALACCOUNT_PROVIDERS["strava"] = {
-        "SCOPE": ["read", "activity:read"],
-        "AUTH_PARAMS": {"approval_prompt": "auto"},
-        "APP": {
-            "client_id": STRAVA_OAUTH_CLIENT_ID,
-            "secret": STRAVA_OAUTH_CLIENT_SECRET,
-        },
-    }
+GAME_FRONTEND_URL = os.getenv("GAME_FRONTEND_URL", "http://localhost:5173/game")
 
+
+def validate_game_frontend_url(value: str) -> None:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != "/game"
+    ):
+        raise ImproperlyConfigured(
+            "GAME_FRONTEND_URL must be an absolute /game URL without credentials or fragments"
+        )
+    if GAME_ENABLED and DEPLOYMENT_MODE == "production" and parsed.scheme != "https":
+        raise ImproperlyConfigured("GAME_FRONTEND_URL must use HTTPS in production")
+
+
+validate_game_frontend_url(GAME_FRONTEND_URL)
 if GAME_ENABLED:
     missing_game_settings = [
         name
@@ -242,6 +254,15 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
     if origin
 ]
+if any(
+    origin == "*" or urlsplit(origin).scheme not in {"http", "https"} or not urlsplit(origin).netloc
+    for origin in CORS_ALLOWED_ORIGINS
+):
+    raise ImproperlyConfigured("CORS_ALLOWED_ORIGINS must contain explicit HTTP(S) origins")
+# Credentialed browser requests are enabled only for the explicit origin list;
+# preview regex origins remain read-only and cannot receive player cookies.
+CORS_ALLOW_CREDENTIALS = bool(CORS_ALLOWED_ORIGINS)
+CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
 READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
     "READ_ONLY_PREVIEW_ORIGIN_REGEX",
     r"\Ahttps://([a-z0-9-]+\.)+bikemapy\.pages\.dev\Z",
@@ -369,6 +390,14 @@ CELERY_BEAT_SCHEDULE = {
     "cleanup-crawler-response-cache": {
         "task": "bikemapy.ingestion.cleanup_crawl_response_cache",
         "schedule": 3600,
+    },
+    "purge-expired-player-accounts": {
+        "task": "bikemapy.accounts.purge_expired_players",
+        "schedule": 3600,
+    },
+    "retry-player-revocations": {
+        "task": "bikemapy.accounts.retry_revocations",
+        "schedule": 900,
     },
 }
 

@@ -8,8 +8,10 @@ from __future__ import annotations
 from typing import Any
 
 from django.db import transaction
+from django.middleware.csrf import get_token
 from django.shortcuts import redirect
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_protect
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import serializers, status
 from rest_framework.permissions import AllowAny
@@ -24,6 +26,7 @@ from .services import (
     disconnect_player,
     exchange_code,
     game_is_available,
+    game_return_url,
     refresh_connection,
     save_connection,
 )
@@ -47,6 +50,18 @@ def _current_player(request: Any) -> Player | None:
     if player.session_epoch != epoch or player.lifecycle != Player.Lifecycle.CONNECTED:
         return None
     return player
+
+
+def _clear_player_session(request: Any) -> None:
+    request.session.pop("player_id", None)
+    request.session.pop("player_session_epoch", None)
+    methods = request.session.get("account_authentication_methods", [])
+    request.session["account_authentication_methods"] = [
+        method
+        for method in methods
+        if not isinstance(method, dict) or method.get("provider") != "strava"
+    ]
+    request.session.save()
 
 
 def _player_payload(player: Player) -> dict[str, Any]:
@@ -90,10 +105,24 @@ class NicknameRequestSerializer(serializers.Serializer[dict[str, str]]):
 class GameEndpoint(APIView):
     permission_classes = (AllowAny,)
 
+    @classmethod
+    def as_view(cls, *args: Any, **kwargs: Any) -> Any:
+        protected = csrf_protect(super().as_view(*args, **kwargs))
+        # APIView.as_view marks its result csrf_exempt; remove that marker
+        # after wrapping so session-backed mutations are checked by Django.
+        protected.csrf_exempt = False
+        return protected
+
+    def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Response:
+        get_token(request)
+        return super().dispatch(request, *args, **kwargs)
+
     def unavailable(self) -> Response:
-        return Response(
-            {"detail": "The private game is unavailable."},
-            status=status.HTTP_404_NOT_FOUND,
+        return _private(
+            Response(
+                {"detail": "The private game is unavailable."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         )
 
     def player_or_401(self, request: Any) -> Player | Response:
@@ -119,7 +148,7 @@ class StravaAuthorizeView(GameEndpoint):
         session_key = request.session.session_key
         if not session_key:
             return self.unavailable()
-        _, raw_state = OAuthState.issue(session_key)
+        _, raw_state = OAuthState.issue(session_key, player=_current_player(request))
         request.session["strava_oauth_started_at"] = timezone.now().isoformat()
         request.session.save()
         return redirect(authorization_url(state=raw_state))
@@ -128,8 +157,7 @@ class StravaAuthorizeView(GameEndpoint):
 class StravaCallbackView(GameEndpoint):
     @extend_schema(
         responses={
-            200: PlayerResponseSerializer,
-            400: ErrorResponseSerializer,
+            302: OpenApiResponse(description="Redirect to the game after OAuth completion."),
             404: ErrorResponseSerializer,
         },
         tags=["game-auth"],
@@ -139,7 +167,7 @@ class StravaCallbackView(GameEndpoint):
             return self.unavailable()
         raw_state = str(request.GET.get("state") or "")
         if not raw_state or not request.session.session_key:
-            return Response({"detail": "Invalid OAuth state."}, status=400)
+            return redirect(game_return_url("error"))
         with transaction.atomic():
             try:
                 state = OAuthState.objects.select_for_update().get(
@@ -149,25 +177,42 @@ class StravaCallbackView(GameEndpoint):
                     expires_at__gt=timezone.now(),
                 )
             except OAuthState.DoesNotExist:
-                return Response({"detail": "Invalid OAuth state."}, status=400)
+                return redirect(game_return_url("error"))
+            if state.player_id is not None:
+                state_player = state.player
+                if (
+                    state_player is None
+                    or state_player.lifecycle != Player.Lifecycle.CONNECTED
+                    or state.player_session_epoch != state_player.session_epoch
+                ):
+                    state.used_at = timezone.now()
+                    state.save(update_fields=("used_at",))
+                    return redirect(game_return_url("error"))
             state.used_at = timezone.now()
             state.save(update_fields=("used_at",))
         if request.GET.get("error"):
-            return Response({"detail": "Strava authorization was denied."}, status=400)
+            return redirect(game_return_url("denied"))
         code = str(request.GET.get("code") or "")
         if not code:
-            return Response({"detail": "Strava authorization did not return a code."}, status=400)
+            return redirect(game_return_url("error"))
         try:
             player = save_connection(exchange_code(code))
-        except StravaOAuthError as exc:
-            return Response({"detail": str(exc)}, status=400)
+        except StravaOAuthError:
+            return redirect(game_return_url("error"))
+        request.session.cycle_key()
         request.session["player_id"] = player.pk
         request.session["player_session_epoch"] = player.session_epoch
-        request.session["account_authentication_methods"] = [
-            {"method": "player", "provider": "strava", "athlete_id": str(player.strava_athlete_id)}
+        methods = [
+            method
+            for method in request.session.get("account_authentication_methods", [])
+            if isinstance(method, dict) and method.get("provider") != "strava"
         ]
+        methods.append(
+            {"method": "player", "provider": "strava", "athlete_id": str(player.strava_athlete_id)}
+        )
+        request.session["account_authentication_methods"] = methods
         request.session.save()
-        return _private(Response({"player": PlayerSerializer(_player_payload(player)).data}))
+        return redirect(game_return_url("success"))
 
 
 class PlayerSessionView(GameEndpoint):
@@ -180,6 +225,8 @@ class PlayerSessionView(GameEndpoint):
         tags=["game-auth"],
     )
     def get(self, request: Any) -> Response:
+        if not game_is_available():
+            return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):
             return player
@@ -193,13 +240,9 @@ class PlayerLogoutView(GameEndpoint):
         tags=["game-auth"],
     )
     def post(self, request: Any) -> Response:
-        request.session.pop("player_id", None)
-        request.session.pop("player_session_epoch", None)
-        methods = request.session.get("account_authentication_methods", [])
-        request.session["account_authentication_methods"] = [
-            method for method in methods if method.get("provider") != "strava"
-        ]
-        request.session.save()
+        if not game_is_available():
+            return self.unavailable()
+        _clear_player_session(request)
         return _private(Response(status=status.HTTP_204_NO_CONTENT))
 
 
@@ -219,10 +262,8 @@ class PlayerDisconnectView(GameEndpoint):
         player = self.player_or_401(request)
         if isinstance(player, Response):
             return player
-        player = disconnect_player(player)
-        request.session.pop("player_id", None)
-        request.session.pop("player_session_epoch", None)
-        request.session.save()
+        player = disconnect_player(player, session_key=request.session.session_key)
+        _clear_player_session(request)
         return _private(Response({"lifecycle": player.lifecycle}, status=200))
 
 
@@ -232,6 +273,7 @@ class PlayerRefreshView(GameEndpoint):
         responses={
             200: PlayerResponseSerializer,
             401: ErrorResponseSerializer,
+            503: ErrorResponseSerializer,
             404: ErrorResponseSerializer,
         },
         tags=["game-account"],
@@ -242,10 +284,16 @@ class PlayerRefreshView(GameEndpoint):
         player = self.player_or_401(request)
         if isinstance(player, Response):
             return player
-        if not refresh_connection(player):
-            request.session.pop("player_id", None)
-            request.session.pop("player_session_epoch", None)
-            request.session.save()
+        refresh_outcome = refresh_connection(player)
+        if refresh_outcome == "retryable":
+            return _private(
+                Response(
+                    {"detail": "Strava refresh is temporarily unavailable."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            )
+        if refresh_outcome == "revoked":
+            _clear_player_session(request)
             return _private(
                 Response({"detail": "Strava connection is no longer valid."}, status=401)
             )
@@ -309,6 +357,6 @@ class PlayerAccountView(GameEndpoint):
         player = self.player_or_401(request)
         if isinstance(player, Response):
             return player
-        delete_player(player)
+        delete_player(player, session_key=request.session.session_key)
         request.session.flush()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return _private(Response(status=status.HTTP_204_NO_CONTENT))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import timedelta
+from uuid import uuid4
 
 from django.conf import settings
 from django.db import models
@@ -47,13 +48,27 @@ class Player(models.Model):
         self.save(update_fields=("session_epoch", "updated_at"))
 
     def mark_disconnected(self, *, pending_deletion: bool = True) -> None:
+        now = timezone.now()
         self.lifecycle = (
             self.Lifecycle.PENDING_DELETION if pending_deletion else self.Lifecycle.DISCONNECTED
         )
-        self.disconnected_at = timezone.now()
-        self.deletion_deadline = timezone.now() + timedelta(days=30) if pending_deletion else None
+        self.disconnected_at = now
+        self.deletion_deadline = now + timedelta(days=30) if pending_deletion else None
+        self.strava_display_name = ""
+        self.strava_profile_image_url = ""
+        self.nickname = ""
         self.invalidate_sessions()
-        self.save(update_fields=("lifecycle", "disconnected_at", "deletion_deadline", "updated_at"))
+        self.save(
+            update_fields=(
+                "lifecycle",
+                "disconnected_at",
+                "deletion_deadline",
+                "strava_display_name",
+                "strava_profile_image_url",
+                "nickname",
+                "updated_at",
+            )
+        )
 
     def restore_connection(self) -> None:
         self.lifecycle = self.Lifecycle.CONNECTED
@@ -83,11 +98,54 @@ class PlayerCredential(models.Model):
         return f"Credentials for player {self.player_id}"
 
 
+class RevocationJob(models.Model):
+    """Bounded, encrypted retry state for provider deauthorization."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        FAILED = "failed", "Failed"
+
+    access_token = EncryptedSecretField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    last_error = models.CharField(max_length=80, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    def __str__(self) -> str:
+        return f"Provider revocation job {self.pk}"
+
+
+class PlayerDeletionTombstone(models.Model):
+    """Bounded non-content proof that a player deletion completed."""
+
+    class Status(models.TextChoices):
+        COMPLETED = "completed", "Completed"
+
+    event_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.COMPLETED, editable=False
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [models.Index(fields=("expires_at",))]
+
+    def __str__(self) -> str:
+        return f"Player deletion {self.event_id}"
+
+
 class OAuthState(models.Model):
     """Single-use, session-bound state; only a digest is persisted."""
 
     state_digest = models.CharField(max_length=64, unique=True)
     session_key = models.CharField(max_length=40)
+    player = models.ForeignKey(
+        Player, on_delete=models.CASCADE, null=True, blank=True, related_name="oauth_states"
+    )
+    player_session_epoch = models.PositiveBigIntegerField(null=True, blank=True)
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -96,11 +154,18 @@ class OAuthState(models.Model):
         return f"OAuth state {self.pk}"
 
     @classmethod
-    def issue(cls, session_key: str) -> tuple[OAuthState, str]:
+    def issue(
+        cls,
+        session_key: str,
+        *,
+        player: Player | None = None,
+    ) -> tuple[OAuthState, str]:
         raw = secrets.token_urlsafe(32)
         state = cls.objects.create(
             state_digest=hashlib.sha256(raw.encode()).hexdigest(),
             session_key=session_key,
+            player=player,
+            player_session_epoch=player.session_epoch if player else None,
             expires_at=timezone.now() + timedelta(minutes=10),
         )
         return state, raw

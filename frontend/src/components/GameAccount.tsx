@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { apiBaseUrl, apiClient } from '../api/client'
+import { apiBaseUrl, apiClient, csrfHeaders } from '../api/client'
 import type { components } from '../api/generated/schema'
 import type { Copy } from '../i18n/types'
 
@@ -102,6 +102,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
       apiClient.PATCH('/api/v1/game/account/', {
         body: { nickname: nickname.trim() },
         credentials: 'include',
+        headers: csrfHeaders(),
       }),
     )
     if (!result) return
@@ -121,7 +122,10 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
 
   const refresh = async () => {
     const result = await runAccountAction(() =>
-      apiClient.POST('/api/v1/game/account/refresh/', { credentials: 'include' }),
+      apiClient.POST('/api/v1/game/account/refresh/', {
+        credentials: 'include',
+        headers: csrfHeaders(),
+      }),
     )
     if (!result) return
     if (result.response?.status === 401) {
@@ -140,7 +144,10 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
 
   const disconnect = async () => {
     const result = await runAccountAction(() =>
-      apiClient.POST('/api/v1/game/account/disconnect/', { credentials: 'include' }),
+      apiClient.POST('/api/v1/game/account/disconnect/', {
+        credentials: 'include',
+        headers: csrfHeaders(),
+      }),
     )
     if (!result) return
     if (result.response?.status === 401) {
@@ -159,7 +166,10 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
 
   const logout = async () => {
     const result = await runAccountAction(() =>
-      apiClient.POST('/api/v1/game/auth/logout/', { credentials: 'include' }),
+      apiClient.POST('/api/v1/game/auth/logout/', {
+        credentials: 'include',
+        headers: csrfHeaders(),
+      }),
     )
     if (!result) return
     setPlayer(null)
@@ -170,7 +180,10 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
   const deleteAccount = async () => {
     if (!window.confirm(`${copy.gameDeleteTitle}\n\n${copy.gameDeleteDescription}`)) return
     const result = await runAccountAction(() =>
-      apiClient.DELETE('/api/v1/game/account/', { credentials: 'include' }),
+      apiClient.DELETE('/api/v1/game/account/', {
+        credentials: 'include',
+        headers: csrfHeaders(),
+      }),
     )
     if (!result) return
     if (result.response?.status === 401) {
