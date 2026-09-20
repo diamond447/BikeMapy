@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     "allauth.account",
     "allauth.socialaccount",
     "allauth.socialaccount.providers.github",
+    "allauth.socialaccount.providers.strava",
     "apps.catalogue",
     "apps.ingestion",
     "apps.moderation",
@@ -122,6 +123,8 @@ AUTHENTICATION_BACKENDS = [
 ]
 LOGIN_REDIRECT_URL = "/admin/"
 SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
+SOCIALACCOUNT_STORE_TOKENS = False
+SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 ACCOUNT_EMAIL_VERIFICATION = "none"
 SOCIALACCOUNT_PROVIDERS: dict[str, dict[str, Any]] = {
     "github": {
@@ -135,6 +138,45 @@ if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
         "client_id": GITHUB_OAUTH_CLIENT_ID,
         "secret": GITHUB_OAUTH_CLIENT_SECRET,
     }
+
+GAME_ENABLED = env_bool("GAME_ENABLED", False)
+STRAVA_OAUTH_CLIENT_ID = os.getenv("STRAVA_OAUTH_CLIENT_ID", "")
+STRAVA_OAUTH_CLIENT_SECRET = os.getenv("STRAVA_OAUTH_CLIENT_SECRET", "")
+STRAVA_TOKEN_ENCRYPTION_KEY = os.getenv("STRAVA_TOKEN_ENCRYPTION_KEY", "")
+STRAVA_OAUTH_REDIRECT_URI = os.getenv(
+    "STRAVA_OAUTH_REDIRECT_URI",
+    "http://localhost:8000/api/v1/game/auth/strava/callback/",
+)
+if GAME_ENABLED and STRAVA_OAUTH_CLIENT_ID and STRAVA_OAUTH_CLIENT_SECRET:
+    SOCIALACCOUNT_PROVIDERS["strava"] = {
+        "SCOPE": ["read", "activity:read"],
+        "AUTH_PARAMS": {"approval_prompt": "auto"},
+        "APP": {
+            "client_id": STRAVA_OAUTH_CLIENT_ID,
+            "secret": STRAVA_OAUTH_CLIENT_SECRET,
+        },
+    }
+
+if GAME_ENABLED:
+    missing_game_settings = [
+        name
+        for name, value in (
+            ("STRAVA_OAUTH_CLIENT_ID", STRAVA_OAUTH_CLIENT_ID),
+            ("STRAVA_OAUTH_CLIENT_SECRET", STRAVA_OAUTH_CLIENT_SECRET),
+            ("STRAVA_TOKEN_ENCRYPTION_KEY", STRAVA_TOKEN_ENCRYPTION_KEY),
+        )
+        if not value
+    ]
+    if missing_game_settings:
+        raise ImproperlyConfigured("GAME_ENABLED requires: " + ", ".join(missing_game_settings))
+    try:
+        from cryptography.fernet import Fernet
+
+        Fernet(STRAVA_TOKEN_ENCRYPTION_KEY.encode())
+    except (ImportError, TypeError, ValueError) as exc:
+        raise ImproperlyConfigured(
+            "STRAVA_TOKEN_ENCRYPTION_KEY must be a valid Fernet key when GAME_ENABLED=true"
+        ) from exc
 
 # Authorization uses GitHub's immutable numeric account ID.  Keep this empty
 # by default so a deployment must explicitly opt in to owner administration.
