@@ -9,7 +9,6 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
-from django.contrib.gis.geos import GEOSGeometry
 from django.db import close_old_connections, connection, transaction
 from django.test import Client, override_settings
 from django.urls import reverse
@@ -574,13 +573,20 @@ def test_disconnect_pauses_sync_retains_activity_and_reconnect_cancels_deletion(
 def test_account_deletion_purges_activity_competition_and_credentials() -> None:
     player = _player(94)
     competition, _ = create_competition(player, name="Purge")
+    geometry: object = {
+        "type": "LineString",
+        "coordinates": [[14.4, 50.0], [14.5, 50.1]],
+    }
+    if connection.vendor == "postgresql":
+        # Keep the lightweight SQLite suite importable on runners without GDAL.
+        from django.contrib.gis.geos import LineString
+
+        geometry = LineString((14.4, 50.0), (14.5, 50.1), srid=4326)
     activity = ImportedActivity.objects.create(
         player=player,
         provider_activity_id="94",
         calendar_date="2026-09-21",
-        geometry=GEOSGeometry(
-            '{"type":"LineString","coordinates":[[14.4,50.0],[14.5,50.1]]}', srid=4326
-        ),
+        geometry=geometry,
     )
     CompetitionResult.objects.create(competition=competition, player=player, activity=activity)
     user_id = player.user_id
