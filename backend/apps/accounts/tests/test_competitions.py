@@ -340,7 +340,8 @@ def test_recompute_failure_persists_attempts_and_stops_at_retry_limit() -> None:
     assert job.attempts == 1
     job.attempts = 4
     job.status = CompetitionRecomputation.Status.FAILED
-    job.save(update_fields=("attempts", "status"))
+    job.next_attempt_at = timezone.now()
+    job.save(update_fields=("attempts", "status", "next_attempt_at"))
     with patch.object(CompetitionResult, "save", side_effect=RuntimeError("score failure")):
         terminal = recompute_competition_results_task.apply(args=[job.pk]).get()
     job.refresh_from_db()
@@ -348,6 +349,29 @@ def test_recompute_failure_persists_attempts_and_stops_at_retry_limit() -> None:
     assert terminal["status"] == "failed"
     assert job.attempts == 5
     assert job.error
+
+
+@override_settings(**SETTINGS)
+def test_dispatch_failure_after_deletion_does_not_stop_the_batch() -> None:
+    owner = player(111)
+    competition, _ = create_competition(owner, name="Deleted outbox")
+    first = schedule_recomputation(competition)
+    second = schedule_recomputation(competition)
+
+    def publish(args: tuple[int]) -> None:
+        if args[0] == first.pk:
+            CompetitionRecomputation.objects.filter(pk=first.pk).delete()
+            raise RuntimeError("redis down")
+
+    with patch(
+        "apps.accounts.tasks.recompute_competition_results_task.apply_async",
+        side_effect=publish,
+    ):
+        result = dispatch_competition_recomputations_task.apply(args=[2]).get()
+
+    assert result == {"dispatched": 1}
+    second.refresh_from_db()
+    assert second.dispatched_at is not None
 
 
 @override_settings(**SETTINGS)

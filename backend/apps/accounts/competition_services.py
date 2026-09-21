@@ -205,32 +205,37 @@ def _dispatch_recomputation(job_id: int, *, dispatch_token: str | None = None) -
 
         recompute_competition_results_task.apply_async(args=(claimed_job_id,))
     except Exception as exc:
-        with transaction.atomic():
-            job = CompetitionRecomputation.objects.select_for_update().get(pk=claimed_job_id)
-            if job.dispatch_token != token:
-                return False
-            job.attempts += 1
-            job.error = str(exc)[:240]
-            if job.attempts >= MAX_DISPATCH_ATTEMPTS:
-                job.status = CompetitionRecomputation.Status.FAILED
-            else:
-                retry_index = min(job.attempts - 1, len(DISPATCH_RETRY_SECONDS) - 1)
-                job.status = CompetitionRecomputation.Status.PENDING
-                job.next_attempt_at = timezone.now() + timedelta(
-                    seconds=DISPATCH_RETRY_SECONDS[retry_index]
+        try:
+            with transaction.atomic():
+                job = CompetitionRecomputation.objects.select_for_update().get(pk=claimed_job_id)
+                if job.dispatch_token != token:
+                    return False
+                job.attempts += 1
+                job.error = str(exc)[:240]
+                if job.attempts >= MAX_DISPATCH_ATTEMPTS:
+                    job.status = CompetitionRecomputation.Status.FAILED
+                else:
+                    retry_index = min(job.attempts - 1, len(DISPATCH_RETRY_SECONDS) - 1)
+                    job.status = CompetitionRecomputation.Status.PENDING
+                    job.next_attempt_at = timezone.now() + timedelta(
+                        seconds=DISPATCH_RETRY_SECONDS[retry_index]
+                    )
+                job.dispatch_token = ""
+                job.dispatch_lease_until = None
+                job.save(
+                    update_fields=(
+                        "attempts",
+                        "status",
+                        "error",
+                        "next_attempt_at",
+                        "dispatch_token",
+                        "dispatch_lease_until",
+                    )
                 )
-            job.dispatch_token = ""
-            job.dispatch_lease_until = None
-            job.save(
-                update_fields=(
-                    "attempts",
-                    "status",
-                    "error",
-                    "next_attempt_at",
-                    "dispatch_token",
-                    "dispatch_lease_until",
-                )
-            )
+        except CompetitionRecomputation.DoesNotExist:
+            # A concurrent competition deletion cascades the outbox row. The
+            # publication already failed, so there is nothing left to retry.
+            return False
         return False
     with transaction.atomic():
         CompetitionRecomputation.objects.filter(pk=claimed_job_id, dispatch_token=token).update(
