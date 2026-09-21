@@ -13,7 +13,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .activity_services import process_sync_job
-from .models import StravaSyncJob
+from .models import StravaSyncJob, StravaSyncState
 
 
 @shared_task(name="bikemapy.accounts.sync_strava_activities")  # type: ignore[untyped-decorator]
@@ -49,6 +49,10 @@ def dispatch_strava_sync_task(limit: int = 100) -> dict[str, int]:
     )
     for stale in stale_jobs:
         with transaction.atomic():
+            # Keep the same State -> Job order as queueing and workers. The
+            # state is locked even though recovery only mutates the job, so a
+            # recovery cannot deadlock with a concurrent queue reset.
+            StravaSyncState.objects.select_for_update().filter(player_id=stale.player_id).first()
             stale_job = StravaSyncJob.objects.select_for_update().get(pk=stale.pk)
             if stale_job.status != StravaSyncJob.Status.RUNNING or (
                 stale_job.lease_until is not None and stale_job.lease_until > now
@@ -74,10 +78,29 @@ def dispatch_strava_sync_task(limit: int = 100) -> dict[str, int]:
                 )
             )
     for _ in range(max(1, limit)):
+        candidate_ref = (
+            StravaSyncJob.objects.filter(
+                status__in=(StravaSyncJob.Status.PENDING, StravaSyncJob.Status.FAILED),
+                next_attempt_at__lte=now,
+                player__lifecycle=Player.Lifecycle.CONNECTED,
+            )
+            .filter(
+                Q(dispatch_lease_until__isnull=True) | Q(dispatch_lease_until__lte=now),
+            )
+            .order_by("created_at", "pk")
+            .values("pk", "player_id")
+            .first()
+        )
+        if candidate_ref is None:
+            break
         with transaction.atomic():
+            StravaSyncState.objects.select_for_update().filter(
+                player_id=candidate_ref["player_id"]
+            ).first()
             candidate_job = (
                 StravaSyncJob.objects.select_for_update()
                 .filter(
+                    pk=candidate_ref["pk"],
                     status__in=(StravaSyncJob.Status.PENDING, StravaSyncJob.Status.FAILED),
                     next_attempt_at__lte=now,
                     player__lifecycle=Player.Lifecycle.CONNECTED,
@@ -85,11 +108,10 @@ def dispatch_strava_sync_task(limit: int = 100) -> dict[str, int]:
                 .filter(
                     Q(dispatch_lease_until__isnull=True) | Q(dispatch_lease_until__lte=now),
                 )
-                .order_by("created_at", "pk")
                 .first()
             )
             if candidate_job is None:
-                break
+                continue
             token = uuid4().hex
             candidate_job.dispatch_token = token
             candidate_job.dispatch_lease_until = now + timedelta(seconds=claim_seconds)

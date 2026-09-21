@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -9,12 +10,14 @@ import pytest
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import GEOSGeometry
+from django.db import close_old_connections, connection, transaction
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.accounts.activity_services import (
     StravaActivityError,
+    _lock_sync_state_then_job,
     _retry_after_seconds,
     activity_is_eligible,
     import_activity,
@@ -238,7 +241,7 @@ def test_webhook_update_accepts_official_updates_but_refetches_privacy_authorita
         "aspect_type": "update",
         "event_time": 123,
         "subscription_id": 9,
-        "updates": {"private": True, "visibility": "only_you"},
+        "updates": {"private": "true"},
     }
     assert validate_webhook_payload(payload) is not None
     client = Client()
@@ -248,6 +251,13 @@ def test_webhook_update_accepts_official_updates_but_refetches_privacy_authorita
         content_type="application/json",
     )
     assert response.status_code == 200
+    duplicate = client.post(
+        reverse("game-strava-webhook"),
+        json.dumps(payload).encode(),
+        content_type="application/json",
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["duplicate"] is True
     event = StravaWebhookEvent.objects.get()
     job = StravaSyncJob.objects.get(webhook_event=event)
     with patch(
@@ -269,8 +279,15 @@ def test_webhook_updates_are_strictly_typed_and_scoped_to_update_events() -> Non
         "event_time": 123,
         "subscription_id": 9,
     }
-    assert validate_webhook_payload({**base, "updates": {"title": "Ride"}}) is not None
-    assert validate_webhook_payload({**base, "updates": {"private": 1}}) is None
+    normalized = validate_webhook_payload(
+        {**base, "updates": {"title": "Ride", "private": "false"}}
+    )
+    assert normalized is not None
+    assert normalized["updates"] == {"title": "Ride", "private": False}
+    assert validate_webhook_payload({**base, "updates": {"private": True}}) is None
+    assert validate_webhook_payload({**base, "updates": {"private": "TRUE"}}) is None
+    assert validate_webhook_payload({**base, "updates": {"sport_type": "Ride"}}) is None
+    assert validate_webhook_payload({**base, "updates": {"visibility": "everyone"}}) is None
     assert validate_webhook_payload({**base, "updates": {"unknown": "value"}}) is None
     assert validate_webhook_payload({**base, "aspect_type": "create", "updates": {}}) is None
     assert validate_webhook_payload({**base, "updates": None}) is None
@@ -315,6 +332,45 @@ def test_stale_worker_does_not_apply_fetched_page_after_lease_replacement() -> N
     assert not ImportedActivity.objects.filter(player=player).exists()
     state = StravaSyncState.objects.get(player=player)
     assert (state.processed_count, state.imported_count, state.rejected_count) == (0, 0, 0)
+
+
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locks")
+@pytest.mark.django_db(transaction=True)
+@override_settings(**_settings())
+def test_queue_and_worker_sync_transactions_share_state_then_job_lock_order() -> None:
+    player = _player(46)
+    job = queue_sync(player, kind=StravaSyncJob.Kind.INCREMENTAL)
+    start = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def run_queue() -> None:
+        close_old_connections()
+        try:
+            start.wait(timeout=5)
+            queue_sync(player, kind=StravaSyncJob.Kind.INCREMENTAL)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            close_old_connections()
+
+    def run_worker_claim() -> None:
+        close_old_connections()
+        try:
+            start.wait(timeout=5)
+            with transaction.atomic():
+                _lock_sync_state_then_job(job.pk, player_id=player.pk)
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            close_old_connections()
+
+    threads = [threading.Thread(target=run_queue), threading.Thread(target=run_worker_claim)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert not any(thread.is_alive() for thread in threads), "sync lock order deadlocked"
+    assert not errors
 
 
 @override_settings(**_settings())

@@ -27,6 +27,8 @@ from .models import (
     PlayerDeletionTombstone,
     PlayerIdentityGuard,
     RevocationJob,
+    StravaSyncJob,
+    StravaSyncState,
 )
 
 STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
@@ -456,6 +458,8 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
     affected_competition_ids: list[Any] = []
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
+        StravaSyncState.objects.select_for_update().filter(player_id=player.pk).first()
+        list(StravaSyncJob.objects.select_for_update().filter(player_id=player.pk).order_by("pk"))
         player = Player.objects.select_for_update().get(pk=player.pk)
         try:
             access_token = (

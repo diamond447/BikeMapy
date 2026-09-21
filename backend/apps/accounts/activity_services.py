@@ -30,7 +30,7 @@ ELIGIBLE_ACTIVITY_TYPES = frozenset({"Ride", "MountainBikeRide", "GravelRide", "
 SYNC_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
 MAX_POLYLINE_LENGTH = 250_000
 MAX_POLYLINE_POINTS = 100_000
-WEBHOOK_UPDATE_FIELDS = frozenset({"title", "type", "sport_type", "private", "visibility"})
+WEBHOOK_UPDATE_FIELDS = frozenset({"title", "type", "private"})
 MAX_RETRY_AFTER_SECONDS = 86_400
 
 
@@ -278,17 +278,12 @@ def validate_webhook_payload(payload: Any) -> dict[str, Any] | None:
             return None
         if not set(updates).issubset(WEBHOOK_UPDATE_FIELDS):
             return None
-        if any(
-            key in updates and not isinstance(updates[key], expected)
-            for key, expected in (
-                ("title", str),
-                ("type", str),
-                ("sport_type", str),
-                ("private", bool),
-                ("visibility", str),
-            )
-        ):
-            return None
+        for key, value in updates.items():
+            if key == "private":
+                if not isinstance(value, str) or value not in {"true", "false"}:
+                    return None
+            elif not isinstance(value, str):
+                return None
     values: dict[str, int] = {}
     for field in ("subscription_id", "object_id", "owner_id", "event_time"):
         value = payload.get(field)
@@ -307,7 +302,10 @@ def validate_webhook_payload(payload: Any) -> dict[str, Any] | None:
         configured = 0
     if configured <= 0 or values["subscription_id"] != configured:
         return None
-    return {**payload, **values}
+    normalized = {**payload, **values}
+    if isinstance(updates, dict) and "private" in updates:
+        normalized["updates"] = {**updates, "private": updates["private"] == "true"}
+    return normalized
 
 
 def _schedule_player_recomputations(player_id: int) -> None:
@@ -617,6 +615,30 @@ def webhook_event_key(payload: dict[str, Any], raw_body: bytes) -> str:
     return hashlib.sha256(stable.encode()).hexdigest()
 
 
+def _lock_sync_state_then_job(
+    job_id: int,
+    *,
+    state_id: int | None = None,
+    player_id: int | None = None,
+) -> tuple[StravaSyncState | None, StravaSyncJob]:
+    """Lock the sync pair in the one order shared by every lifecycle path."""
+
+    locked_state = None
+    if state_id is not None:
+        locked_state = StravaSyncState.objects.select_for_update().get(pk=state_id)
+    elif player_id is not None:
+        locked_state = (
+            StravaSyncState.objects.select_for_update().filter(player_id=player_id).first()
+        )
+    locked_job = (
+        StravaSyncJob.objects.select_for_update()
+        .select_related("player")
+        .select_for_update(of=("self",))
+        .get(pk=job_id)
+    )
+    return locked_state, locked_job
+
+
 def _finish_job(
     job: StravaSyncJob,
     *,
@@ -626,6 +648,11 @@ def _finish_job(
 ) -> str:
     now = timezone.now()
     with transaction.atomic():
+        locked_state = (
+            StravaSyncState.objects.select_for_update().get(pk=state.pk)
+            if state is not None
+            else None
+        )
         locked_job = StravaSyncJob.objects.select_for_update().get(pk=job.pk)
         if lease_token and (
             locked_job.status != StravaSyncJob.Status.RUNNING
@@ -649,8 +676,7 @@ def _finish_job(
                 "updated_at",
             )
         )
-        if state is not None:
-            locked_state = StravaSyncState.objects.select_for_update().get(pk=state.pk)
+        if locked_state is not None:
             locked_state.status = (
                 StravaSyncState.Status.QUEUED if more else StravaSyncState.Status.IDLE
             )
@@ -673,6 +699,11 @@ def _finish_job(
 
 def _pause_job(job: StravaSyncJob, state: StravaSyncState | None, *, lease_token: str = "") -> str:
     with transaction.atomic():
+        locked_state = (
+            StravaSyncState.objects.select_for_update().get(pk=state.pk)
+            if state is not None
+            else None
+        )
         locked_job = StravaSyncJob.objects.select_for_update().get(pk=job.pk)
         if lease_token and (
             locked_job.status != StravaSyncJob.Status.RUNNING
@@ -694,8 +725,7 @@ def _pause_job(job: StravaSyncJob, state: StravaSyncState | None, *, lease_token
                 "updated_at",
             )
         )
-        if state is not None:
-            locked_state = StravaSyncState.objects.select_for_update().get(pk=state.pk)
+        if locked_state is not None:
             locked_state.status = StravaSyncState.Status.PAUSED
             locked_state.lease_token = ""
             locked_state.lease_until = None
@@ -715,6 +745,11 @@ def _fail_job(
     if delay is None:
         delay = SYNC_RETRY_SECONDS[retry_index]
     with transaction.atomic():
+        locked_state = (
+            StravaSyncState.objects.select_for_update().get(pk=state.pk)
+            if state is not None
+            else None
+        )
         locked_job = StravaSyncJob.objects.select_for_update().get(pk=job.pk)
         if lease_token and (
             locked_job.status != StravaSyncJob.Status.RUNNING
@@ -740,8 +775,7 @@ def _fail_job(
                 "updated_at",
             )
         )
-        if state is not None:
-            locked_state = StravaSyncState.objects.select_for_update().get(pk=state.pk)
+        if locked_state is not None:
             locked_state.status = StravaSyncState.Status.FAILED
             locked_state.last_error = str(error)[:240]
             locked_state.next_attempt_at = locked_job.next_attempt_at
@@ -770,9 +804,10 @@ def _owned_apply_transaction[T](
 
     now = timezone.now()
     with transaction.atomic():
-        locked_job = (
-            StravaSyncJob.objects.select_for_update().select_related("player").get(pk=job_id)
-        )
+        try:
+            locked_state, locked_job = _lock_sync_state_then_job(job_id, state_id=state_id)
+        except StravaSyncState.DoesNotExist:
+            return "in_progress"
         if (
             locked_job.status != StravaSyncJob.Status.RUNNING
             or locked_job.lease_token != lease_token
@@ -780,12 +815,7 @@ def _owned_apply_transaction[T](
             or locked_job.lease_until <= now
         ):
             return "in_progress"
-        locked_state: StravaSyncState | None = None
-        if state_id is not None:
-            try:
-                locked_state = StravaSyncState.objects.select_for_update().get(pk=state_id)
-            except StravaSyncState.DoesNotExist:
-                return "in_progress"
+        if state_id is not None and locked_state is not None:
             if (
                 locked_state.status != StravaSyncState.Status.RUNNING
                 or locked_state.lease_token != lease_token
@@ -818,14 +848,14 @@ def process_sync_job(job_id: int) -> str:
     now = timezone.now()
     lease_token = hashlib.sha256(f"{job_id}:{now.timestamp()}".encode()).hexdigest()
     with transaction.atomic():
-        job = StravaSyncJob.objects.select_for_update().select_related("player").get(pk=job_id)
+        player_id = StravaSyncJob.objects.values_list("player_id", flat=True).get(pk=job_id)
+        state, job = _lock_sync_state_then_job(job_id, player_id=player_id)
         if job.status == StravaSyncJob.Status.COMPLETED:
             return "completed"
         if job.status == StravaSyncJob.Status.RUNNING and job.lease_until and job.lease_until > now:
             return "in_progress"
         if job.next_attempt_at > now:
             return "retry_scheduled"
-        state = StravaSyncState.objects.select_for_update().filter(player_id=job.player_id).first()
         if job.player.lifecycle != Player.Lifecycle.CONNECTED:
             return _pause_job(job, state)
         job.status = StravaSyncJob.Status.RUNNING
