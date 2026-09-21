@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiBaseUrl, apiClient, csrfHeaders, rememberCsrfToken } from '../api/client'
 import type { components } from '../api/generated/schema'
 import type { Copy } from '../i18n/types'
+import { GameCompetitions } from './GameCompetitions'
 
 type Player = components['schemas']['Player']
 type PlayerResponse = components['schemas']['PlayerResponse']
@@ -280,6 +281,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
             <dd>{player.display_name}</dd>
           </div>
         </dl>
+        <GameCompetitions copy={copy} />
         <div className="game-account-actions">
           <button type="button" onClick={() => void refresh()} disabled={busy}>
             {busy ? copy.gameRefreshing : copy.gameRefresh}

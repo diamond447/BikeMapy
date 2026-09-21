@@ -35,6 +35,13 @@ class Player(models.Model):
     )
     deletion_deadline = models.DateTimeField(null=True, blank=True)
     session_epoch = models.PositiveBigIntegerField(default=0)
+    active_competition = models.ForeignKey(
+        "accounts.Competition",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="active_players",
+    )
     connected_at = models.DateTimeField(default=timezone.now)
     disconnected_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -86,6 +93,148 @@ class Player(models.Model):
                 "updated_at",
             )
         )
+
+
+class Competition(models.Model):
+    """A private, invite-only game competition.
+
+    The UUID primary key keeps guessed identifiers from becoming a useful
+    enumeration primitive.  ``invite_code`` is intentionally rotated as one
+    value: a code is reusable until the owner rotates it, at which point the
+    previous value immediately stops authenticating join requests.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    owner = models.ForeignKey(
+        "accounts.Player", on_delete=models.CASCADE, related_name="owned_competitions"
+    )
+    name = models.CharField(max_length=120)
+    invite_code = models.CharField(max_length=32, unique=True, db_index=True)
+    is_active = models.BooleanField(default=True)
+    revision = models.PositiveBigIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "id")
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class CompetitionMembership(models.Model):
+    """One player's role and display color in one competition."""
+
+    competition = models.ForeignKey(
+        Competition, on_delete=models.CASCADE, related_name="memberships"
+    )
+    player = models.ForeignKey(
+        "accounts.Player", on_delete=models.CASCADE, related_name="competition_memberships"
+    )
+    color = models.CharField(max_length=7)
+    joined_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("joined_at", "pk")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("competition", "player"), name="accounts_competition_member_unique"
+            ),
+        ]
+        indexes = [models.Index(fields=("player", "competition"))]
+
+    def __str__(self) -> str:
+        return f"{self.player_id} in {self.competition_id}"
+
+
+class ImportedActivity(models.Model):
+    """An activity imported once for a player and shared by their competitions."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    player = models.ForeignKey(
+        "accounts.Player", on_delete=models.CASCADE, related_name="imported_activities"
+    )
+    provider_activity_id = models.CharField(max_length=80)
+    title = models.CharField(max_length=240, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+    imported_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("player", "provider_activity_id"), name="accounts_player_activity_unique"
+            ),
+        ]
+        indexes = [models.Index(fields=("player", "imported_at"))]
+
+    def __str__(self) -> str:
+        return self.title or self.provider_activity_id
+
+
+class CompetitionResult(models.Model):
+    """Derived game data; deleting membership removes only this projection."""
+
+    competition = models.ForeignKey(Competition, on_delete=models.CASCADE, related_name="results")
+    player = models.ForeignKey(
+        "accounts.Player", on_delete=models.CASCADE, related_name="competition_results"
+    )
+    activity = models.ForeignKey(
+        ImportedActivity,
+        on_delete=models.CASCADE,
+        related_name="competition_results",
+        null=True,
+        blank=True,
+    )
+    points = models.IntegerField(default=0)
+    computed_revision = models.PositiveBigIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("competition", "player", "activity"),
+                name="accounts_competition_result_unique",
+            ),
+        ]
+        indexes = [models.Index(fields=("competition", "player"))]
+
+    def __str__(self) -> str:
+        return f"{self.competition_id}: {self.player_id} ({self.points})"
+
+
+class CompetitionRecomputation(models.Model):
+    """Durable work marker for deterministic score recomputation."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    competition = models.ForeignKey(
+        Competition, on_delete=models.CASCADE, related_name="recomputations"
+    )
+    generation = models.PositiveBigIntegerField()
+    affected_player_id = models.PositiveBigIntegerField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("competition", "generation"), name="accounts_competition_generation_unique"
+            ),
+        ]
+        indexes = [models.Index(fields=("status", "created_at"))]
+
+    def __str__(self) -> str:
+        return f"Recompute {self.competition_id} generation {self.generation}"
 
 
 class PlayerCredential(models.Model):
