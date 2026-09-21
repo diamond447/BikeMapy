@@ -36,6 +36,7 @@ from apps.reference_routes.services import (
     _validate_retrieved_at,
     approve_reference_route,
     blocked_via_czechia_import,
+    import_via_czechia_snapshot,
     link_stage,
     record_alteration_offer,
     store_pending_snapshot,
@@ -206,8 +207,62 @@ def test_via_czechia_is_blocked_without_request() -> None:
         source_url="https://viaczechia.cz",
         attribution="Via Czechia",
         licence="CC BY-NC-SA 4.0",
+        attribution_text="Via Czechia contributors",
+        attribution_url="https://viaczechia.cz/attribution",
+        licence_uri="https://viaczechia.cz/licence",
+        derivative_offer_url="https://viaczechia.cz/offer",
+        rightsholder="Via Czechia",
+        contact_url="https://viaczechia.cz/contact",
     )
     assert blocked_via_czechia_import(collection=item)["status"] == "blocked"
+
+
+@override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
+def test_via_czechia_import_requires_source_availability_and_keeps_route_stages_together() -> None:
+    item = ReferenceCollection.objects.create(
+        slug="via-available",
+        name="Via Czechia",
+        source_kind=ReferenceSourceKind.VIA_CZECHIA,
+        source_url="https://viaczechia.cz",
+        attribution="Via Czechia",
+        licence="CC BY-NC-SA 4.0",
+        permission_granted=True,
+        active=True,
+        attribution_text="Via Czechia contributors",
+        attribution_url="https://viaczechia.cz/attribution",
+        licence_uri="https://viaczechia.cz/licence",
+        derivative_offer_url="https://viaczechia.cz/offer",
+        rightsholder="Via Czechia",
+        contact_url="https://viaczechia.cz/contact",
+    )
+    payload = {
+        "source_available": True,
+        "route": {
+            "source_identifier": "via-main",
+            "title": "Via Czechia",
+            "geometry": {"type": "LineString", "coordinates": [[14, 50], [14.1, 50]]},
+        },
+        "stages": [
+            {
+                "source_identifier": "via-stage-1",
+                "title": "Stage 1",
+                "geometry": {"type": "LineString", "coordinates": [[14, 50], [14.05, 50]]},
+            }
+        ],
+    }
+    blocked = import_via_czechia_snapshot(
+        collection=item, payload={**payload, "source_available": False}
+    )
+    assert blocked["status"] == "blocked"
+    imported = import_via_czechia_snapshot(collection=item, payload=payload)
+    assert imported["created"] == 2
+    parent = ReferenceRoute.objects.get(collection=item, parent__isnull=True)
+    assert parent.stages.count() == 1
+    assert parent.current_version is not None
+    approve_reference_route(parent, reviewer="via-reviewer")
+    parent.refresh_from_db()
+    assert parent.active
+    assert parent.stages.get().active
 
 
 def test_source_gate_blocks_import_and_activation() -> None:

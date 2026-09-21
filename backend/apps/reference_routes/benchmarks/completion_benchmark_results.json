@@ -1,0 +1,11 @@
+{
+  "recorded_at": "2026-09-21",
+  "environment": "Docker sandbox, Python 3.13, GEOS metric transform",
+  "fixture": "dense-noisy-50m-corridor",
+  "activity_count": 3,
+  "total_length_meters": 3601.521,
+  "covered_length_meters": 3601.521,
+  "coverage_percent": 100.0,
+  "elapsed_ms": 204.409,
+  "notes": "Baseline timing is indicative; rerun on the production PostGIS service before changing policy."
+}

@@ -347,6 +347,22 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/reference-routes/{route_id}/completion/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_completion_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/webhooks/strava/': {
     parameters: {
       query?: never
@@ -563,6 +579,18 @@ export interface components {
       /** Format: uuid */
       active_competition_id: string | null
     }
+    CompletionProjection: {
+      status: string
+      /** Format: decimal */
+      total_length_meters: string
+      /** Format: decimal */
+      covered_length_meters: string
+      /** Format: decimal */
+      completion_percent: string
+      /** Format: date-time */
+      calculated_at: string | null
+      error: string
+    }
     ElevationProfilePoint: {
       /** Format: double */
       distance_m: number
@@ -666,6 +694,16 @@ export interface components {
      */
     ReasonEnum:
       'incorrect_route' | 'source_attribution' | 'author_removal' | 'rights_holder' | 'other'
+    ReferenceCompletion: {
+      /** Format: uuid */
+      route_id: string
+      version: number
+      player: components['schemas']['CompletionProjection'] | null
+      competition: components['schemas']['CompletionProjection'] | null
+      stages: {
+        [key: string]: unknown
+      }[]
+    }
     ReferenceRoute: {
       /** Format: uuid */
       readonly id: string
@@ -2002,6 +2040,41 @@ export interface operations {
         content: {
           'application/json': components['schemas']['ReferenceRoute']
         }
+      }
+    }
+  }
+  v1_game_reference_routes_completion_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceCompletion']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Reference route not found. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }

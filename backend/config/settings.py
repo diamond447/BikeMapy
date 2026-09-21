@@ -167,6 +167,9 @@ STRAVA_SYNC_PAGES_PER_RUN = int(os.getenv("STRAVA_SYNC_PAGES_PER_RUN", "5"))
 STRAVA_SYNC_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_LEASE_SECONDS", "600"))
 STRAVA_SYNC_DISPATCH_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_DISPATCH_LEASE_SECONDS", "60"))
 STRAVA_SYNC_MAX_RETRY_AFTER = int(os.getenv("STRAVA_SYNC_MAX_RETRY_AFTER", "3600"))
+ROUTE_COMPLETION_TOLERANCE_METERS = float(os.getenv("ROUTE_COMPLETION_TOLERANCE_METERS", "50"))
+ROUTE_COMPLETION_LEASE_SECONDS = int(os.getenv("ROUTE_COMPLETION_LEASE_SECONDS", "600"))
+REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = env_bool("REFERENCE_ROUTE_VIA_CZECHIA_ENABLED", False)
 STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "STRAVA_OAUTH_REDIRECT_URI",
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
@@ -444,6 +447,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "dispatch-strava-sync": {
         "task": "bikemapy.accounts.dispatch_strava_sync",
+        "schedule": 60,
+    },
+    "dispatch-route-completions": {
+        "task": "bikemapy.reference_routes.dispatch_completion_jobs",
         "schedule": 60,
     },
 }

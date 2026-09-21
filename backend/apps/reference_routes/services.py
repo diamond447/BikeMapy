@@ -34,6 +34,7 @@ from .models import (
     ReferenceRouteVersion,
     ReferenceSourceKind,
     ReferenceValidationStatus,
+    has_publishable_reference_source,
 )
 
 MAX_RESPONSE_BYTES = 50 * 1024 * 1024
@@ -1251,9 +1252,16 @@ def store_pending_snapshot(
 
 def approve_reference_route(route: ReferenceRoute, *, reviewer: str) -> ReferenceRoute:
     """Explicit human-review/publication action; imports never call this."""
-    if route.collection.source_kind != ReferenceSourceKind.OSM_NUMBERED:
-        raise PermissionError("This source kind is not approved for publication")
-    if not route.collection.permission_granted:
+    source_import = route.current_version.source_import if route.current_version else None
+    if (
+        route.collection.source_kind == ReferenceSourceKind.OSM_NUMBERED
+        and not route.collection.permission_granted
+    ):
+        raise PermissionError("This source collection is not approved for publication")
+    if (
+        route.collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
+        and not has_publishable_reference_source(route.collection, source_import)
+    ):
         raise PermissionError("This source collection is not approved for publication")
     if (
         route.current_version_id is None
@@ -1269,6 +1277,28 @@ def approve_reference_route(route: ReferenceRoute, *, reviewer: str) -> Referenc
     )
     route.current_version.active = True
     route.current_version.save(update_fields=["active"])
+    if route.collection.source_kind == ReferenceSourceKind.VIA_CZECHIA:
+        for stage in route.stages.select_related("current_version").order_by("pk"):
+            if stage.current_version is None:
+                continue
+            stage.publication_status = ReferencePublicationStatus.APPROVED
+            stage.reviewed_at = timezone.now()
+            stage.reviewed_by = reviewer
+            stage.active = True
+            stage.save(
+                update_fields=(
+                    "publication_status",
+                    "reviewed_at",
+                    "reviewed_by",
+                    "active",
+                    "updated_at",
+                )
+            )
+            stage.current_version.active = True
+            stage.current_version.save(update_fields=("active",))
+    from .completion_services import schedule_version_completions
+
+    schedule_version_completions(route.current_version, reason="reference-route-version-approved")
     return route
 
 
@@ -1340,3 +1370,116 @@ def blocked_via_czechia_import(
         "collection": collection.slug,
         "reason": reason,
     }
+
+
+def import_via_czechia_snapshot(
+    *,
+    collection: ReferenceCollection,
+    payload: dict[str, Any],
+    retrieved_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Import a complete Via Czechia route only after explicit source gates.
+
+    The provider contract is intentionally small and source-neutral: a
+    snapshot contains one ``route`` object and optional ``stages`` objects,
+    each with ``source_identifier``, ``title`` and GeoJSON ``geometry``.
+    Until operator permission and source availability are configured this
+    function returns a durable blocked result and creates no publication.
+    """
+
+    if collection.source_kind != ReferenceSourceKind.VIA_CZECHIA:
+        raise ValueError("The collection is not a Via Czechia collection")
+    if not getattr(settings, "REFERENCE_ROUTE_VIA_CZECHIA_ENABLED", False):
+        return blocked_via_czechia_import(collection=collection, reason="Feature gate is disabled")
+    if not collection.permission_granted or not collection.active:
+        return blocked_via_czechia_import(
+            collection=collection, reason="Source permission is unresolved"
+        )
+    if payload.get("source_available") is not True:
+        return blocked_via_czechia_import(
+            collection=collection, reason="Source availability is unverified"
+        )
+    route_data = payload.get("route")
+    stages_data = payload.get("stages", [])
+    if not isinstance(route_data, dict) or not isinstance(stages_data, list):
+        raise ValueError("Via Czechia snapshot must contain a route and a stage list")
+    records = [route_data, *[item for item in stages_data if isinstance(item, dict)]]
+    if not records or any(
+        not isinstance(item.get("source_identifier"), str)
+        or not isinstance(item.get("title"), str)
+        or not isinstance(item.get("geometry"), dict)
+        for item in records
+    ):
+        raise ValueError("Via Czechia records require identifiers, titles and geometry")
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    checksum = hashlib.sha256(raw).hexdigest()
+    retrieved = retrieved_at or timezone.now()
+    with transaction.atomic():
+        source_import, created = ReferenceImport.objects.get_or_create(
+            collection=collection,
+            checksum=checksum,
+            defaults={
+                "endpoint": collection.source_url,
+                "retrieved_at": retrieved,
+                "response_metadata": {"source_available": True, "import_mode": "production"},
+                "raw_payload": payload,
+                "raw_response": raw,
+                "raw_response_sha256": checksum,
+                "status": ReferenceImportStatus.VALID,
+            },
+        )
+        if not created:
+            return {"status": "unchanged", "import_id": source_import.pk}
+        parent = None
+        imported = 0
+        attribution_metadata = {
+            "attribution_text": collection.attribution_text or collection.attribution,
+            "attribution_url": collection.attribution_url,
+            "licence": collection.licence,
+            "licence_uri": collection.licence_uri,
+            "derivative_offer_url": collection.derivative_offer_url,
+            "rightsholder": collection.rightsholder,
+            "contact_url": collection.contact_url,
+            "source_url": collection.source_url,
+        }
+        version_status = (
+            ReferenceValidationStatus.VALID
+            if all(attribution_metadata.values())
+            else ReferenceValidationStatus.PENDING_REVIEW
+        )
+        for index, item in enumerate(records):
+            geometry = item["geometry"]
+            coordinates = geometry.get("coordinates")
+            if geometry.get("type") != "LineString" or not isinstance(coordinates, list):
+                raise ValueError("Via Czechia geometries must be LineStrings")
+            route = ReferenceRoute.objects.create(
+                collection=collection,
+                source_identifier=item["source_identifier"],
+                route_number=str(item.get("route_number") or ""),
+                title=item["title"],
+                route_type=ReferenceRoute.RouteType.ROUTE
+                if index == 0
+                else ReferenceRoute.RouteType.STAGE,
+                parent=parent,
+                active=False,
+                publication_status=ReferencePublicationStatus.PENDING,
+            )
+            version = ReferenceRouteVersion.objects.create(
+                route=route,
+                source_import=source_import,
+                version_number=1,
+                checksum=hashlib.sha256(json.dumps(geometry, sort_keys=True).encode()).hexdigest(),
+                source_geometry=geometry,
+                normalized_geometry=_geometry_value(coordinates),
+                provenance={"source": "Via Czechia", "snapshot_checksum": checksum},
+                attribution=collection.attribution,
+                attribution_metadata=attribution_metadata,
+                validation_status=version_status,
+                active=False,
+            )
+            route.current_version = version
+            route.save(update_fields=("current_version", "updated_at"))
+            if index == 0:
+                parent = route
+            imported += 1
+        return {"status": "valid", "import_id": source_import.pk, "created": imported}
