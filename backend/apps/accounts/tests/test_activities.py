@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
@@ -14,10 +15,12 @@ from django.utils import timezone
 
 from apps.accounts.activity_services import (
     StravaActivityError,
+    _retry_after_seconds,
     activity_is_eligible,
     import_activity,
     process_sync_job,
     queue_sync,
+    validate_webhook_payload,
 )
 from apps.accounts.activity_tasks import dispatch_strava_sync_task
 from apps.accounts.competition_services import create_competition
@@ -223,6 +226,95 @@ def test_webhook_refetches_authoritative_activity_and_rejects_cross_athlete() ->
     event.refresh_from_db()
     assert event.last_error
     assert not ImportedActivity.objects.filter(provider_activity_id="431").exists()
+
+
+@override_settings(**_settings())
+def test_webhook_update_accepts_official_updates_but_refetches_privacy_authoritatively() -> None:
+    player = _player(44)
+    payload = {
+        "object_type": "activity",
+        "object_id": 440,
+        "owner_id": 44,
+        "aspect_type": "update",
+        "event_time": 123,
+        "subscription_id": 9,
+        "updates": {"private": True, "visibility": "only_you"},
+    }
+    assert validate_webhook_payload(payload) is not None
+    client = Client()
+    response = client.post(
+        reverse("game-strava-webhook"),
+        json.dumps(payload).encode(),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    event = StravaWebhookEvent.objects.get()
+    job = StravaSyncJob.objects.get(webhook_event=event)
+    with patch(
+        "apps.accounts.activity_services.fetch_activity",
+        return_value=_activity(440, athlete={"id": 44}, private=True, visibility="only_you"),
+    ) as fetch:
+        assert process_sync_job(job.pk) == "completed"
+    fetch.assert_called_once_with(player.pk, "440")
+    assert not ImportedActivity.objects.filter(player=player, provider_activity_id="440").exists()
+
+
+@override_settings(**_settings())
+def test_webhook_updates_are_strictly_typed_and_scoped_to_update_events() -> None:
+    base = {
+        "object_type": "activity",
+        "object_id": 441,
+        "owner_id": 44,
+        "aspect_type": "update",
+        "event_time": 123,
+        "subscription_id": 9,
+    }
+    assert validate_webhook_payload({**base, "updates": {"title": "Ride"}}) is not None
+    assert validate_webhook_payload({**base, "updates": {"private": 1}}) is None
+    assert validate_webhook_payload({**base, "updates": {"unknown": "value"}}) is None
+    assert validate_webhook_payload({**base, "aspect_type": "create", "updates": {}}) is None
+    assert validate_webhook_payload({**base, "updates": None}) is None
+
+
+@override_settings(**_settings(), STRAVA_SYNC_MAX_RETRY_AFTER=30)
+def test_retry_after_and_quota_reset_hints_are_defensive_and_bounded() -> None:
+    request = httpx.Request("GET", "https://www.strava.com/api/v3/athlete/activities")
+    huge = httpx.Response(429, headers={"Retry-After": "100000000000000000000"}, request=request)
+    assert _retry_after_seconds(huge) == 30
+    negative = httpx.Response(429, headers={"Retry-After": "-5"}, request=request)
+    assert _retry_after_seconds(negative) is None
+    future = datetime.now(UTC) + timedelta(seconds=10)
+    date_hint = httpx.Response(
+        429,
+        headers={"Retry-After": future.strftime("%a, %d %b %Y %H:%M:%S GMT")},
+        request=request,
+    )
+    assert 0 <= (_retry_after_seconds(date_hint) or 0) <= 30
+    reset = httpx.Response(
+        429,
+        headers={"Retry-After": "invalid", "X-RateLimit-Reset": str(future.timestamp())},
+        request=request,
+    )
+    assert 0 <= (_retry_after_seconds(reset) or 0) <= 30
+
+
+@override_settings(**_settings(), STRAVA_SYNC_MAX_RETRY_AFTER=30)
+def test_stale_worker_does_not_apply_fetched_page_after_lease_replacement() -> None:
+    player = _player(45)
+    job = queue_sync(player, kind=StravaSyncJob.Kind.INCREMENTAL)
+
+    def replace_lease(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        current = StravaSyncJob.objects.get(pk=job.pk)
+        current.lease_token = "replacement-worker"
+        current.lease_until = timezone.now() + timedelta(minutes=5)
+        current.save(update_fields=("lease_token", "lease_until", "updated_at"))
+        return [_activity(450, athlete={"id": 45})]
+
+    with patch("apps.accounts.activity_services.fetch_activity_page", side_effect=replace_lease):
+        assert process_sync_job(job.pk) == "in_progress"
+    assert not ImportedActivity.objects.filter(player=player).exists()
+    state = StravaSyncState.objects.get(player=player)
+    assert (state.processed_count, state.imported_count, state.rejected_count) == (0, 0, 0)
 
 
 @override_settings(**_settings())
