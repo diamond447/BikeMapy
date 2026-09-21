@@ -2,6 +2,16 @@
   "status": "reviewed-primary-source-evidence",
   "source": "OpenStreetMap API v0.6 full relation response",
   "source_policy": "docs/osm-alterations.md",
+  "validation_sample": true,
+  "selection_date": "2026-09-20T21:36:47Z",
+  "selection_rationale": "Deterministically retained relation 7689870 as the reviewed primary-OSM executable validation sample after bounded candidate review; this sample is not production discovery evidence.",
+  "direct_tag_eligibility": {
+    "route": "bicycle",
+    "ref": "0123",
+    "network": "rcn",
+    "operator": "cz:KČT",
+    "within_czechia": true
+  },
   "endpoint": "https://www.openstreetmap.org/api/0.6/relation/7689870/full.json",
   "query": "GET /api/0.6/relation/7689870/full.json",
   "retrieved_at": "2026-09-20T21:36:47Z",

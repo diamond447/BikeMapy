@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from django.conf import settings
-from django.db.models import Prefetch, QuerySet
+from django.db.models import F, Prefetch, QuerySet
 from django.utils.module_loading import import_string
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -62,14 +62,34 @@ class ReferenceRoutePagination(CursorPagination):
 
 
 def reference_queryset() -> QuerySet[ReferenceRoute]:
+    offer_base = str(getattr(settings, "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL", "") or "").rstrip(
+        "/"
+    )
+    if not offer_base:
+        return ReferenceRoute.objects.none()
     active_stage_versions = ReferenceRouteVersion.objects.filter(
-        active=True, validation_status=ReferenceValidationStatus.VALID
+        active=True,
+        validation_status=ReferenceValidationStatus.VALID,
+        source_import__alteration_offer__published_at__isnull=False,
+        source_import__alteration_offer__offered_snapshot_hash=F(
+            "source_import__raw_response_sha256"
+        ),
+        source_import__alteration_offer__manifest_url__startswith=offer_base,
+        source_import__alteration_offer__artifact_url__startswith=offer_base,
+        source_import__alteration_offer__method_url__startswith=offer_base,
     )
     active_stages = ReferenceRoute.objects.filter(
         active=True,
         publication_status="approved",
         current_version__isnull=False,
         current_version__validation_status=ReferenceValidationStatus.VALID,
+        current_version__source_import__alteration_offer__published_at__isnull=False,
+        current_version__source_import__alteration_offer__offered_snapshot_hash=F(
+            "current_version__source_import__raw_response_sha256"
+        ),
+        current_version__source_import__alteration_offer__manifest_url__startswith=offer_base,
+        current_version__source_import__alteration_offer__artifact_url__startswith=offer_base,
+        current_version__source_import__alteration_offer__method_url__startswith=offer_base,
     ).prefetch_related(Prefetch("current_version", queryset=active_stage_versions))
     return (
         ReferenceRoute.objects.filter(

@@ -30,12 +30,19 @@ from apps.reference_routes.services import (
     blocked_via_czechia_import,
     import_osm_snapshot,
     link_stage,
+    record_alteration_offer,
     store_pending_snapshot,
     validate_osm_candidate,
 )
 from apps.reference_routes.tasks import refresh_reference_routes
 
 pytestmark = pytest.mark.django_db
+OFFER_BASE_URL = "https://github.com/diamond447/BikeMapy"
+
+
+@pytest.fixture(autouse=True)
+def configure_test_offer_base(settings: Any) -> None:
+    settings.REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = OFFER_BASE_URL
 
 
 def payload(*, changed: bool = False) -> dict[str, Any]:
@@ -92,6 +99,22 @@ def collection(*, slug: str = "osm-cz") -> ReferenceCollection:
     )
 
 
+def publish_offer(item: ReferenceCollection) -> None:
+    source_import = item.imports.order_by("-pk").first()
+    assert source_import is not None
+    record_alteration_offer(
+        source_import=source_import,
+        manifest_url=f"{OFFER_BASE_URL}/blob/main/manifests/{source_import.raw_response_sha256}.json",
+        artifact_url=f"{OFFER_BASE_URL}/blob/main/artifacts/{source_import.raw_response_sha256}.json",
+        method_url=f"{OFFER_BASE_URL}/blob/main/docs/osm-alterations.md",
+        published_at=timezone.now(),
+        offered_snapshot_hash=source_import.raw_response_sha256,
+        operator_evidence=(
+            "Reviewed and published the complete immutable snapshot, output, and method."
+        ),
+    )
+
+
 def test_import_is_idempotent_and_changed_geometry_schedules_recomputation() -> None:
     item = collection()
     first = import_osm_snapshot(collection=item, payload=payload())
@@ -102,6 +125,7 @@ def test_import_is_idempotent_and_changed_geometry_schedules_recomputation() -> 
     assert changed["created"] == 1
     route = ReferenceRoute.objects.get(collection=item)
     assert route.current_version is not None
+    publish_offer(item)
     approve_reference_route(route, reviewer="reviewer@example.invalid")
     assert route.versions.count() == 2
     assert ReferenceRecomputation.objects.filter(route_version=route.current_version).exists()
@@ -146,13 +170,103 @@ def test_source_gate_blocks_import_and_activation() -> None:
 @override_settings(REFERENCE_ROUTE_DERIVATIVE_OFFER_URL="")
 def test_missing_deployable_alteration_offer_blocks_import_and_activation() -> None:
     item = collection()
-    with pytest.raises(ValidationError):
-        item.full_clean()
+    import_osm_snapshot(collection=item, payload=payload())
+    version = ReferenceRouteVersion.objects.get(route__collection=item)
     route = ReferenceRoute(
-        collection=item, source_identifier="missing-offer", title="Missing offer", active=True
+        collection=item,
+        source_identifier="missing-offer",
+        title="Missing offer",
+        active=True,
+        current_version=version,
     )
     with pytest.raises(ValidationError, match="alteration offer"):
         route.save()
+
+
+def test_alteration_offer_is_immutable_hash_bound_and_required_per_version() -> None:
+    item = collection()
+    import_osm_snapshot(collection=item, payload=payload())
+    source_import = item.imports.get()
+    with pytest.raises(ValueError, match="hash"):
+        record_alteration_offer(
+            source_import=source_import,
+            manifest_url=f"{OFFER_BASE_URL}/manifest.json",
+            artifact_url=f"{OFFER_BASE_URL}/artifact.json",
+            method_url=f"{OFFER_BASE_URL}/method.md",
+            published_at=timezone.now(),
+            offered_snapshot_hash="0" * 64,
+            operator_evidence="evidence",
+        )
+    publish_offer(item)
+    offer = source_import.alteration_offer
+    with pytest.raises(ValidationError):
+        offer.operator_evidence = "changed"
+        offer.save()
+    route = ReferenceRoute.objects.get(collection=item)
+    approve_reference_route(route, reviewer="reviewer")
+    import_osm_snapshot(collection=item, payload=payload(changed=True))
+    route.refresh_from_db()
+    assert route.publication_status == "pending"
+    with pytest.raises(ValidationError, match="alteration offer"):
+        approve_reference_route(route, reviewer="reviewer")
+
+
+def test_validation_sample_requires_test_mode_and_cannot_activate(tmp_path: Any) -> None:
+    item = collection()
+    payload_path = tmp_path / "snapshot.json"
+    manifest_path = tmp_path / "snapshot.manifest.json"
+    payload_path.write_bytes(
+        Path("backend/apps/reference_routes/fixtures/osm-cz-representative.json").read_bytes()
+    )
+    manifest_path.write_bytes(
+        Path(
+            "backend/apps/reference_routes/fixtures/osm-cz-representative.manifest.json"
+        ).read_bytes()
+    )
+    with pytest.raises(CommandError, match="validation-test-mode"):
+        call_command(
+            "refresh_reference_routes",
+            "--collection",
+            item.slug,
+            "--payload-file",
+            payload_path,
+            "--manifest",
+            manifest_path,
+        )
+    call_command(
+        "refresh_reference_routes",
+        "--collection",
+        item.slug,
+        "--payload-file",
+        payload_path,
+        "--manifest",
+        manifest_path,
+        "--validation-test-mode",
+    )
+    source_import = item.imports.get()
+    assert source_import.response_metadata["validation_sample"] is True
+    publish_offer(item)
+    version = ReferenceRouteVersion.objects.get(source_import=source_import)
+    route = version.route
+    route.current_version = version
+    route.active = True
+    with pytest.raises(ValidationError):
+        route.save(update_fields=["current_version", "active", "updated_at"])
+
+
+def test_production_import_requires_non_circular_discovery_evidence() -> None:
+    item = collection()
+    data = payload()
+    with pytest.raises(ValueError, match="discovery evidence"):
+        import_osm_snapshot(
+            collection=item,
+            payload=data,
+            response_metadata={
+                "production_import": True,
+                "expected_relation_ids": [101],
+                "expected_relation_count": 1,
+            },
+        )
 
 
 def test_operator_and_human_review_are_required_before_activation() -> None:
@@ -168,6 +282,7 @@ def test_invalid_refresh_does_not_replace_published_route() -> None:
     item = collection()
     import_osm_snapshot(collection=item, payload=payload())
     route = ReferenceRoute.objects.get(collection=item)
+    publish_offer(item)
     approve_reference_route(route, reviewer="reviewer")
     current_id = route.current_version_id
     invalid = payload(changed=True)
@@ -276,6 +391,7 @@ def test_operator_command_and_celery_task_use_bounded_stored_snapshot(tmp_path: 
         path,
         "--manifest",
         manifest_path,
+        "--validation-test-mode",
     )
     source_import = item.imports.get()
     assert source_import.status == "valid"
@@ -322,6 +438,7 @@ def test_manifest_fails_closed_for_http_error_and_missing_evidence(tmp_path: Any
             payload_path,
             "--manifest",
             manifest_path,
+            "--validation-test-mode",
         )
     manifest.pop("source_timestamp")
     manifest["http_status"] = 200
@@ -335,6 +452,7 @@ def test_manifest_fails_closed_for_http_error_and_missing_evidence(tmp_path: Any
             payload_path,
             "--manifest",
             manifest_path,
+            "--validation-test-mode",
         )
     assert not item.imports.exists()
 
@@ -724,6 +842,7 @@ def test_postgis_geometry_is_linestring_with_srid() -> None:
 def test_reference_endpoints_require_game_session_claim() -> None:
     item = collection()
     import_osm_snapshot(collection=item, payload=payload())
+    publish_offer(item)
     approve_reference_route(ReferenceRoute.objects.get(collection=item), reviewer="reviewer")
     client = Client()
     assert client.get("/api/v1/game/reference-routes/").status_code == 403
@@ -757,6 +876,7 @@ def test_reference_api_paginates_and_filters_active_stages() -> None:
     item = collection()
     import_osm_snapshot(collection=item, payload=payload())
     parent = ReferenceRoute.objects.get(collection=item)
+    publish_offer(item)
     approve_reference_route(parent, reviewer="reviewer")
     for route_number in ("2", "3"):
         extra = payload()
@@ -767,6 +887,7 @@ def test_reference_api_paginates_and_filters_active_stages() -> None:
         relation["members"][0]["ref"] = 500 + int(route_number)
         way["id"] = 500 + int(route_number)
         import_osm_snapshot(collection=item, payload=extra)
+        publish_offer(item)
         approve_reference_route(
             ReferenceRoute.objects.get(route_number=route_number), reviewer="reviewer"
         )

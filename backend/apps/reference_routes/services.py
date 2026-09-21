@@ -14,12 +14,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
 from apps.catalogue.fields import _GIS_AVAILABLE
 
 from .models import (
+    ReferenceAlterationOffer,
     ReferenceCollection,
     ReferenceImport,
     ReferenceImportStatus,
@@ -240,6 +242,48 @@ def _validate_source_evidence(
         selected_ids = sorted(int(relation["id"]) for relation in selected)
         if sorted(expected_ids) != selected_ids or expected_count != len(selected):
             raise ValueError("Manifest selected relation IDs/count do not match the payload")
+    validation_sample = metadata.get("validation_sample", False)
+    if not isinstance(validation_sample, bool):
+        raise ValueError("Manifest validation_sample must be boolean")
+    if validation_sample and metadata.get("validation_test_mode") is not True:
+        raise ValueError("Validation-only source evidence requires explicit test mode")
+    if metadata.get("production_import") is True:
+        if validation_sample:
+            raise ValueError("Validation-only source evidence cannot be imported as production")
+        discovery_fields = (
+            "discovery_mechanism",
+            "discovery_query_or_extract_id",
+            "discovery_executed_at",
+            "discovery_result_sha256",
+            "discovery_artifact_url",
+            "discovery_selected_relation_ids",
+        )
+        if any(not metadata.get(field) for field in discovery_fields):
+            raise ValueError("Production import requires complete discovery evidence")
+        if metadata["discovery_mechanism"] not in {"overpass", "regional_extract"}:
+            raise ValueError("Production discovery mechanism is unsupported")
+        _parse_utc_timestamp(metadata["discovery_executed_at"], field="discovery_executed_at")
+        if (
+            not isinstance(metadata["discovery_result_sha256"], str)
+            or len(metadata["discovery_result_sha256"]) != 64
+            or any(char not in "0123456789abcdef" for char in metadata["discovery_result_sha256"])
+        ):
+            raise ValueError("Production discovery result hash is invalid")
+        discovered_ids = metadata["discovery_selected_relation_ids"]
+        if (
+            not isinstance(discovered_ids, list)
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) for value in discovered_ids
+            )
+            or expected_ids is None
+            or not set(expected_ids) <= set(discovered_ids)
+        ):
+            raise ValueError("Production selected IDs are absent from discovery evidence")
+        if (
+            not isinstance(metadata["discovery_artifact_url"], str)
+            or not urlsplit(metadata["discovery_artifact_url"]).scheme
+        ):
+            raise ValueError("Production discovery artifact URL is invalid")
     count_fields = ("expected_way_count", "expected_node_count")
     present_counts = [field in metadata for field in count_fields]
     if any(present_counts):
@@ -990,6 +1034,43 @@ def approve_reference_route(route: ReferenceRoute, *, reviewer: str) -> Referenc
     route.current_version.active = True
     route.current_version.save(update_fields=["active"])
     return route
+
+
+def record_alteration_offer(
+    *,
+    source_import: ReferenceImport,
+    manifest_url: str,
+    artifact_url: str,
+    method_url: str,
+    published_at: datetime,
+    offered_snapshot_hash: str,
+    operator_evidence: str,
+) -> ReferenceAlterationOffer:
+    """Record immutable public evidence for one exact imported snapshot."""
+    allowed_base = str(getattr(settings, "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL", "") or "")
+    if not allowed_base:
+        raise ValueError("A deployable alteration-offer base URL is not configured")
+    if source_import.status != ReferenceImportStatus.VALID:
+        raise ValueError("Only a valid source import can receive an alteration offer")
+    if offered_snapshot_hash != source_import.raw_response_sha256:
+        raise ValueError("Alteration offer hash does not match the immutable source snapshot")
+    if not timezone.is_aware(published_at) or published_at.utcoffset() != timedelta(0):
+        raise ValueError("Alteration offer publication time must be timezone-aware UTC")
+    if not operator_evidence.strip():
+        raise ValueError("Operator evidence is required for an alteration offer")
+    offer = ReferenceAlterationOffer(
+        source_import=source_import,
+        manifest_url=manifest_url,
+        artifact_url=artifact_url,
+        method_url=method_url,
+        published_at=published_at,
+        offered_snapshot_hash=offered_snapshot_hash,
+        operator_evidence=operator_evidence,
+    )
+    if not offer.is_complete_for(source_import, allowed_base):
+        raise ValueError("Alteration offer URLs must be under the configured deployable base")
+    offer.save(force_insert=True)
+    return offer
 
 
 def link_stage(*, stage: ReferenceRoute, parent: ReferenceRoute) -> ReferenceRoute:

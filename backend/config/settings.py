@@ -66,7 +66,7 @@ REFERENCE_ROUTE_AUTHORIZER = os.getenv(
 )
 REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = os.getenv(
     "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL",
-    "https://github.com/diamond447/BikeMapy/blob/main/docs/osm-alterations.md",
+    "",
 )
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")

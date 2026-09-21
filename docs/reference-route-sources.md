@@ -106,6 +106,17 @@ approved bounded Overpass snapshot. If the candidate set outgrows the stated
 limits, use a dated Czech regional extract with its provider and licence
 recorded; do not expand API requests or use per-element scraping.
 
+The checked-in relation `7689870` is explicitly a manually reviewed primary
+OSM validation sample. Its manifest records the selection date, deterministic
+rationale, direct `route`/`ref`/`network`/`operator` tags, and Czechia bounds
+eligibility. It is permitted only for executable importer and geometry-fixture
+tests, and its validation-only manifest cannot activate or publish a route.
+Production imports require a separate retained discovery record: the Overpass
+query or regional-extract identifier, execution time, result hash and artifact
+URL, with the imported relation IDs present in that discovery result. The
+sample must never be presented as evidence that Overpass discovered a national
+catalogue or as a substitute for production candidate selection.
+
 ### Deterministic international-route exclusion
 
 Before applying the allow predicate, normalize each `network`, `ref`, `name`,

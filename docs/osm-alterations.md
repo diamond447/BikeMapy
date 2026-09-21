@@ -34,11 +34,17 @@ manifest and the complete method/output needed to reproduce that published
 derivative; a representative fixture alone is not a production offer.
 
 Activation and publication are fail-closed unless
-`REFERENCE_ROUTE_DERIVATIVE_OFFER_URL` is configured and matches the tracked
-complete offer document. Removing or pointing that configuration at an
-incomplete offer blocks source validation and route/version activation. A
-deployment must therefore publish the current immutable snapshot/manifests
-and alteration output at the configured location before enabling the game.
+`REFERENCE_ROUTE_DERIVATIVE_OFFER_URL` is configured to a non-empty allowed
+publication base. The default is empty, so a deployment with no explicit
+offer location cannot activate or publish routes. For each valid import, an
+operator must export the immutable raw snapshot and manifest, publish the
+normalized output and complete alteration method, then run the
+`record_alteration_offer` service with the manifest URL, output/artifact URL,
+method URL, UTC publication time, exact raw snapshot SHA-256, and operator
+evidence. The resulting immutable offer record is tied to that import hash;
+stale, incomplete, or mismatched records do not satisfy activation or API
+visibility. A new source version requires a new publication record before it
+can be approved.
 
 The source notice is © OpenStreetMap contributors. OpenStreetMap data is
 available under the Open Database License (ODbL) 1.0:

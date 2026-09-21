@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
+from typing import Any
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -29,9 +31,44 @@ def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
     )
 
 
-def has_deployable_derivative_offer(collection: ReferenceCollection) -> bool:
+def _url_matches_offer_base(value: str, base: str) -> bool:
+    parsed = urlsplit(value)
+    configured = urlsplit(base)
+    return (
+        bool(parsed.scheme and parsed.netloc and configured.scheme and configured.netloc)
+        and parsed.scheme == configured.scheme
+        and parsed.netloc == configured.netloc
+        and parsed.path.startswith(configured.path.rstrip("/") + "/")
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def has_deployable_derivative_offer(
+    collection: ReferenceCollection, source_import: Any | None = None
+) -> bool:
     configured = str(getattr(settings, "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL", "") or "")
-    return bool(configured) and collection.derivative_offer_url == configured
+    if not configured or not _url_matches_offer_base(collection.derivative_offer_url, configured):
+        return False
+    if source_import is None:
+        return True
+    metadata = source_import.response_metadata or {}
+    if metadata.get("validation_sample") is True:
+        return False
+    if metadata.get("production_import") is True and not all(
+        metadata.get(field)
+        for field in (
+            "discovery_mechanism",
+            "discovery_query_or_extract_id",
+            "discovery_executed_at",
+            "discovery_result_sha256",
+            "discovery_artifact_url",
+            "discovery_selected_relation_ids",
+        )
+    ):
+        return False
+    offer = getattr(source_import, "alteration_offer", None)
+    return bool(offer and offer.is_complete_for(source_import, configured))
 
 
 class ReferenceSourceKind(models.TextChoices):
@@ -140,10 +177,6 @@ class ReferenceCollection(models.Model):
                 raise ValidationError(
                     {"derivative_offer_url": "Use the tracked OSM alteration offer document."}
                 )
-            if not has_deployable_derivative_offer(self):
-                raise ValidationError(
-                    {"derivative_offer_url": "A deployable complete alteration offer is required."}
-                )
             if not _is_exact_https_url(
                 self.contact_url, hostname="www.openstreetmap.org", path="/fixthemap"
             ):
@@ -216,6 +249,54 @@ class ReferenceImport(models.Model):
 
     def delete(self, *args: object, **kwargs: object) -> tuple[int, dict[str, int]]:
         raise ProtectedError("Source snapshots cannot be deleted.", {self})
+
+
+class ImmutableReferenceAlterationOfferQuerySet(models.QuerySet["ReferenceAlterationOffer"]):
+    def update(self, **kwargs: object) -> int:
+        raise ValidationError("Published alteration offers are immutable.")
+
+    def delete(self) -> tuple[int, dict[str, int]]:
+        raise ProtectedError("Published alteration offers cannot be deleted.", set(self))
+
+
+class ReferenceAlterationOffer(models.Model):
+    """Immutable public evidence for reconstructing one exact source snapshot."""
+
+    source_import = models.OneToOneField(
+        ReferenceImport, on_delete=models.PROTECT, related_name="alteration_offer"
+    )
+    manifest_url = models.URLField(max_length=1000)
+    artifact_url = models.URLField(max_length=1000)
+    method_url = models.URLField(max_length=1000)
+    published_at = models.DateTimeField()
+    offered_snapshot_hash = models.CharField(max_length=64)
+    operator_evidence = models.TextField()
+    created_at = models.DateTimeField(default=timezone.now)
+    objects = ImmutableReferenceAlterationOfferQuerySet.as_manager()
+
+    def __str__(self) -> str:
+        return f"alteration-offer:{self.source_import_id}"
+
+    def is_complete_for(self, source_import: ReferenceImport, allowed_base: str) -> bool:
+        return (
+            self.source_import_id == source_import.pk
+            and self.offered_snapshot_hash == source_import.raw_response_sha256
+            and all(
+                _url_matches_offer_base(value, allowed_base)
+                for value in (self.manifest_url, self.artifact_url, self.method_url)
+            )
+            and timezone.is_aware(self.published_at)
+            and self.published_at.utcoffset() == timedelta(0)
+            and bool(self.operator_evidence.strip())
+        )
+
+    def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
+        if self.pk:
+            raise ValidationError("Published alteration offers are immutable.")
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def delete(self, *args: object, **kwargs: object) -> tuple[int, dict[str, int]]:
+        raise ProtectedError("Published alteration offers cannot be deleted.", {self})
 
 
 class ProtectedReferenceRouteQuerySet(models.QuerySet["ReferenceRoute"]):
@@ -291,10 +372,15 @@ class ReferenceRoute(models.Model):
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
         if self.active or self.publication_status == ReferencePublicationStatus.APPROVED:
             collection = ReferenceCollection.objects.get(pk=self.collection_id)
+            source_import = None
+            if self.current_version_id:
+                current_version = self.current_version
+                if current_version is not None:
+                    source_import = current_version.source_import
             if (
                 collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
                 or not collection.permission_granted
-                or not has_deployable_derivative_offer(collection)
+                or not has_deployable_derivative_offer(collection, source_import)
             ):
                 raise ValidationError(
                     "A blocked reference source or incomplete alteration offer "
@@ -359,7 +445,7 @@ class ReferenceRouteVersion(models.Model):
             if (
                 collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
                 or not collection.permission_granted
-                or not has_deployable_derivative_offer(collection)
+                or not has_deployable_derivative_offer(collection, self.source_import)
             ):
                 raise ValidationError(
                     "A blocked reference source or incomplete alteration offer "

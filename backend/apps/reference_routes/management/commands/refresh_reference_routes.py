@@ -22,6 +22,7 @@ class Command(BaseCommand):
         parser.add_argument("--collection", required=True)
         parser.add_argument("--payload-file", type=Path)
         parser.add_argument("--manifest", type=Path)
+        parser.add_argument("--validation-test-mode", action="store_true")
 
     def handle(self, *args: Any, **options: Any) -> None:
         try:
@@ -55,6 +56,7 @@ class Command(BaseCommand):
             "http_headers",
             "http_header_absence",
             "sha256",
+            "validation_sample",
             "selected_relation_ids",
             "expected_relation_count",
             "expected_way_count",
@@ -66,6 +68,55 @@ class Command(BaseCommand):
         missing = sorted(required - set(manifest))
         if missing:
             raise CommandError(f"OSM manifest is missing required fields: {', '.join(missing)}")
+        validation_sample = manifest["validation_sample"]
+        if not isinstance(validation_sample, bool):
+            raise CommandError("OSM manifest validation_sample must be boolean")
+        validation_test_mode = bool(options.get("validation_test_mode"))
+        if validation_sample and not validation_test_mode:
+            raise CommandError("Validation-only manifests require --validation-test-mode")
+        if validation_test_mode and not validation_sample:
+            raise CommandError("--validation-test-mode requires a validation-only manifest")
+        if validation_sample:
+            sample_required = {"selection_rationale", "selection_date", "direct_tag_eligibility"}
+            sample_missing = sorted(sample_required - set(manifest))
+            if sample_missing:
+                raise CommandError(
+                    "Validation manifest is missing selection evidence: "
+                    + ", ".join(sample_missing)
+                )
+            if (
+                not isinstance(manifest["selection_rationale"], str)
+                or not manifest["selection_rationale"].strip()
+            ):
+                raise CommandError("Validation selection rationale is required")
+            try:
+                _parse_utc_timestamp(manifest["selection_date"], field="selection_date")
+            except ValueError as exc:
+                raise CommandError(str(exc)) from exc
+            eligibility = manifest["direct_tag_eligibility"]
+            if (
+                not isinstance(eligibility, dict)
+                or not all(
+                    eligibility.get(field) for field in ("route", "ref", "network", "operator")
+                )
+                or eligibility.get("within_czechia") is not True
+            ):
+                raise CommandError("Direct validation tag/Czechia eligibility evidence is invalid")
+        else:
+            discovery_required = {
+                "discovery_mechanism",
+                "discovery_query_or_extract_id",
+                "discovery_executed_at",
+                "discovery_result_sha256",
+                "discovery_artifact_url",
+                "discovery_selected_relation_ids",
+            }
+            discovery_missing = sorted(discovery_required - set(manifest))
+            if discovery_missing:
+                raise CommandError(
+                    "Production manifest is missing discovery evidence: "
+                    + ", ".join(discovery_missing)
+                )
         ids = manifest["selected_relation_ids"]
         headers = manifest["http_headers"]
         if (
@@ -124,6 +175,17 @@ class Command(BaseCommand):
                     "http_header_absence": manifest["http_header_absence"],
                     "raw_sha256": manifest["sha256"],
                     "source_timestamp": manifest["source_timestamp"],
+                    "validation_sample": validation_sample,
+                    "validation_test_mode": validation_test_mode,
+                    "production_import": not validation_sample,
+                    "discovery_mechanism": manifest.get("discovery_mechanism"),
+                    "discovery_query_or_extract_id": manifest.get("discovery_query_or_extract_id"),
+                    "discovery_executed_at": manifest.get("discovery_executed_at"),
+                    "discovery_result_sha256": manifest.get("discovery_result_sha256"),
+                    "discovery_artifact_url": manifest.get("discovery_artifact_url"),
+                    "discovery_selected_relation_ids": manifest.get(
+                        "discovery_selected_relation_ids"
+                    ),
                 },
             )
         except ValueError as exc:
