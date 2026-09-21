@@ -1,0 +1,727 @@
+"""Privacy-aware Strava activity synchronization and webhook services."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import math
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
+
+import httpx
+from django.conf import settings
+from django.db import IntegrityError, connection, transaction
+from django.utils import timezone
+
+from .models import (
+    Competition,
+    ImportedActivity,
+    Player,
+    PlayerCredential,
+    StravaSyncJob,
+    StravaSyncState,
+    StravaWebhookEvent,
+)
+
+STRAVA_API_URL = "https://www.strava.com/api/v3"
+ELIGIBLE_ACTIVITY_TYPES = frozenset({"Ride", "MountainBikeRide", "GravelRide", "EBikeRide"})
+SYNC_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
+
+
+class StravaActivityError(RuntimeError):
+    """Safe provider error with retry metadata and no credential content."""
+
+    def __init__(self, message: str, *, retryable: bool = True, retry_after: int | None = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def _iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _decode_polyline(encoded: str) -> list[list[float]]:
+    """Decode Strava's encoded polyline without filling omitted privacy points."""
+
+    coordinates: list[list[float]] = []
+    index = lat = lon = 0
+    while index < len(encoded):
+        result = shift = 0
+        while index < len(encoded):
+            byte = ord(encoded[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        else:
+            break
+        lat += ~(result >> 1) if result & 1 else result >> 1
+        result = shift = 0
+        while index < len(encoded):
+            byte = ord(encoded[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        else:
+            break
+        lon += ~(result >> 1) if result & 1 else result >> 1
+        coordinates.append([lon / 1e5, lat / 1e5])
+    return coordinates
+
+
+def _activity_geometry(payload: dict[str, Any]) -> dict[str, Any] | None:
+    map_data = payload.get("map")
+    if not isinstance(map_data, dict):
+        return None
+    encoded = map_data.get("polyline") or map_data.get("summary_polyline")
+    if not isinstance(encoded, str) or not encoded:
+        return None
+    coordinates = _decode_polyline(encoded)
+    if len(coordinates) < 2 or any(
+        not math.isfinite(point[0])
+        or not math.isfinite(point[1])
+        or not -180 <= point[0] <= 180
+        or not -90 <= point[1] <= 90
+        for point in coordinates
+    ):
+        return None
+    if all(point == coordinates[0] for point in coordinates[1:]):
+        return None
+    return {"type": "LineString", "coordinates": coordinates}
+
+
+def _geometry_for_database(value: dict[str, Any]) -> Any:
+    if connection.vendor != "postgresql":
+        return value
+    from django.contrib.gis.geos import GEOSGeometry
+
+    return GEOSGeometry(json.dumps(value), srid=4326)
+
+
+def geometry_payload(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "geojson"):
+        try:
+            parsed = json.loads(str(value.geojson))
+            return parsed if isinstance(parsed, dict) else None
+        except ValueError:
+            return None
+    return None
+
+
+def activity_is_eligible(payload: dict[str, Any]) -> bool:
+    activity_type = str(payload.get("sport_type") or payload.get("type") or "")
+    if activity_type not in ELIGIBLE_ACTIVITY_TYPES:
+        return False
+    if bool(payload.get("virtual") or payload.get("trainer")):
+        return False
+    visibility = str(payload.get("visibility") or "").strip().lower()
+    if bool(payload.get("private")) or visibility in {"only_you", "only_me", "private"}:
+        return False
+    return _activity_geometry(payload) is not None
+
+
+def _activity_id(payload: dict[str, Any]) -> str | None:
+    value = payload.get("id")
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return str(parsed) if parsed > 0 else None
+
+
+def _provider_updated(payload: dict[str, Any]) -> datetime | None:
+    return _iso_datetime(payload.get("updated_at")) or _iso_datetime(payload.get("start_date"))
+
+
+def _calendar_date(payload: dict[str, Any], started_at: datetime) -> date:
+    local_start = _iso_datetime(payload.get("start_date_local"))
+    return (local_start or timezone.localtime(started_at)).date()
+
+
+def _event_datetime(payload: dict[str, Any]) -> datetime | None:
+    value = payload.get("event_time")
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(int(value), tz=UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _schedule_player_recomputations(player_id: int) -> None:
+    from .competition_services import schedule_recomputation
+
+    competitions = (
+        Competition.objects.select_for_update()
+        .filter(memberships__player_id=player_id)
+        .distinct()
+        .order_by("pk")
+    )
+    for competition in competitions:
+        schedule_recomputation(competition)
+
+
+def remove_activity(player: Player, provider_activity_id: str, *, reason: str) -> bool:
+    with transaction.atomic():
+        activity = (
+            ImportedActivity.objects.select_for_update()
+            .filter(player=player, provider_activity_id=str(provider_activity_id))
+            .first()
+        )
+        if activity is None:
+            return False
+        activity.delete()
+        _schedule_player_recomputations(player.pk)
+    return True
+
+
+def import_activity(player: Player, payload: dict[str, Any]) -> str:
+    """Create/update one eligible activity, or remove it after a privacy downgrade."""
+
+    provider_id = _activity_id(payload)
+    if provider_id is None:
+        return "ignored"
+    if not activity_is_eligible(payload):
+        remove_activity(player, provider_id, reason="ineligible")
+        return "removed"
+    geometry = _activity_geometry(payload)
+    started_at = _iso_datetime(payload.get("start_date"))
+    if geometry is None or started_at is None:
+        remove_activity(player, provider_id, reason="missing_geometry")
+        return "removed"
+    geometry_hash = hashlib.sha256(
+        json.dumps(geometry, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    provider_updated_at = _provider_updated(payload)
+    defaults = {
+        "title": "",  # Strava titles are intentionally never retained or exposed.
+        "started_at": started_at,
+        "calendar_date": _calendar_date(payload, started_at),
+        "activity_type": str(payload.get("sport_type") or payload.get("type") or "")[:48],
+        "visibility": str(payload.get("visibility") or "")[:32],
+        "geometry": _geometry_for_database(geometry),
+        "geometry_hash": geometry_hash,
+        "provider_updated_at": provider_updated_at,
+        "removed_at": None,
+        "removal_reason": "",
+        "payload": {},
+    }
+    with transaction.atomic():
+        activity = (
+            ImportedActivity.objects.select_for_update()
+            .filter(player=player, provider_activity_id=provider_id)
+            .first()
+        )
+        if (
+            activity is not None
+            and activity.provider_updated_at
+            and (
+                defaults["provider_updated_at"] is not None
+                and activity.provider_updated_at > defaults["provider_updated_at"]
+            )
+        ):
+            return "stale"
+        is_new = activity is None
+        if activity is None:
+            try:
+                # The unique constraint is the final serialization boundary:
+                # two webhook deliveries can race before either sees a row.
+                activity = ImportedActivity.objects.create(
+                    player=player, provider_activity_id=provider_id, **defaults
+                )
+            except IntegrityError:
+                activity = (
+                    ImportedActivity.objects.select_for_update()
+                    .get(player=player, provider_activity_id=provider_id)
+                )
+                is_new = False
+        if not is_new:
+            if provider_updated_at is None and activity.provider_updated_at is not None:
+                defaults["provider_updated_at"] = activity.provider_updated_at
+            changed = (
+                activity.geometry_hash != geometry_hash
+                or activity.calendar_date != defaults["calendar_date"]
+            )
+            for field, value in defaults.items():
+                setattr(activity, field, value)
+            activity.save(update_fields=tuple(defaults) + ("updated_at",))
+        if is_new or changed:
+            _schedule_player_recomputations(player.pk)
+    return "imported" if is_new else "updated"
+
+
+def _credential(player_id: int) -> str:
+    try:
+        credential = PlayerCredential.objects.get(player_id=player_id)
+    except PlayerCredential.DoesNotExist as exc:
+        raise StravaActivityError("Strava credentials are unavailable.", retryable=False) from exc
+    if not credential.access_token:
+        raise StravaActivityError("Strava credentials are unavailable.", retryable=False)
+    return str(credential.access_token)
+
+
+def _strava_get(
+    player_id: int,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    _retried_after_refresh: bool = False,
+) -> Any:
+    try:
+        response = httpx.get(
+            f"{STRAVA_API_URL}{path}",
+            headers={"Authorization": f"Bearer {_credential(player_id)}"},
+            params=params or {},
+            timeout=float(getattr(settings, "STRAVA_API_TIMEOUT", 10)),
+        )
+    except httpx.HTTPError as exc:
+        raise StravaActivityError("Strava is temporarily unavailable.") from exc
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After")
+        try:
+            delay = max(1, int(retry_after or "60"))
+        except ValueError:
+            delay = 60
+        raise StravaActivityError("Strava rate limit reached.", retry_after=delay)
+    if response.status_code in {401, 403}:
+        if not _retried_after_refresh:
+            from .services import refresh_connection
+
+            player = Player.objects.get(pk=player_id)
+            if refresh_connection(player) == "success":
+                return _strava_get(
+                    player_id,
+                    path,
+                    params=params,
+                    _retried_after_refresh=True,
+                )
+        raise StravaActivityError("Strava authorization is no longer valid.", retryable=False)
+    try:
+        response.raise_for_status()
+        value = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise StravaActivityError("Strava returned an invalid response.") from exc
+    if not isinstance(value, (dict, list)):
+        raise StravaActivityError("Strava returned an invalid response.")
+    return value
+
+
+def fetch_activity(player_id: int, provider_activity_id: str) -> dict[str, Any]:
+    value = _strava_get(player_id, f"/activities/{provider_activity_id}")
+    if not isinstance(value, dict):
+        raise StravaActivityError("Strava returned an invalid activity.")
+    return value
+
+
+def fetch_activity_page(
+    player_id: int, *, page: int, after: datetime | None = None
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {
+        "page": page,
+        "per_page": min(100, max(1, int(getattr(settings, "STRAVA_SYNC_PAGE_SIZE", 100)))),
+    }
+    if after is not None:
+        params["after"] = int(after.timestamp())
+    value = _strava_get(player_id, "/athlete/activities", params=params)
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def queue_sync(player: Player, *, kind: str, full_history: bool = False) -> StravaSyncJob:
+    now = timezone.now()
+    history_start = None if full_history else now - timedelta(days=365)
+    with transaction.atomic():
+        state, _ = StravaSyncState.objects.select_for_update().get_or_create(
+            player=player,
+            defaults={"history_start": history_start},
+        )
+        suffix = "full" if full_history else str((history_start or now).date())
+        key = f"{player.pk}:{kind}:{suffix}"
+        job, _ = StravaSyncJob.objects.select_for_update().get_or_create(
+            idempotency_key=key,
+            defaults={"player": player, "kind": kind, "next_attempt_at": now},
+        )
+        # Do not reset a live worker when a duplicate OAuth callback or an
+        # impatient settings click queues the same mode again. The worker
+        # owns the cursor until its lease expires.
+        if job.status == StravaSyncJob.Status.RUNNING and (
+            job.lease_until is None or job.lease_until > now
+        ):
+            return job
+        state.status = StravaSyncState.Status.QUEUED
+        state.mode = kind
+        state.history_start = history_start
+        state.cursor_page = 1
+        state.imported_count = 0
+        state.rejected_count = 0
+        state.processed_count = 0
+        state.attempts = 0
+        state.last_provider_updated_at = None
+        state.last_error = ""
+        state.next_attempt_at = now
+        state.started_at = None
+        state.completed_at = None
+        state.save(
+            update_fields=(
+                "status",
+                "mode",
+                "history_start",
+                "cursor_page",
+                "imported_count",
+                "rejected_count",
+                "processed_count",
+                "attempts",
+                "last_provider_updated_at",
+                "last_error",
+                "next_attempt_at",
+                "started_at",
+                "completed_at",
+                "updated_at",
+            )
+        )
+        job.status = StravaSyncJob.Status.PENDING
+        job.page = 1
+        job.next_attempt_at = now
+        job.last_error = ""
+        job.dispatch_token = ""
+        job.dispatch_lease_until = None
+        job.save(
+            update_fields=(
+                "status",
+                "page",
+                "next_attempt_at",
+                "last_error",
+                "dispatch_token",
+                "dispatch_lease_until",
+                "updated_at",
+            )
+        )
+    return job
+
+
+def pause_sync(player: Player) -> None:
+    StravaSyncState.objects.filter(player=player).update(
+        status=StravaSyncState.Status.PAUSED,
+        updated_at=timezone.now(),
+    )
+    StravaSyncJob.objects.filter(
+        player=player,
+        status__in=(
+            StravaSyncJob.Status.PENDING,
+            StravaSyncJob.Status.FAILED,
+        ),
+    ).update(
+        status=StravaSyncJob.Status.COMPLETED,
+        dispatch_token="",
+        dispatch_lease_until=None,
+        updated_at=timezone.now(),
+    )
+
+
+def queue_webhook_event(payload: dict[str, Any], event_key: str) -> StravaWebhookEvent:
+    object_id = int(payload.get("object_id") or 0)
+    owner_id = int(payload.get("owner_id") or 0)
+    with transaction.atomic():
+        event, created = StravaWebhookEvent.objects.get_or_create(
+            event_key=event_key,
+            defaults={
+                "subscription_id": payload.get("subscription_id"),
+                "object_id": object_id,
+                "owner_athlete_id": owner_id,
+                "aspect_type": str(payload.get("aspect_type") or "")[:24],
+                "object_type": str(payload.get("object_type") or "activity")[:24],
+                "payload": payload,
+            },
+        )
+        if created:
+            player = Player.objects.filter(
+                strava_athlete_id=owner_id, lifecycle=Player.Lifecycle.CONNECTED
+            ).first()
+            if player is not None:
+                StravaSyncJob.objects.create(
+                    player=player,
+                    kind=StravaSyncJob.Kind.WEBHOOK,
+                    webhook_event=event,
+                    idempotency_key=f"webhook:{event_key}",
+                )
+    return event
+
+
+def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
+    secret = str(getattr(settings, "STRAVA_OAUTH_CLIENT_SECRET", ""))
+    if not secret or not signature:
+        return False
+    signature = signature.strip()
+    expected_values = [hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()]
+    parts = signature.split(".")
+    if len(parts) == 3:
+        event_id, timestamp, digest = parts
+        expected_values.append(
+            hmac.new(
+                secret.encode(),
+                f"{event_id}.{timestamp}.".encode() + raw_body,
+                hashlib.sha256,
+            ).hexdigest()
+        )
+    else:
+        digest = signature
+    return any(hmac.compare_digest(digest, expected) for expected in expected_values)
+
+
+def webhook_event_key(payload: dict[str, Any], raw_body: bytes) -> str:
+    del raw_body
+    stable = "|".join(
+        str(payload.get(key) or "")
+        for key in ("subscription_id", "object_id", "owner_id", "aspect_type", "event_time")
+    )
+    return hashlib.sha256(stable.encode()).hexdigest()
+
+
+def _finish_job(job: StravaSyncJob, *, state: StravaSyncState | None, more: bool = False) -> str:
+    now = timezone.now()
+    job.status = StravaSyncJob.Status.PENDING if more else StravaSyncJob.Status.COMPLETED
+    job.lease_token = ""
+    job.lease_until = None
+    job.dispatch_token = ""
+    job.dispatch_lease_until = None
+    job.last_error = ""
+    job.save(
+        update_fields=(
+            "status",
+            "lease_token",
+            "lease_until",
+            "dispatch_token",
+            "dispatch_lease_until",
+            "last_error",
+            "updated_at",
+        )
+    )
+    if state is not None:
+        state.status = StravaSyncState.Status.QUEUED if more else StravaSyncState.Status.IDLE
+        state.next_attempt_at = now
+        state.completed_at = None if more else now
+        state.lease_token = ""
+        state.lease_until = None
+        state.save(
+            update_fields=(
+                "status",
+                "next_attempt_at",
+                "completed_at",
+                "lease_token",
+                "lease_until",
+                "updated_at",
+            )
+        )
+    return "more" if more else "completed"
+
+
+def _pause_job(job: StravaSyncJob, state: StravaSyncState | None) -> str:
+    job.status = StravaSyncJob.Status.COMPLETED
+    job.lease_token = ""
+    job.lease_until = None
+    job.dispatch_token = ""
+    job.dispatch_lease_until = None
+    job.save(
+        update_fields=(
+            "status",
+            "lease_token",
+            "lease_until",
+            "dispatch_token",
+            "dispatch_lease_until",
+            "updated_at",
+        )
+    )
+    if state is not None:
+        state.status = StravaSyncState.Status.PAUSED
+        state.lease_token = ""
+        state.lease_until = None
+        state.save(update_fields=("status", "lease_token", "lease_until", "updated_at"))
+    return "paused"
+
+
+def _fail_job(
+    job: StravaSyncJob,
+    state: StravaSyncState | None,
+    error: StravaActivityError,
+) -> str:
+    retry_index = min(max(job.attempts - 1, 0), len(SYNC_RETRY_SECONDS) - 1)
+    delay = error.retry_after or SYNC_RETRY_SECONDS[retry_index]
+    job.status = StravaSyncJob.Status.FAILED
+    job.last_error = str(error)[:240]
+    job.next_attempt_at = timezone.now() + timedelta(seconds=delay)
+    job.lease_token = ""
+    job.lease_until = None
+    job.dispatch_token = ""
+    job.dispatch_lease_until = None
+    job.save(
+        update_fields=(
+            "status",
+            "last_error",
+            "next_attempt_at",
+            "lease_token",
+            "lease_until",
+            "dispatch_token",
+            "dispatch_lease_until",
+            "updated_at",
+        )
+    )
+    if state is not None:
+        state.status = StravaSyncState.Status.FAILED
+        state.last_error = str(error)[:240]
+        state.next_attempt_at = job.next_attempt_at
+        state.lease_token = ""
+        state.lease_until = None
+        state.save(
+            update_fields=(
+                "status",
+                "last_error",
+                "next_attempt_at",
+                "lease_token",
+                "lease_until",
+                "updated_at",
+            )
+        )
+    return "failed"
+
+
+def process_sync_job(job_id: int) -> str:
+    """Process a bounded page under a durable lease; safe for duplicate delivery."""
+
+    now = timezone.now()
+    lease_token = hashlib.sha256(f"{job_id}:{now.timestamp()}".encode()).hexdigest()
+    with transaction.atomic():
+        job = StravaSyncJob.objects.select_for_update().select_related("player").get(pk=job_id)
+        if job.status == StravaSyncJob.Status.COMPLETED:
+            return "completed"
+        if job.status == StravaSyncJob.Status.RUNNING and job.lease_until and job.lease_until > now:
+            return "in_progress"
+        if job.next_attempt_at > now:
+            return "retry_scheduled"
+        state = StravaSyncState.objects.select_for_update().filter(player_id=job.player_id).first()
+        if job.player.lifecycle != Player.Lifecycle.CONNECTED:
+            return _pause_job(job, state)
+        job.status = StravaSyncJob.Status.RUNNING
+        job.attempts += 1
+        job.lease_token = lease_token
+        job.lease_until = now + timedelta(
+            seconds=getattr(settings, "STRAVA_SYNC_LEASE_SECONDS", 600)
+        )
+        job.dispatch_token = ""
+        job.dispatch_lease_until = None
+        job.save(
+            update_fields=(
+                "status",
+                "attempts",
+                "lease_token",
+                "lease_until",
+                "dispatch_token",
+                "dispatch_lease_until",
+                "updated_at",
+            )
+        )
+        if state is not None:
+            state.status = StravaSyncState.Status.RUNNING
+            state.started_at = state.started_at or now
+            state.lease_token = lease_token
+            state.lease_until = job.lease_until
+            state.save(
+                update_fields=("status", "started_at", "lease_token", "lease_until", "updated_at")
+            )
+
+    try:
+        if job.kind == StravaSyncJob.Kind.WEBHOOK:
+            if not Player.objects.filter(
+                pk=job.player_id, lifecycle=Player.Lifecycle.CONNECTED
+            ).exists():
+                return _pause_job(job, state)
+            event = job.webhook_event
+            if event is None:
+                return _finish_job(job, state=state)
+            if event.aspect_type == "delete":
+                activity = ImportedActivity.objects.filter(
+                    player=job.player, provider_activity_id=str(event.object_id)
+                ).first()
+                event_at = _event_datetime(event.payload)
+                if (
+                    activity is None
+                    or event_at is None
+                    or activity.provider_updated_at is None
+                    or event_at >= activity.provider_updated_at
+                ):
+                    remove_activity(job.player, str(event.object_id), reason="deleted")
+            else:
+                import_activity(job.player, fetch_activity(job.player_id, str(event.object_id)))
+            event.processed_at = timezone.now()
+            event.save(update_fields=("processed_at",))
+            return _finish_job(job, state=state)
+
+        pages_per_run = max(1, int(getattr(settings, "STRAVA_SYNC_PAGES_PER_RUN", 5)))
+        page = job.page
+        after = state.history_start if state is not None else timezone.now() - timedelta(days=365)
+        has_more = False
+        for _ in range(pages_per_run):
+            if not Player.objects.filter(
+                pk=job.player_id, lifecycle=Player.Lifecycle.CONNECTED
+            ).exists():
+                return _pause_job(job, state)
+            activities = fetch_activity_page(job.player_id, page=page, after=after)
+            for payload in activities:
+                outcome = import_activity(job.player, payload)
+                if state is not None:
+                    state.processed_count += 1
+                    if outcome in {"imported", "updated"}:
+                        state.imported_count += 1
+                    elif outcome in {"removed", "ignored"}:
+                        state.rejected_count += 1
+                    provider_updated_at = _provider_updated(payload)
+                    if provider_updated_at is not None and (
+                        state.last_provider_updated_at is None
+                        or provider_updated_at > state.last_provider_updated_at
+                    ):
+                        state.last_provider_updated_at = provider_updated_at
+            if state is not None:
+                state.cursor_page = page + 1
+                state.save(
+                    update_fields=(
+                        "cursor_page",
+                        "processed_count",
+                        "imported_count",
+                        "rejected_count",
+                        "last_provider_updated_at",
+                        "updated_at",
+                    )
+                )
+            if len(activities) < int(getattr(settings, "STRAVA_SYNC_PAGE_SIZE", 100)):
+                break
+            page += 1
+            has_more = True
+        # ``page`` already points at the first page not processed when the
+        # bounded run hit its queue budget.
+        job.page = page
+        job.save(update_fields=("page", "updated_at"))
+        return _finish_job(job, state=state, more=has_more)
+    except StravaActivityError as error:
+        return _fail_job(job, state, error)
+    except Exception:
+        return _fail_job(job, state, StravaActivityError("Activity sync failed."))

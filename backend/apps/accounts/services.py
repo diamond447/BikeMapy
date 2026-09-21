@@ -19,6 +19,8 @@ from django.utils import timezone
 
 from .models import (
     OAUTH_STATE_TTL,
+    Competition,
+    CompetitionMembership,
     OAuthState,
     Player,
     PlayerCredential,
@@ -269,6 +271,9 @@ def save_connection(payload: dict[str, Any], *, oauth_state_id: int | None = Non
             oauth_state.player = player
             oauth_state.player_session_epoch = player.session_epoch
             oauth_state.save(update_fields=("player", "player_session_epoch"))
+    from .activity_services import queue_sync
+
+    queue_sync(player, kind="initial")
     return player
 
 
@@ -438,6 +443,9 @@ def disconnect_player(
             state_filter |= Q(player__isnull=True, session_key=session_key)
         OAuthState.objects.filter(state_filter).delete()
         player.mark_disconnected()
+        from .activity_services import pause_sync
+
+        pause_sync(player)
     if job is not None:
         _record_revocation_result(job, success=_revoke_access_token(access_token))
     return player
@@ -445,6 +453,7 @@ def disconnect_player(
 
 def delete_player(player: Player, *, session_key: str | None = None) -> None:
     access_token = None
+    affected_competition_ids: list[Any] = []
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
         player = Player.objects.select_for_update().get(pk=player.pk)
@@ -454,13 +463,12 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
             )
         except PlayerCredential.DoesNotExist:
             pass
-        job = None
-        if access_token:
-            job = RevocationJob.objects.create(
-                access_token=access_token,
-                expires_at=timezone.now() + timedelta(days=7),
-            )
         PlayerCredential.objects.filter(player=player).delete()
+        affected_competition_ids = list(
+            CompetitionMembership.objects.filter(player=player).values_list(
+                "competition_id", flat=True
+            )
+        )
         guard.invalidated_at = timezone.now()
         guard.save(update_fields=("invalidated_at", "updated_at"))
         state_filter = Q(player=player)
@@ -471,8 +479,17 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
         player.lifecycle = Player.Lifecycle.DELETED
         player.invalidate_sessions()
         player.user.delete()
-    if job is not None:
-        _record_revocation_result(job, success=_revoke_access_token(access_token))
+    # Account deletion is an immediate data purge: never leave an encrypted
+    # provider token in a retry queue after the player row is gone.
+    if access_token:
+        _revoke_access_token(access_token)
+    # A deleted member's derived scores disappear through CASCADE, but the
+    # surviving competitions still need a fresh generation so their durable
+    # projection reflects the membership change.
+    from .competition_services import schedule_recomputation
+
+    for competition in Competition.objects.filter(pk__in=affected_competition_ids):
+        schedule_recomputation(competition)
 
 
 def purge_expired_players(*, limit: int = 100) -> dict[str, int]:

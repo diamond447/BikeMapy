@@ -13,7 +13,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .competition_services import DISPATCH_RETRY_SECONDS, MAX_DISPATCH_ATTEMPTS
-from .models import Competition, CompetitionRecomputation, CompetitionResult
+from .models import Competition, CompetitionRecomputation, CompetitionResult, ImportedActivity
 from .services import cleanup_identity_guards, purge_expired_players, retry_revocations
 
 
@@ -90,9 +90,30 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
             )
             job.save(update_fields=("lease_until",))
             active_players = set(competition.memberships.values_list("player_id", flat=True))
+            activities = list(
+                ImportedActivity.objects.filter(player_id__in=active_players).order_by("pk")
+            )
+            activity_ids = {activity.pk for activity in activities}
             CompetitionResult.objects.filter(competition=competition).exclude(
                 player_id__in=active_players
             ).delete()
+            CompetitionResult.objects.filter(competition=competition).exclude(
+                activity_id__in=activity_ids
+            ).exclude(activity__isnull=True).delete()
+            existing_activity_ids = set(
+                CompetitionResult.objects.filter(competition=competition).values_list(
+                    "activity_id", flat=True
+                )
+            )
+            for activity in activities:
+                if activity.pk not in existing_activity_ids:
+                    CompetitionResult.objects.create(
+                        competition=competition,
+                        player_id=activity.player_id,
+                        activity=activity,
+                        points=0,
+                        computed_revision=job.generation,
+                    )
             updated = 0
             for result in CompetitionResult.objects.filter(competition=competition).order_by(
                 "player_id", "pk"
@@ -192,3 +213,12 @@ def dispatch_competition_recomputations_task(limit: int = 100) -> dict[str, Any]
         if _dispatch_recomputation(job_id, dispatch_token=token):
             dispatched += 1
     return {"dispatched": dispatched}
+
+
+# Keep the activity task module discoverable through Celery's conventional
+# ``accounts.tasks`` autodiscovery while keeping the sync implementation
+# separate from competition maintenance.
+from .activity_tasks import (  # noqa: E402,F401
+    dispatch_strava_sync_task,
+    sync_strava_activities_task,
+)

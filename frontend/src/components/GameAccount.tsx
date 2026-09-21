@@ -7,6 +7,7 @@ import { GameCompetitions } from './GameCompetitions'
 
 type Player = components['schemas']['Player']
 type PlayerResponse = components['schemas']['PlayerResponse']
+type ActivitySync = components['schemas']['ActivitySync']
 type AccountStatus = 'checking' | 'unavailable' | 'signed-out' | 'authenticated' | 'error'
 
 function isPlayerResponse(value: unknown): value is PlayerResponse {
@@ -18,6 +19,12 @@ function isPlayerResponse(value: unknown): value is PlayerResponse {
     'display_name' in player &&
     typeof player.display_name === 'string',
   )
+}
+
+function isActivitySyncResponse(value: unknown): value is { sync: ActivitySync } {
+  if (!value || typeof value !== 'object' || !('sync' in value)) return false
+  const sync = value.sync
+  return Boolean(sync && typeof sync === 'object' && 'status' in sync)
 }
 
 function errorDetail(error: unknown): string | null {
@@ -36,6 +43,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
   const [nickname, setNickname] = useState('')
   const [busy, setBusy] = useState(false)
   const [retryToken, setRetryToken] = useState(0)
+  const [sync, setSync] = useState<ActivitySync | null>(null)
   const [message, setMessage] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null
     const params = new URLSearchParams(window.location.search)
@@ -71,6 +79,10 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     setPlayer(result.data.player)
     setNickname(result.data.player.nickname ?? '')
     setStatus('authenticated')
+    const syncResult = await apiClient.GET('/api/v1/game/account/activities/', {
+      credentials: 'include',
+    })
+    if (syncResult.data && 'sync' in syncResult.data) setSync(syncResult.data.sync)
   }, [copy.gameSessionError])
 
   useEffect(() => {
@@ -204,6 +216,21 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     setMessage(copy.gameDeleted)
   }
 
+  const requestFullHistory = async () => {
+    const result = await runAccountAction(() =>
+      apiClient.POST('/api/v1/game/account/activities/full-history/', {
+        credentials: 'include',
+        headers: csrfHeaders(),
+      }),
+    )
+    if (result?.data && isActivitySyncResponse(result.data)) {
+      setSync(result.data.sync)
+      setMessage(copy.gameActivityHistoryQueued)
+    } else if (result) {
+      setMessage(errorDetail(result.error) ?? copy.gameSessionError)
+    }
+  }
+
   const renderContent = () => {
     if (status === 'checking') return <p className="game-account-status">{copy.gameChecking}</p>
     if (status === 'unavailable') {
@@ -281,6 +308,34 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
             <dd>{player.display_name}</dd>
           </div>
         </dl>
+        <section className="game-account-sync" aria-labelledby="game-activity-sync-title">
+          <div className="game-account-sync-heading">
+            <div>
+              <span className="game-account-kicker">{copy.gameActivityKicker}</span>
+              <h3 id="game-activity-sync-title">{copy.gameActivityTitle}</h3>
+            </div>
+            <span className="game-account-sync-status">
+              {sync?.status ?? copy.gameActivityWaiting}
+            </span>
+          </div>
+          <p>{copy.gameActivityDescription}</p>
+          {sync?.last_error && (
+            <p className="game-account-feedback" role="alert">
+              {sync.last_error}
+            </p>
+          )}
+          {sync && sync.processed_count > 0 && (
+            <small>{copy.gameActivityProgress(sync.imported_count, sync.processed_count)}</small>
+          )}
+          <button
+            type="button"
+            className="game-account-secondary"
+            onClick={() => void requestFullHistory()}
+            disabled={busy}
+          >
+            {copy.gameActivityFullHistory}
+          </button>
+        </section>
         <GameCompetitions copy={copy} />
         <div className="game-account-actions">
           <button type="button" onClick={() => void refresh()} disabled={busy}>

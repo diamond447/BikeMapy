@@ -1,5 +1,10 @@
 from django.urls import path
 
+from apps.accounts.activity_api import (
+    PlayerActivitySettingsView,
+    PlayerFullHistoryView,
+    StravaWebhookView,
+)
 from apps.accounts.competition_api import (
     CompetitionDetailView,
     CompetitionJoinView,
@@ -49,6 +54,17 @@ urlpatterns = [
     path("game/account/refresh/", PlayerRefreshView.as_view(), name="game-player-refresh"),
     path("game/account/disconnect/", PlayerDisconnectView.as_view(), name="game-player-disconnect"),
     path("game/account/", PlayerAccountView.as_view(), name="game-player-account"),
+    path(
+        "game/account/activities/",
+        PlayerActivitySettingsView.as_view(),
+        name="game-player-activities",
+    ),
+    path(
+        "game/account/activities/full-history/",
+        PlayerFullHistoryView.as_view(),
+        name="game-player-full-history",
+    ),
+    path("game/webhooks/strava/", StravaWebhookView.as_view(), name="game-strava-webhook"),
     path("game/competitions/", CompetitionListView.as_view(), name="game-competition-list"),
     path("game/competitions/join/", CompetitionJoinView.as_view(), name="game-competition-join"),
     path(

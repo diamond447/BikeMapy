@@ -1138,6 +1138,78 @@ h1 {
   margin: 0;
 }
 
+.game-account-sync {
+  position: relative;
+  margin: 1.15rem 0;
+  padding: 1rem 1rem 1.05rem;
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: 14px 4px 14px 4px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--atlas-paper) 90%, #b9dfd3),
+    var(--atlas-paper)
+  );
+}
+
+.game-account-sync::before {
+  position: absolute;
+  top: 0.85rem;
+  right: 1rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--atlas-orange);
+  content: '';
+}
+
+.game-account-sync-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.game-account-sync h3 {
+  margin: 0.15rem 0 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.game-account-sync p {
+  margin: 0.7rem 0;
+  max-width: 34rem;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.game-account-sync-status {
+  color: var(--atlas-moss);
+  font-size: 0.72rem;
+  text-transform: capitalize;
+}
+
+.game-account-sync small {
+  display: block;
+  margin-bottom: 0.75rem;
+  color: var(--atlas-moss);
+}
+
+.game-account-secondary {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--atlas-ink) 22%, transparent);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--atlas-ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.game-account-secondary:hover,
+.game-account-secondary:focus-visible {
+  background: color-mix(in srgb, var(--atlas-ink) 7%, transparent);
+}
+
 .game-account-feedback {
   color: var(--atlas-orange);
 }
