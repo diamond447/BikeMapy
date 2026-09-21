@@ -158,7 +158,7 @@ def dispatch_competition_recomputations_task(limit: int = 100) -> dict[str, Any]
                 job_ref = CompetitionRecomputation.objects.get(pk=stale_job.pk)
                 Competition.objects.select_for_update().get(pk=job_ref.competition_id)
                 job = CompetitionRecomputation.objects.select_for_update().get(pk=stale_job.pk)
-            except CompetitionRecomputation.DoesNotExist:
+            except (Competition.DoesNotExist, CompetitionRecomputation.DoesNotExist):
                 continue
             if job.status != CompetitionRecomputation.Status.RUNNING or (
                 job.lease_until is not None and job.lease_until > now

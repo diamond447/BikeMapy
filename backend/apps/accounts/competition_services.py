@@ -172,7 +172,7 @@ def _claim_recomputation_dispatch(job_id: int | None = None) -> tuple[int, str] 
                 # Keep the worker and service lock order consistent.
                 Competition.objects.select_for_update().get(pk=job_ref.competition_id)
                 job = CompetitionRecomputation.objects.select_for_update().get(pk=candidate_id)
-            except CompetitionRecomputation.DoesNotExist:
+            except (Competition.DoesNotExist, CompetitionRecomputation.DoesNotExist):
                 continue
             if job.status not in {
                 CompetitionRecomputation.Status.PENDING,

@@ -375,6 +375,79 @@ def test_dispatch_failure_after_deletion_does_not_stop_the_batch() -> None:
 
 
 @override_settings(**SETTINGS)
+def test_dispatch_claim_skips_competition_deleted_after_reference_read() -> None:
+    first_owner = player(112)
+    second_owner = player(113)
+    first_competition, _ = create_competition(first_owner, name="Deleted competition")
+    second_competition, _ = create_competition(second_owner, name="Surviving competition")
+    first = schedule_recomputation(first_competition)
+    second = schedule_recomputation(second_competition)
+    original_get = CompetitionRecomputation.objects.get
+    deleted = False
+
+    def read_then_delete(*args: object, **kwargs: object) -> CompetitionRecomputation:
+        nonlocal deleted
+        job = original_get(*args, **kwargs)
+        if not deleted and job.pk == first.pk:
+            deleted = True
+            Competition.objects.filter(pk=first_competition.pk).delete()
+        return job
+
+    with (
+        patch.object(CompetitionRecomputation.objects, "get", side_effect=read_then_delete),
+        patch("apps.accounts.tasks.recompute_competition_results_task.apply_async") as publish,
+    ):
+        result = dispatch_competition_recomputations_task.apply(args=[2]).get()
+
+    assert result == {"dispatched": 1}
+    publish.assert_called_once_with(args=(second.pk,))
+    second.refresh_from_db()
+    assert second.dispatched_at is not None
+
+
+@override_settings(**SETTINGS)
+def test_stale_worker_recovery_skips_competition_deleted_after_reference_read() -> None:
+    first_owner = player(114)
+    second_owner = player(115)
+    first_competition, _ = create_competition(first_owner, name="Expired deleted")
+    second_competition, _ = create_competition(second_owner, name="Expired surviving")
+    first = CompetitionRecomputation.objects.create(
+        competition=first_competition,
+        generation=1,
+        status=CompetitionRecomputation.Status.RUNNING,
+        attempts=1,
+        lease_token="dead-first",
+        lease_until=timezone.now() - timedelta(minutes=1),
+    )
+    second = CompetitionRecomputation.objects.create(
+        competition=second_competition,
+        generation=1,
+        status=CompetitionRecomputation.Status.RUNNING,
+        attempts=1,
+        lease_token="dead-second",
+        lease_until=timezone.now() - timedelta(minutes=1),
+    )
+    original_get = CompetitionRecomputation.objects.get
+    deleted = False
+
+    def read_then_delete(*args: object, **kwargs: object) -> CompetitionRecomputation:
+        nonlocal deleted
+        job = original_get(*args, **kwargs)
+        if not deleted and job.pk == first.pk:
+            deleted = True
+            Competition.objects.filter(pk=first_competition.pk).delete()
+        return job
+
+    with patch.object(CompetitionRecomputation.objects, "get", side_effect=read_then_delete):
+        result = dispatch_competition_recomputations_task.apply(args=[2]).get()
+
+    assert result == {"dispatched": 0}
+    second.refresh_from_db()
+    assert second.status == CompetitionRecomputation.Status.FAILED
+    assert second.error == "Worker lease expired."
+
+
+@override_settings(**SETTINGS)
 def test_recomputation_worker_lease_distinguishes_fresh_and_stale_jobs() -> None:
     owner = player(120)
     competition, _ = create_competition(owner, name="Leases")
