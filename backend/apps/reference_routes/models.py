@@ -29,7 +29,6 @@ out meta;
 out meta geom;"""
 MAX_DISCOVERY_ARTIFACT_BYTES = 5 * 1024 * 1024
 MAX_OVERPASS_FAILURE_LOG_BYTES = 512 * 1024
-_CACHE_MISS = object()
 
 
 def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
@@ -59,22 +58,12 @@ def _url_matches_offer_base(value: str, base: str) -> bool:
     )
 
 
-def _verified_discovery_content(
-    metadata: dict[str, Any], *, source_import: Any | None = None
-) -> dict[str, Any] | None:
-    if source_import is not None:
-        cached = getattr(source_import, "_verified_discovery_content_cache", _CACHE_MISS)
-        if cached is not _CACHE_MISS:
-            return cached if isinstance(cached, dict) else None
+def _verified_discovery_content(metadata: dict[str, Any]) -> dict[str, Any] | None:
     encoded = metadata.get("discovery_artifact_content_base64")
     expected_hash = metadata.get("discovery_result_sha256")
     if not isinstance(encoded, str) or not isinstance(expected_hash, str):
-        if source_import is not None:
-            source_import._verified_discovery_content_cache = None
         return None
     if len(encoded) > ((MAX_DISCOVERY_ARTIFACT_BYTES + 2) // 3) * 4:
-        if source_import is not None:
-            source_import._verified_discovery_content_cache = None
         return None
     try:
         content = base64.b64decode(encoded.encode("ascii"), validate=True)
@@ -83,13 +72,9 @@ def _verified_discovery_content(
             or len(content) > MAX_DISCOVERY_ARTIFACT_BYTES
             or hashlib.sha256(content).hexdigest() != expected_hash
         ):
-            if source_import is not None:
-                source_import._verified_discovery_content_cache = None
             return None
         discovery = json.loads(content)
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
-        if source_import is not None:
-            source_import._verified_discovery_content_cache = None
         return None
     if (
         not isinstance(discovery, dict)
@@ -97,8 +82,6 @@ def _verified_discovery_content(
         or not isinstance(discovery.get("osm3s"), dict)
         or not discovery["osm3s"].get("timestamp_osm_base")
     ):
-        if source_import is not None:
-            source_import._verified_discovery_content_cache = None
         return None
     try:
         source_timestamp = datetime.fromisoformat(
@@ -107,23 +90,17 @@ def _verified_discovery_content(
     except ValueError:
         return None
     if source_timestamp.tzinfo is None or source_timestamp.utcoffset() != timedelta(0):
-        if source_import is not None:
-            source_import._verified_discovery_content_cache = None
         return None
-    if source_import is not None:
-        source_import._verified_discovery_content_cache = discovery
     return discovery
 
 
-def _valid_overpass_failure_evidence(value: Any, *, source_import: Any | None = None) -> bool:
-    if source_import is not None:
-        cached = getattr(source_import, "_valid_overpass_failure_cache", _CACHE_MISS)
-        if cached is not _CACHE_MISS:
-            return bool(cached)
-
+def _valid_overpass_failure_evidence(
+    value: Any,
+    *,
+    discovery_executed_at: datetime | None = None,
+    retrieved_at: datetime | None = None,
+) -> bool:
     def reject() -> bool:
-        if source_import is not None:
-            source_import._valid_overpass_failure_cache = False
         return False
 
     if not isinstance(value, dict):
@@ -140,6 +117,13 @@ def _valid_overpass_failure_evidence(value: Any, *, source_import: Any | None = 
     except ValueError:
         return reject()
     if attempted_at.tzinfo is None or attempted_at.utcoffset() != timedelta(0):
+        return reject()
+    now = timezone.now()
+    if attempted_at > now:
+        return reject()
+    if discovery_executed_at is not None and attempted_at > discovery_executed_at:
+        return reject()
+    if retrieved_at is not None and attempted_at > retrieved_at:
         return reject()
     if value.get("network_status") not in {"http_error", "network_error"}:
         return reject()
@@ -181,8 +165,6 @@ def _valid_overpass_failure_evidence(value: Any, *, source_import: Any | None = 
         "error": value["error"],
     }
     valid = log_payload == expected_payload
-    if source_import is not None:
-        source_import._valid_overpass_failure_cache = valid
     return bool(valid)
 
 
@@ -212,7 +194,7 @@ def has_deployable_derivative_offer(
         )
     ):
         return False
-    discovery_payload = _verified_discovery_content(metadata, source_import=source_import)
+    discovery_payload = _verified_discovery_content(metadata)
     if discovery_payload is None:
         return False
     executed_at = metadata.get("discovery_executed_at")
@@ -223,6 +205,8 @@ def has_deployable_derivative_offer(
     except ValueError:
         return False
     if parsed_executed_at.tzinfo is None or parsed_executed_at.utcoffset() != timedelta(0):
+        return False
+    if parsed_executed_at > timezone.now() or parsed_executed_at > source_import.retrieved_at:
         return False
     expected_ids = metadata.get("expected_relation_ids")
     discovery_ids = metadata.get("discovery_selected_relation_ids")
@@ -267,7 +251,9 @@ def has_deployable_derivative_offer(
         not query_id.startswith("regional-extract:")
         or metadata.get("overpass_unavailable") is not True
         or not _valid_overpass_failure_evidence(
-            metadata.get("overpass_failure_evidence"), source_import=source_import
+            metadata.get("overpass_failure_evidence"),
+            discovery_executed_at=parsed_executed_at,
+            retrieved_at=source_import.retrieved_at,
         )
     ):
         return False

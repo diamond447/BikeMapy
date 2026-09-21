@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -27,6 +28,7 @@ from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
     ReferenceSourceKind,
+    has_deployable_derivative_offer,
 )
 from apps.reference_routes.services import (
     _assemble_geometry,
@@ -424,6 +426,40 @@ def test_overpass_failure_log_is_structured_and_status_consistent() -> None:
     evidence["log_sha256"] = hashlib.sha256(base64.b64decode(evidence["log_base64"])).hexdigest()
     with pytest.raises(ValueError, match="cannot contain"):
         _validate_overpass_failure_evidence(evidence)
+
+    evidence["network_status"] = "http_error"
+    evidence["http_status"] = 403
+    evidence["attempted_at"] = "2999-01-01T00:00:00Z"
+    evidence["log_base64"] = base64.b64encode(
+        json.dumps(evidence, separators=(",", ":")).encode()
+    ).decode()
+    evidence["log_sha256"] = hashlib.sha256(base64.b64decode(evidence["log_base64"])).hexdigest()
+    with pytest.raises(ValueError, match="future"):
+        _validate_overpass_failure_evidence(evidence)
+    evidence["attempted_at"] = "2026-09-21T00:01:00Z"
+    evidence["log_base64"] = base64.b64encode(
+        json.dumps(evidence, separators=(",", ":")).encode()
+    ).decode()
+    evidence["log_sha256"] = hashlib.sha256(base64.b64decode(evidence["log_base64"])).hexdigest()
+    with pytest.raises(ValueError, match="precede discovery"):
+        _validate_overpass_failure_evidence(
+            evidence, discovery_executed_at=datetime.fromisoformat("2026-09-21T00:00:00+00:00")
+        )
+
+
+def test_publication_gate_rechecks_mutated_evidence_without_stale_cache() -> None:
+    item = collection()
+    import_production_snapshot(item)
+    publish_offer(item)
+    source_import = item.imports.get()
+    assert has_deployable_derivative_offer(item, source_import)
+    source_import.response_metadata["discovery_result_sha256"] = "0" * 64
+    assert not has_deployable_derivative_offer(item, source_import)
+    source_import.response_metadata["discovery_result_sha256"] = hashlib.sha256(
+        base64.b64decode(source_import.response_metadata["discovery_artifact_content_base64"])
+    ).hexdigest()
+    source_import.response_metadata["discovery_executed_at"] = "2999-01-01T00:00:00Z"
+    assert not has_deployable_derivative_offer(item, source_import)
 
 
 def test_test_mode_is_never_deployable_even_when_enabled_for_fixtures() -> None:

@@ -258,7 +258,12 @@ def _parse_verified_discovery_bytes(metadata: dict[str, Any]) -> dict[str, Any]:
     return discovery
 
 
-def _validate_overpass_failure_evidence(value: Any) -> None:
+def _validate_overpass_failure_evidence(
+    value: Any,
+    *,
+    discovery_executed_at: datetime | None = None,
+    retrieved_at: datetime | None = None,
+) -> None:
     if not isinstance(value, dict):
         raise ValueError("Regional discovery requires retained Overpass failure evidence")
     if (
@@ -266,7 +271,14 @@ def _validate_overpass_failure_evidence(value: Any) -> None:
         or value.get("query_text") != OSM_DISCOVERY_QUERY
     ):
         raise ValueError("Overpass failure evidence is not bound to the approved request")
-    _parse_utc_timestamp(value.get("attempted_at"), field="overpass attempted_at")
+    attempted_at = _parse_utc_timestamp(value.get("attempted_at"), field="overpass attempted_at")
+    now = timezone.now().astimezone(UTC)
+    if attempted_at > now:
+        raise ValueError("Overpass failure attempt cannot be in the future")
+    if discovery_executed_at is not None and attempted_at > discovery_executed_at:
+        raise ValueError("Overpass failure attempt must precede discovery execution")
+    if retrieved_at is not None and attempted_at > retrieved_at:
+        raise ValueError("Overpass failure attempt must precede import retrieval")
     network_status = value.get("network_status")
     if network_status not in {"http_error", "network_error"}:
         raise ValueError("Overpass failure evidence status is invalid")
@@ -308,6 +320,7 @@ def _validate_discovery_evidence(
     metadata: dict[str, Any],
     endpoint: str,
     expected_ids: list[int],
+    retrieved_at: datetime,
 ) -> None:
     """Require a retained discovery result that is distinct from the snapshot.
 
@@ -362,8 +375,16 @@ def _validate_discovery_evidence(
         metadata["discovery_query_or_extract_id"]
     ).startswith("regional-extract:"):
         raise ValueError("Regional discovery requires recorded Overpass-first fallback evidence")
+    if executed_at > timezone.now().astimezone(UTC):
+        raise ValueError("Production discovery execution time is in the future")
+    if executed_at > retrieved_at:
+        raise ValueError("Discovery execution must precede import retrieval")
     if mechanism == "regional_extract":
-        _validate_overpass_failure_evidence(metadata.get("overpass_failure_evidence"))
+        _validate_overpass_failure_evidence(
+            metadata.get("overpass_failure_evidence"),
+            discovery_executed_at=executed_at,
+            retrieved_at=retrieved_at,
+        )
     payload_elements = discovery_payload.get("elements")
     if not isinstance(payload_elements, list):
         raise ValueError("Production discovery result must retain relation records")
@@ -410,8 +431,6 @@ def _validate_discovery_evidence(
         ):
             raise ValueError("Production discovery provenance does not match the imported relation")
     metadata["discovery_result_payload"] = discovery_payload
-    if executed_at > timezone.now().astimezone(UTC) + timedelta(minutes=5):
-        raise ValueError("Production discovery execution time is in the future")
 
 
 def _validate_source_evidence(
@@ -420,6 +439,7 @@ def _validate_source_evidence(
     metadata: dict[str, Any],
     endpoint: str,
     selected: list[dict[str, Any]],
+    retrieved_at: datetime,
 ) -> datetime | None:
     """Validate manifest evidence against the actual immutable response payload."""
     import_mode = metadata.get("import_mode")
@@ -481,6 +501,7 @@ def _validate_source_evidence(
             metadata=metadata,
             endpoint=endpoint,
             expected_ids=expected_ids,
+            retrieved_at=retrieved_at,
         )
     count_fields = ("expected_way_count", "expected_node_count")
     present_counts = [field in metadata for field in count_fields]
@@ -914,6 +935,7 @@ def import_osm_snapshot(
         metadata=metadata,
         endpoint=endpoint,
         selected=selected,
+        retrieved_at=retrieved,
     )
     source_base = source_timestamp.isoformat().replace("+00:00", "Z") if source_timestamp else None
     with transaction.atomic():
@@ -1200,6 +1222,7 @@ def store_pending_snapshot(
         metadata=response_metadata,
         endpoint=endpoint,
         selected=selected,
+        retrieved_at=retrieved_at,
     )
     if source_timestamp is None:
         raise ValueError("OSM snapshot is missing its source timestamp")
