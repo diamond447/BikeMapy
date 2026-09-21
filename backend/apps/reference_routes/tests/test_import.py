@@ -30,6 +30,7 @@ from apps.reference_routes.models import (
 )
 from apps.reference_routes.services import (
     _assemble_geometry,
+    _validate_overpass_failure_evidence,
     approve_reference_route,
     blocked_via_czechia_import,
     link_stage,
@@ -174,6 +175,9 @@ def test_import_is_idempotent_and_changed_geometry_schedules_recomputation() -> 
     assert changed["created"] == 1
     route = ReferenceRoute.objects.get(collection=item)
     assert route.current_version is not None
+    assert route.current_version.provenance["relation_version"] == 2
+    assert route.current_version.provenance["relation_timestamp"] == "2026-09-19T00:00:00Z"
+    assert route.current_version.provenance["relation_changeset"] == 22
     publish_offer(item)
     approve_reference_route(route, reviewer="reviewer@example.invalid")
     assert route.versions.count() == 2
@@ -357,6 +361,69 @@ def test_production_discovery_artifact_and_hash_are_verifiable() -> None:
     metadata["discovery_artifact_url"] = f"{OFFER_BASE_URL}/blob/main/discovery/101.json"
     with pytest.raises(ValueError, match="approved query"):
         import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
+
+
+def test_discovery_artifact_provenance_and_duplicate_ids_are_rejected() -> None:
+    item = collection()
+    data = payload()
+    relation = data["elements"][0]
+    discovery_payload = {
+        "version": 0.6,
+        "osm3s": {"timestamp_osm_base": "2026-09-21T00:00:00Z"},
+        "elements": [dict(relation, version=99)],
+    }
+    content = json.dumps(discovery_payload, separators=(",", ":")).encode()
+    metadata: dict[str, Any] = {
+        "import_mode": "production",
+        "production_import": True,
+        "expected_relation_ids": [101],
+        "expected_relation_count": 1,
+        "discovery_mechanism": "overpass",
+        "discovery_query_or_extract_id": (
+            f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
+        ),
+        "discovery_executed_at": "2026-09-21T00:00:00Z",
+        "discovery_result_sha256": hashlib.sha256(content).hexdigest(),
+        "discovery_artifact_url": f"{OFFER_BASE_URL}/blob/main/discovery/101.json",
+        "discovery_selected_relation_ids": [101],
+        "discovery_artifact_content_base64": base64.b64encode(content).decode(),
+    }
+    with pytest.raises(ValueError, match="provenance"):
+        import_osm_snapshot(collection=item, payload=data, response_metadata=metadata)
+    discovery_payload["elements"] = [relation, relation]
+    content = json.dumps(discovery_payload, separators=(",", ":")).encode()
+    metadata["discovery_result_sha256"] = hashlib.sha256(content).hexdigest()
+    metadata["discovery_artifact_content_base64"] = base64.b64encode(content).decode()
+    with pytest.raises(ValueError, match="duplicate relation IDs"):
+        import_osm_snapshot(collection=item, payload=data, response_metadata=metadata)
+
+
+def test_overpass_failure_log_is_structured_and_status_consistent() -> None:
+    evidence: dict[str, Any] = {
+        "endpoint": "https://overpass-api.de/api/interpreter",
+        "query_text": OSM_DISCOVERY_QUERY,
+        "attempted_at": "2026-09-21T00:00:00Z",
+        "network_status": "http_error",
+        "http_status": 403,
+        "error": "Overpass returned HTTP 403",
+    }
+    evidence["log_base64"] = base64.b64encode(
+        json.dumps(evidence, separators=(",", ":")).encode()
+    ).decode()
+    evidence["log_sha256"] = hashlib.sha256(base64.b64decode(evidence["log_base64"])).hexdigest()
+    _validate_overpass_failure_evidence(evidence)
+    evidence["log_base64"] = base64.b64encode(b"arbitrary text").decode()
+    evidence["log_sha256"] = hashlib.sha256(base64.b64decode(evidence["log_base64"])).hexdigest()
+    with pytest.raises(ValueError, match="not valid JSON"):
+        _validate_overpass_failure_evidence(evidence)
+    evidence["network_status"] = "network_error"
+    evidence["http_status"] = 200
+    evidence["log_base64"] = base64.b64encode(
+        json.dumps(evidence, separators=(",", ":")).encode()
+    ).decode()
+    evidence["log_sha256"] = hashlib.sha256(base64.b64decode(evidence["log_base64"])).hexdigest()
+    with pytest.raises(ValueError, match="cannot contain"):
+        _validate_overpass_failure_evidence(evidence)
 
 
 def test_test_mode_is_never_deployable_even_when_enabled_for_fixtures() -> None:

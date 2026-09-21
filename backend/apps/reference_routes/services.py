@@ -37,6 +37,8 @@ from .models import (
 )
 
 MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+MAX_DISCOVERY_ARTIFACT_BYTES = 5 * 1024 * 1024
+MAX_OVERPASS_FAILURE_LOG_BYTES = 512 * 1024
 MAX_RELATIONS = 5_000
 MAX_MEMBERS_PER_RELATION = 5_000
 MAX_COORDINATES = 1_000_000
@@ -140,6 +142,9 @@ def _relation_elements(
         raise ValueError("source response contains no relations")
     if len(relations) > MAX_RELATIONS:
         raise ValueError("source response contains too many relations")
+    relation_ids = [relation["id"] for relation in relations]
+    if len(relation_ids) != len(set(relation_ids)):
+        raise ValueError("source response contains duplicate relation IDs")
     ways = {
         int(item["id"]): item
         for item in elements
@@ -213,16 +218,23 @@ def _validate_http_evidence(metadata: dict[str, Any]) -> None:
             raise ValueError(f"Manifest HTTP evidence marks {conditional} both present and absent")
 
 
-def _decode_verified_content(value: Any, *, field: str, expected_hash: Any) -> bytes:
+def _decode_verified_content(
+    value: Any, *, field: str, expected_hash: Any, max_bytes: int
+) -> bytes:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field} is required")
+    max_encoded_length = ((max_bytes + 2) // 3) * 4
+    if len(value) > max_encoded_length:
+        raise ValueError(f"{field} exceeds the retained byte limit")
     if not isinstance(expected_hash, str) or len(expected_hash) != 64:
         raise ValueError(f"{field} hash is invalid")
     try:
         content = base64.b64decode(value.encode("ascii"), validate=True)
     except (UnicodeEncodeError, ValueError) as exc:
         raise ValueError(f"{field} is not valid base64") from exc
-    if not content or hashlib.sha256(content).hexdigest() != expected_hash:
+    if not content or len(content) > max_bytes:
+        raise ValueError(f"{field} exceeds the retained byte limit")
+    if hashlib.sha256(content).hexdigest() != expected_hash:
         raise ValueError(f"{field} hash does not match retained bytes")
     return content
 
@@ -232,6 +244,7 @@ def _parse_verified_discovery_bytes(metadata: dict[str, Any]) -> dict[str, Any]:
         metadata.get("discovery_artifact_content_base64"),
         field="Production discovery artifact content",
         expected_hash=metadata.get("discovery_result_sha256"),
+        max_bytes=MAX_DISCOVERY_ARTIFACT_BYTES,
     )
     try:
         discovery = json.loads(content)
@@ -263,11 +276,30 @@ def _validate_overpass_failure_evidence(value: Any) -> None:
         or not 400 <= value["http_status"] < 600
     ):
         raise ValueError("Overpass HTTP failure status is invalid")
+    if network_status == "network_error" and value.get("http_status") is not None:
+        raise ValueError("Network failure evidence cannot contain an HTTP status")
     if not isinstance(value.get("error"), str) or not value["error"].strip():
         raise ValueError("Overpass failure error text is required")
-    _decode_verified_content(
-        value.get("log_base64"), field="Overpass failure log", expected_hash=value.get("log_sha256")
+    log_bytes = _decode_verified_content(
+        value.get("log_base64"),
+        field="Overpass failure log",
+        expected_hash=value.get("log_sha256"),
+        max_bytes=MAX_OVERPASS_FAILURE_LOG_BYTES,
     )
+    try:
+        log_payload = json.loads(log_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Overpass failure log is not valid JSON") from exc
+    expected_payload = {
+        "endpoint": value["endpoint"],
+        "query_text": value["query_text"],
+        "attempted_at": value["attempted_at"],
+        "network_status": network_status,
+        "http_status": value.get("http_status"),
+        "error": value["error"],
+    }
+    if log_payload != expected_payload:
+        raise ValueError("Overpass failure log does not match its manifest fields")
 
 
 def _validate_discovery_evidence(
@@ -335,20 +367,28 @@ def _validate_discovery_evidence(
     payload_elements = discovery_payload.get("elements")
     if not isinstance(payload_elements, list):
         raise ValueError("Production discovery result must retain relation records")
-    discovered = {
-        item["id"]: item
+    discovery_relation_records = [
+        item
         for item in payload_elements
         if isinstance(item, dict)
         and item.get("type") == "relation"
         and isinstance(item.get("id"), int)
-    }
-    source_relations = {
-        item["id"]: item
+    ]
+    discovery_record_ids = [item["id"] for item in discovery_relation_records]
+    if len(discovery_record_ids) != len(set(discovery_record_ids)):
+        raise ValueError("Production discovery artifact contains duplicate relation IDs")
+    discovered = {item["id"]: item for item in discovery_relation_records}
+    source_relation_records = [
+        item
         for item in parsed.get("elements", [])
         if isinstance(item, dict)
         and item.get("type") == "relation"
         and isinstance(item.get("id"), int)
-    }
+    ]
+    source_record_ids = [item["id"] for item in source_relation_records]
+    if len(source_record_ids) != len(set(source_record_ids)):
+        raise ValueError("Imported snapshot contains duplicate relation IDs")
+    source_relations = {item["id"]: item for item in source_relation_records}
     if any(
         route_id not in discovered or route_id not in source_relations for route_id in expected_ids
     ):
@@ -364,6 +404,11 @@ def _validate_discovery_evidence(
             for field in ("version", "timestamp", "changeset")
         ):
             raise ValueError("Production discovery relation lacks OSM provenance fields")
+        if any(
+            discovered[route_id].get(field) != source_relations[route_id].get(field)
+            for field in ("version", "timestamp", "changeset")
+        ):
+            raise ValueError("Production discovery provenance does not match the imported relation")
     metadata["discovery_result_payload"] = discovery_payload
     if executed_at > timezone.now().astimezone(UTC) + timedelta(minutes=5):
         raise ValueError("Production discovery execution time is in the future")
@@ -1057,6 +1102,10 @@ def import_osm_snapshot(
                     provenance={
                         "source": "OpenStreetMap",
                         "relation_id": relation["id"],
+                        "relation_version": relation.get("version"),
+                        "relation_timestamp": relation.get("timestamp"),
+                        "relation_changeset": relation.get("changeset"),
+                        "relation_tags": tags,
                         "endpoint": endpoint,
                         "retrieved_at": retrieved.isoformat(),
                         "source_timestamp": source_base,

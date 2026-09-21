@@ -27,6 +27,9 @@ relation["type"="route"]["route"="bicycle"]["ref"]
 out meta;
 >>;
 out meta geom;"""
+MAX_DISCOVERY_ARTIFACT_BYTES = 5 * 1024 * 1024
+MAX_OVERPASS_FAILURE_LOG_BYTES = 512 * 1024
+_CACHE_MISS = object()
 
 
 def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
@@ -56,17 +59,37 @@ def _url_matches_offer_base(value: str, base: str) -> bool:
     )
 
 
-def _verified_discovery_content(metadata: dict[str, Any]) -> dict[str, Any] | None:
+def _verified_discovery_content(
+    metadata: dict[str, Any], *, source_import: Any | None = None
+) -> dict[str, Any] | None:
+    if source_import is not None:
+        cached = getattr(source_import, "_verified_discovery_content_cache", _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return cached if isinstance(cached, dict) else None
     encoded = metadata.get("discovery_artifact_content_base64")
     expected_hash = metadata.get("discovery_result_sha256")
     if not isinstance(encoded, str) or not isinstance(expected_hash, str):
+        if source_import is not None:
+            source_import._verified_discovery_content_cache = None
+        return None
+    if len(encoded) > ((MAX_DISCOVERY_ARTIFACT_BYTES + 2) // 3) * 4:
+        if source_import is not None:
+            source_import._verified_discovery_content_cache = None
         return None
     try:
         content = base64.b64decode(encoded.encode("ascii"), validate=True)
-        if not content or hashlib.sha256(content).hexdigest() != expected_hash:
+        if (
+            not content
+            or len(content) > MAX_DISCOVERY_ARTIFACT_BYTES
+            or hashlib.sha256(content).hexdigest() != expected_hash
+        ):
+            if source_import is not None:
+                source_import._verified_discovery_content_cache = None
             return None
         discovery = json.loads(content)
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        if source_import is not None:
+            source_import._verified_discovery_content_cache = None
         return None
     if (
         not isinstance(discovery, dict)
@@ -74,6 +97,8 @@ def _verified_discovery_content(metadata: dict[str, Any]) -> dict[str, Any] | No
         or not isinstance(discovery.get("osm3s"), dict)
         or not discovery["osm3s"].get("timestamp_osm_base")
     ):
+        if source_import is not None:
+            source_import._verified_discovery_content_cache = None
         return None
     try:
         source_timestamp = datetime.fromisoformat(
@@ -82,44 +107,83 @@ def _verified_discovery_content(metadata: dict[str, Any]) -> dict[str, Any] | No
     except ValueError:
         return None
     if source_timestamp.tzinfo is None or source_timestamp.utcoffset() != timedelta(0):
+        if source_import is not None:
+            source_import._verified_discovery_content_cache = None
         return None
+    if source_import is not None:
+        source_import._verified_discovery_content_cache = discovery
     return discovery
 
 
-def _valid_overpass_failure_evidence(value: Any) -> bool:
-    if not isinstance(value, dict):
+def _valid_overpass_failure_evidence(value: Any, *, source_import: Any | None = None) -> bool:
+    if source_import is not None:
+        cached = getattr(source_import, "_valid_overpass_failure_cache", _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return bool(cached)
+
+    def reject() -> bool:
+        if source_import is not None:
+            source_import._valid_overpass_failure_cache = False
         return False
+
+    if not isinstance(value, dict):
+        return reject()
     if (
         value.get("endpoint") != OSM_OVERPASS_ENDPOINT
         or value.get("query_text") != OSM_DISCOVERY_QUERY
     ):
-        return False
+        return reject()
     if not isinstance(value.get("attempted_at"), str) or not value["attempted_at"].strip():
-        return False
+        return reject()
     try:
         attempted_at = datetime.fromisoformat(value["attempted_at"].replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return reject()
     if attempted_at.tzinfo is None or attempted_at.utcoffset() != timedelta(0):
-        return False
+        return reject()
     if value.get("network_status") not in {"http_error", "network_error"}:
-        return False
+        return reject()
     if value["network_status"] == "http_error" and (
         isinstance(value.get("http_status"), bool)
         or not isinstance(value.get("http_status"), int)
         or not 400 <= value["http_status"] < 600
     ):
-        return False
+        return reject()
+    if value["network_status"] == "network_error" and value.get("http_status") is not None:
+        return reject()
     if not isinstance(value.get("error"), str) or not value["error"].strip():
-        return False
+        return reject()
     encoded, expected_hash = value.get("log_base64"), value.get("log_sha256")
     if not isinstance(encoded, str) or not isinstance(expected_hash, str):
-        return False
+        return reject()
+    if len(encoded) > ((MAX_OVERPASS_FAILURE_LOG_BYTES + 2) // 3) * 4:
+        return reject()
     try:
         content = base64.b64decode(encoded.encode("ascii"), validate=True)
     except (UnicodeDecodeError, ValueError):
-        return False
-    return bool(content) and hashlib.sha256(content).hexdigest() == expected_hash
+        return reject()
+    if (
+        not content
+        or len(content) > MAX_OVERPASS_FAILURE_LOG_BYTES
+        or hashlib.sha256(content).hexdigest() != expected_hash
+    ):
+        return reject()
+    try:
+        log_payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return reject()
+    expected_payload = {
+        "endpoint": value["endpoint"],
+        "query_text": value["query_text"],
+        "attempted_at": value["attempted_at"],
+        "network_status": value["network_status"],
+        "http_status": value.get("http_status"),
+        "error": value["error"],
+    }
+    valid = log_payload == expected_payload
+    if source_import is not None:
+        source_import._valid_overpass_failure_cache = valid
+    return bool(valid)
 
 
 def has_deployable_derivative_offer(
@@ -148,7 +212,7 @@ def has_deployable_derivative_offer(
         )
     ):
         return False
-    discovery_payload = _verified_discovery_content(metadata)
+    discovery_payload = _verified_discovery_content(metadata, source_import=source_import)
     if discovery_payload is None:
         return False
     executed_at = metadata.get("discovery_executed_at")
@@ -202,17 +266,22 @@ def has_deployable_derivative_offer(
     if mechanism == "regional_extract" and (
         not query_id.startswith("regional-extract:")
         or metadata.get("overpass_unavailable") is not True
-        or not _valid_overpass_failure_evidence(metadata.get("overpass_failure_evidence"))
+        or not _valid_overpass_failure_evidence(
+            metadata.get("overpass_failure_evidence"), source_import=source_import
+        )
     ):
         return False
     elements = discovery_payload.get("elements")
     if not isinstance(elements, list):
         return False
-    discovered_ids = {
-        item.get("id")
-        for item in elements
-        if isinstance(item, dict) and item.get("type") == "relation"
-    }
+    discovered_records = [
+        item for item in elements if isinstance(item, dict) and item.get("type") == "relation"
+    ]
+    discovered_ids = [item.get("id") for item in discovered_records]
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in discovered_ids):
+        return False
+    if len(discovered_ids) != len(set(discovered_ids)):
+        return False
     if not set(expected_ids).issubset(discovered_ids):
         return False
     raw_elements = (
@@ -220,21 +289,18 @@ def has_deployable_derivative_offer(
         if isinstance(source_import.raw_payload, dict)
         else []
     )
-    source_relations = {
-        item.get("id"): item
-        for item in raw_elements
-        if isinstance(item, dict) and item.get("type") == "relation"
-    }
+    source_records = [
+        item for item in raw_elements if isinstance(item, dict) and item.get("type") == "relation"
+    ]
+    source_ids = [item.get("id") for item in source_records]
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in source_ids):
+        return False
+    if len(source_ids) != len(set(source_ids)):
+        return False
+    source_relations = {item["id"]: item for item in source_records}
     for route_id in expected_ids:
         discovered_relation = next(
-            (
-                item
-                for item in elements
-                if isinstance(item, dict)
-                and item.get("type") == "relation"
-                and item.get("id") == route_id
-            ),
-            None,
+            (item for item in discovered_records if item.get("id") == route_id), None
         )
         if (
             not isinstance(discovered_relation, dict)
@@ -242,6 +308,10 @@ def has_deployable_derivative_offer(
             or discovered_relation.get("tags") != source_relations[route_id].get("tags")
             or any(
                 discovered_relation.get(field) in (None, "")
+                for field in ("version", "timestamp", "changeset")
+            )
+            or any(
+                discovered_relation.get(field) != source_relations[route_id].get(field)
                 for field in ("version", "timestamp", "changeset")
             )
         ):
