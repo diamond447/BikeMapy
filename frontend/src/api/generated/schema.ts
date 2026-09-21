@@ -681,8 +681,8 @@ export interface components {
       object_id: number
       owner_id: number
       aspect_type: string
-      event_time?: number
-      subscription_id?: number
+      event_time: number
+      subscription_id: number
     }
     Variant: {
       /** Format: uuid */
@@ -886,6 +886,13 @@ export interface operations {
         }
         content?: never
       }
+      /** @description The private game is unavailable. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
     }
   }
   v1_game_account_activities_full_history_create: {
@@ -907,6 +914,13 @@ export interface operations {
       }
       /** @description Authentication required. */
       401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The private game is unavailable. */
+      404: {
         headers: {
           [name: string]: unknown
         }
@@ -1867,6 +1881,13 @@ export interface operations {
         }
         content?: never
       }
+      /** @description Invalid subscription challenge. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
       /** @description Invalid challenge. */
       403: {
         headers: {
@@ -1891,13 +1912,26 @@ export interface operations {
       }
     }
     responses: {
+      /** @description Webhook accepted. */
       200: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['StravaWebhookPayload']
+        content?: never
+      }
+      /** @description Invalid Strava event. */
+      400: {
+        headers: {
+          [name: string]: unknown
         }
+        content?: never
+      }
+      /** @description Unknown Strava athlete. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 from datetime import timedelta
 from unittest.mock import patch
@@ -9,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from cryptography.fernet import Fernet
 from django.contrib.auth import get_user_model
+from django.contrib.gis.geos import GEOSGeometry
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -19,7 +18,6 @@ from apps.accounts.activity_services import (
     import_activity,
     process_sync_job,
     queue_sync,
-    verify_webhook_signature,
 )
 from apps.accounts.activity_tasks import dispatch_strava_sync_task
 from apps.accounts.competition_services import create_competition
@@ -48,6 +46,7 @@ def _settings() -> dict[str, object]:
         "STRAVA_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode(),
         "STRAVA_IDENTITY_GUARD_KEY": "strava-identity-guard-test-key-1234567890",
         "STRAVA_WEBHOOK_VERIFY_TOKEN": "verify-token",
+        "STRAVA_WEBHOOK_SUBSCRIPTION_ID": 9,
     }
 
 
@@ -85,6 +84,9 @@ def test_activity_eligibility_rejects_private_virtual_and_geometryless_payloads(
     assert not activity_is_eligible(_activity(private=True))
     assert not activity_is_eligible(_activity(map={}))
     assert not activity_is_eligible(_activity(type="Run", sport_type="Run"))
+    assert not activity_is_eligible(_activity(map={"summary_polyline": "truncated"}))
+    assert not activity_is_eligible(_activity(map={"summary_polyline": "!" * 250_001}))
+    assert import_activity(_player(43), _activity(43, athlete={"id": 999})) == "ignored"
 
 
 @override_settings(**_settings())
@@ -128,7 +130,8 @@ def test_initial_and_full_history_sync_are_bounded_and_resumable() -> None:
 
 
 @override_settings(**_settings())
-def test_webhook_challenge_signature_and_replay_are_verified() -> None:
+def test_official_webhook_challenge_replay_and_subscription_are_verified() -> None:
+    _player(42)
     client = Client()
     challenge = client.get(
         reverse("game-strava-webhook"),
@@ -145,25 +148,81 @@ def test_webhook_challenge_signature_and_replay_are_verified() -> None:
         "subscription_id": 9,
     }
     raw = json.dumps(payload).encode()
-    signature = hmac.new(b"webhook-secret", raw, hashlib.sha256).hexdigest()
     first = client.post(
         reverse("game-strava-webhook"),
         raw,
         content_type="application/json",
-        HTTP_X_STRAVA_SIGNATURE=signature,
     )
     second = client.post(
         reverse("game-strava-webhook"),
         raw,
         content_type="application/json",
-        HTTP_X_STRAVA_SIGNATURE=signature,
     )
     assert first.status_code == second.status_code == 200
     assert first.json()["duplicate"] is False
     assert second.json()["duplicate"] is True
     assert StravaWebhookEvent.objects.count() == 1
-    assert verify_webhook_signature(raw, signature)
-    assert not verify_webhook_signature(raw, "wrong")
+    wrong_subscription = {**payload, "subscription_id": 10}
+    response = client.post(
+        reverse("game-strava-webhook"),
+        json.dumps(wrong_subscription).encode(),
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+    spoofed_owner = {**payload, "owner_id": 999}
+    response = client.post(
+        reverse("game-strava-webhook"),
+        json.dumps(spoofed_owner).encode(),
+        content_type="application/json",
+    )
+    assert response.status_code == 404
+    assert Player.objects.filter(strava_athlete_id=999).count() == 0
+
+
+@override_settings(**_settings())
+def test_webhook_refetches_authoritative_activity_and_rejects_cross_athlete() -> None:
+    player = _player(43)
+    client = Client()
+    payload = {
+        "object_type": "activity",
+        "object_id": 430,
+        "owner_id": 43,
+        "aspect_type": "create",
+        "event_time": 123,
+        "subscription_id": 9,
+    }
+    raw = json.dumps(payload).encode()
+    assert (
+        client.post(
+            reverse("game-strava-webhook"), raw, content_type="application/json"
+        ).status_code
+        == 200
+    )
+    event = StravaWebhookEvent.objects.get()
+    job = StravaSyncJob.objects.get(webhook_event=event)
+    authoritative = _activity(430, athlete={"id": 43})
+    with patch("apps.accounts.activity_services.fetch_activity", return_value=authoritative):
+        assert process_sync_job(job.pk) == "completed"
+    assert ImportedActivity.objects.filter(player=player, provider_activity_id="430").exists()
+
+    payload = {**payload, "object_id": 431}
+    raw = json.dumps(payload).encode()
+    assert (
+        client.post(
+            reverse("game-strava-webhook"), raw, content_type="application/json"
+        ).status_code
+        == 200
+    )
+    event = StravaWebhookEvent.objects.get(object_id=431)
+    job = StravaSyncJob.objects.get(webhook_event=event)
+    with patch(
+        "apps.accounts.activity_services.fetch_activity",
+        return_value=_activity(431, athlete={"id": 999}),
+    ):
+        assert process_sync_job(job.pk) == "completed"
+    event.refresh_from_db()
+    assert event.last_error
+    assert not ImportedActivity.objects.filter(provider_activity_id="431").exists()
 
 
 @override_settings(**_settings())
@@ -302,6 +361,36 @@ def test_duplicate_dispatch_has_one_database_claim() -> None:
 
 
 @override_settings(**_settings())
+def test_dispatch_recovers_expired_worker_lease_but_not_fresh_worker() -> None:
+    player = _player(95)
+    stale = StravaSyncJob.objects.create(
+        player=player,
+        kind=StravaSyncJob.Kind.INCREMENTAL,
+        idempotency_key="stale-worker",
+        status=StravaSyncJob.Status.RUNNING,
+        lease_token="dead-worker",
+        lease_until=timezone.now() - timedelta(seconds=1),
+    )
+    fresh = StravaSyncJob.objects.create(
+        player=player,
+        kind=StravaSyncJob.Kind.INCREMENTAL,
+        idempotency_key="fresh-worker",
+        status=StravaSyncJob.Status.RUNNING,
+        lease_token="live-worker",
+        lease_until=timezone.now() + timedelta(minutes=5),
+    )
+    with patch("apps.accounts.activity_tasks.sync_strava_activities_task.apply_async") as publish:
+        assert dispatch_strava_sync_task(limit=10) == {"dispatched": 1}
+    stale.refresh_from_db()
+    fresh.refresh_from_db()
+    assert stale.status == StravaSyncJob.Status.FAILED
+    assert stale.dispatch_token
+    assert fresh.status == StravaSyncJob.Status.RUNNING
+    assert fresh.lease_token == "live-worker"
+    assert publish.call_count == 1
+
+
+@override_settings(**_settings())
 def test_disconnect_pauses_sync_retains_activity_and_reconnect_cancels_deletion() -> None:
     player = _player(93)
     import_activity(player, _activity(93))
@@ -341,7 +430,9 @@ def test_account_deletion_purges_activity_competition_and_credentials() -> None:
         player=player,
         provider_activity_id="94",
         calendar_date="2026-09-21",
-        geometry={"type": "LineString", "coordinates": [[14.4, 50.0], [14.5, 50.1]]},
+        geometry=GEOSGeometry(
+            '{"type":"LineString","coordinates":[[14.4,50.0],[14.5,50.1]]}', srid=4326
+        ),
     )
     CompetitionResult.objects.create(competition=competition, player=player, activity=activity)
     user_id = player.user_id

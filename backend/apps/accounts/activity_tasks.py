@@ -38,9 +38,44 @@ def dispatch_strava_sync_task(limit: int = 100) -> dict[str, int]:
     dispatched = 0
     now = timezone.now()
     claim_seconds = max(30, int(getattr(settings, "STRAVA_SYNC_DISPATCH_LEASE_SECONDS", 60)))
+    # A worker can disappear after claiming a job. Requeue only expired
+    # leases; a fresh RUNNING lease remains untouched.
+    stale_jobs = (
+        StravaSyncJob.objects.filter(
+            status=StravaSyncJob.Status.RUNNING,
+        )
+        .filter(Q(lease_until__isnull=True) | Q(lease_until__lte=now))
+        .order_by("updated_at", "pk")[: max(1, limit)]
+    )
+    for stale in stale_jobs:
+        with transaction.atomic():
+            stale_job = StravaSyncJob.objects.select_for_update().get(pk=stale.pk)
+            if stale_job.status != StravaSyncJob.Status.RUNNING or (
+                stale_job.lease_until is not None and stale_job.lease_until > now
+            ):
+                continue
+            stale_job.status = StravaSyncJob.Status.FAILED
+            stale_job.last_error = "Worker lease expired."
+            stale_job.next_attempt_at = now
+            stale_job.lease_token = ""
+            stale_job.lease_until = None
+            stale_job.dispatch_token = ""
+            stale_job.dispatch_lease_until = None
+            stale_job.save(
+                update_fields=(
+                    "status",
+                    "last_error",
+                    "next_attempt_at",
+                    "lease_token",
+                    "lease_until",
+                    "dispatch_token",
+                    "dispatch_lease_until",
+                    "updated_at",
+                )
+            )
     for _ in range(max(1, limit)):
         with transaction.atomic():
-            job = (
+            candidate_job = (
                 StravaSyncJob.objects.select_for_update()
                 .filter(
                     status__in=(StravaSyncJob.Status.PENDING, StravaSyncJob.Status.FAILED),
@@ -53,16 +88,18 @@ def dispatch_strava_sync_task(limit: int = 100) -> dict[str, int]:
                 .order_by("created_at", "pk")
                 .first()
             )
-            if job is None:
+            if candidate_job is None:
                 break
             token = uuid4().hex
-            job.dispatch_token = token
-            job.dispatch_lease_until = now + timedelta(seconds=claim_seconds)
-            job.save(update_fields=("dispatch_token", "dispatch_lease_until", "updated_at"))
+            candidate_job.dispatch_token = token
+            candidate_job.dispatch_lease_until = now + timedelta(seconds=claim_seconds)
+            candidate_job.save(
+                update_fields=("dispatch_token", "dispatch_lease_until", "updated_at")
+            )
         try:
-            sync_strava_activities_task.apply_async(args=(job.pk,))
+            sync_strava_activities_task.apply_async(args=(candidate_job.pk,))
         except Exception:
-            StravaSyncJob.objects.filter(pk=job.pk, dispatch_token=token).update(
+            StravaSyncJob.objects.filter(pk=candidate_job.pk, dispatch_token=token).update(
                 dispatch_token="", dispatch_lease_until=None, updated_at=timezone.now()
             )
             continue

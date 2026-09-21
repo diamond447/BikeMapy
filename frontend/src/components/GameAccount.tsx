@@ -315,7 +315,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
               <h3 id="game-activity-sync-title">{copy.gameActivityTitle}</h3>
             </div>
             <span className="game-account-sync-status">
-              {sync?.status ?? copy.gameActivityWaiting}
+              {sync ? copy.gameActivityStatus(sync.status) : copy.gameActivityWaiting}
             </span>
           </div>
           <p>{copy.gameActivityDescription}</p>

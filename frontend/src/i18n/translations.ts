@@ -174,6 +174,16 @@ export const translations = {
     gameActivityDescription:
       'Only public outdoor rides with a route are shared in your private competitions. Strava titles and exact times stay yours.',
     gameActivityWaiting: 'Waiting',
+    gameActivityStatus: (status: string) => {
+      const labels: Record<string, string> = {
+        queued: 'Queued',
+        running: 'Syncing',
+        paused: 'Paused',
+        failed: 'Needs attention',
+        idle: 'Up to date',
+      }
+      return labels[status] ?? 'Syncing'
+    },
     gameActivityProgress: (imported: number, processed: number) =>
       `${imported} rides kept · ${processed} checked`,
     gameActivityHistoryQueued: 'Full history is queued. You can keep using BikeMapy while it runs.',
@@ -381,6 +391,16 @@ export const translations = {
     gameActivityDescription:
       'Do vašich soukromých soutěží se sdílejí jen veřejné venkovní jízdy s trasou. Názvy a přesné časy ze Stravy zůstávají jen vám.',
     gameActivityWaiting: 'Čeká se',
+    gameActivityStatus: (status: string) => {
+      const labels: Record<string, string> = {
+        queued: 'Ve frontě',
+        running: 'Synchronizuje se',
+        paused: 'Pozastaveno',
+        failed: 'Vyžaduje pozornost',
+        idle: 'Aktuální',
+      }
+      return labels[status] ?? 'Synchronizuje se'
+    },
     gameActivityProgress: (imported: number, processed: number) =>
       `${imported} jízd uloženo · ${processed} zkontrolováno`,
     gameActivityHistoryQueued: 'Celá historie je zařazená do fronty. BikeMapy můžete dál používat.',

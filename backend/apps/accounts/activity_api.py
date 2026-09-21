@@ -21,11 +21,11 @@ from .activity_services import (
     geometry_payload,
     queue_sync,
     queue_webhook_event,
-    verify_webhook_signature,
+    validate_webhook_payload,
     webhook_event_key,
 )
 from .game_api import GameEndpoint, _private
-from .models import ImportedActivity, StravaSyncState, StravaWebhookEvent
+from .models import ImportedActivity, Player, StravaSyncState, StravaWebhookEvent
 from .services import game_is_available
 
 
@@ -56,8 +56,8 @@ class StravaWebhookPayloadSerializer(serializers.Serializer[dict[str, Any]]):
     object_id = serializers.IntegerField()
     owner_id = serializers.IntegerField()
     aspect_type = serializers.CharField()
-    event_time = serializers.IntegerField(required=False)
-    subscription_id = serializers.IntegerField(required=False)
+    event_time = serializers.IntegerField()
+    subscription_id = serializers.IntegerField()
 
 
 def sync_payload(state: StravaSyncState | None) -> dict[str, Any]:
@@ -85,10 +85,12 @@ def sync_payload(state: StravaSyncState | None) -> dict[str, Any]:
 
 
 class PlayerActivitySettingsView(GameEndpoint):
+    @extend_schema(auth=[{"cookieAuth": []}])  # type: ignore[list-item]
     @extend_schema(
         responses={
             200: ActivitySyncResponseSerializer,
             401: OpenApiResponse(description="Authentication required."),
+            404: OpenApiResponse(description="The private game is unavailable."),
         },
         tags=["game-activities"],
     )
@@ -103,21 +105,15 @@ class PlayerActivitySettingsView(GameEndpoint):
 
 
 class PlayerFullHistoryView(GameEndpoint):
+    @extend_schema(auth=[{"cookieAuth": []}])  # type: ignore[list-item]
     @extend_schema(
         request=None,
         responses={
             200: ActivitySyncResponseSerializer,
             401: OpenApiResponse(description="Authentication required."),
+            404: OpenApiResponse(description="The private game is unavailable."),
         },
         tags=["game-activities"],
-    )
-    @extend_schema(
-        request=StravaWebhookPayloadSerializer,
-        responses={
-            200: OpenApiResponse(description="Webhook accepted."),
-            403: OpenApiResponse(description="Invalid signature."),
-        },
-        tags=["game-webhooks"],
     )
     def post(self, request: Any) -> Response:
         if not game_is_available():
@@ -139,6 +135,7 @@ class StravaWebhookView(APIView):
     @extend_schema(
         responses={
             200: OpenApiResponse(description="Verified Strava subscription challenge."),
+            400: OpenApiResponse(description="Invalid subscription challenge."),
             403: OpenApiResponse(description="Invalid challenge."),
         },
         tags=["game-webhooks"],
@@ -153,21 +150,30 @@ class StravaWebhookView(APIView):
             return Response({"detail": "Invalid subscription challenge."}, status=403)
         return Response({"hub.challenge": challenge})
 
+    @extend_schema(
+        auth=[],
+        request=StravaWebhookPayloadSerializer,
+        responses={
+            200: OpenApiResponse(description="Webhook accepted."),
+            400: OpenApiResponse(description="Invalid Strava event."),
+            404: OpenApiResponse(description="Unknown Strava athlete."),
+        },
+        tags=["game-webhooks"],
+    )
     def post(self, request: Any) -> Response:
         raw = request.body
-        if not verify_webhook_signature(raw, request.headers.get("X-Strava-Signature", "")):
-            return Response({"detail": "Invalid webhook signature."}, status=403)
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return Response({"detail": "Invalid webhook payload."}, status=400)
-        if not isinstance(payload, dict) or payload.get("object_type") != "activity":
-            return Response({"detail": "Unsupported webhook payload."}, status=400)
-        try:
-            if int(payload.get("object_id") or 0) <= 0 or int(payload.get("owner_id") or 0) <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return Response({"detail": "Invalid webhook identity."}, status=400)
+        payload = validate_webhook_payload(payload)
+        if payload is None:
+            return Response({"detail": "Invalid Strava webhook event."}, status=400)
+        player = Player.objects.filter(
+            strava_athlete_id=payload["owner_id"], lifecycle=Player.Lifecycle.CONNECTED
+        ).first()
+        if player is None:
+            return Response({"detail": "Unknown Strava athlete."}, status=404)
         event_key = webhook_event_key(payload, raw)
         duplicate = StravaWebhookEvent.objects.filter(event_key=event_key).exists()
         queue_webhook_event(payload, event_key)
