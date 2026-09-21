@@ -25,7 +25,7 @@ from .competition_services import (
     switch_competition,
     transfer_ownership,
 )
-from .game_api import GameEndpoint
+from .game_api import GameEndpoint, _private
 from .models import Competition, CompetitionMembership, Player
 from .services import game_is_available
 
@@ -82,16 +82,33 @@ class CompetitionTransferSerializer(serializers.Serializer[dict[str, Any]]):
     player_id = serializers.IntegerField(min_value=1)
 
 
+class CompetitionErrorResponseSerializer(serializers.Serializer[dict[str, Any]]):
+    detail = serializers.CharField()
+    code = serializers.CharField(required=False)
+
+
+COMPETITION_ERROR_RESPONSES = {
+    400: CompetitionErrorResponseSerializer,
+    401: CompetitionErrorResponseSerializer,
+    403: CompetitionErrorResponseSerializer,
+    404: CompetitionErrorResponseSerializer,
+    409: CompetitionErrorResponseSerializer,
+}
+
+
 class CompetitionApi(GameEndpoint):
+    def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Response:
+        return _private(super().dispatch(request, *args, **kwargs))
+
     def _enabled(self) -> Response | None:
         return None if game_is_available() else self.unavailable()
 
     @staticmethod
     def _error(error: CompetitionError) -> Response:
+        if error.code == "not_found":
+            return Response({"detail": "Competition not found."}, status=404)
         code = (
-            404
-            if error.code == "not_found"
-            else 403
+            403
             if error.code == "owner_required"
             else 409
             if error.code in {"already_member", "owner_cannot_leave", "color_not_distinguishable"}
@@ -141,7 +158,7 @@ class CompetitionApi(GameEndpoint):
 class CompetitionListView(CompetitionApi):
     @extend_schema(
         operation_id="game_competition_list",
-        responses={200: CompetitionsResponseSerializer, 401: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionsResponseSerializer},
         tags=["game-competitions"],
     )
     def get(self, request: Any) -> Response:
@@ -160,7 +177,7 @@ class CompetitionListView(CompetitionApi):
 
     @extend_schema(
         request=CompetitionCreateSerializer,
-        responses={201: CompetitionResponseSerializer, 400: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 201: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def post(self, request: Any) -> Response:
@@ -181,7 +198,7 @@ class CompetitionListView(CompetitionApi):
 class CompetitionJoinView(CompetitionApi):
     @extend_schema(
         request=CompetitionJoinSerializer,
-        responses={200: CompetitionResponseSerializer, 400: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def post(self, request: Any) -> Response:
@@ -210,7 +227,7 @@ class CompetitionDetailView(CompetitionApi):
 
     @extend_schema(
         request=CompetitionRenameSerializer,
-        responses={200: CompetitionResponseSerializer, 404: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def patch(self, request: Any, competition_id: UUID) -> Response:
@@ -229,7 +246,7 @@ class CompetitionDetailView(CompetitionApi):
 
     @extend_schema(
         operation_id="game_competition_detail",
-        responses={200: CompetitionResponseSerializer, 404: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def get(self, request: Any, competition_id: UUID) -> Response:
@@ -250,8 +267,8 @@ class CompetitionDetailView(CompetitionApi):
 
     @extend_schema(
         responses={
+            **COMPETITION_ERROR_RESPONSES,
             204: OpenApiResponse(description="Competition deleted."),
-            404: OpenApiResponse(),
         },
         tags=["game-competitions"],
     )
@@ -271,7 +288,7 @@ class CompetitionDetailView(CompetitionApi):
 class CompetitionSwitchView(CompetitionApi):
     @extend_schema(
         request=None,
-        responses={200: CompetitionResponseSerializer, 404: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def post(self, request: Any, competition_id: UUID) -> Response:
@@ -293,7 +310,7 @@ class CompetitionSwitchView(CompetitionApi):
 class CompetitionRotateInviteView(CompetitionApi):
     @extend_schema(
         request=None,
-        responses={200: CompetitionResponseSerializer, 404: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def post(self, request: Any, competition_id: UUID) -> Response:
@@ -315,7 +332,10 @@ class CompetitionRotateInviteView(CompetitionApi):
 class CompetitionLeaveView(CompetitionApi):
     @extend_schema(
         request=None,
-        responses={204: OpenApiResponse(description="Membership removed."), 404: OpenApiResponse()},
+        responses={
+            **COMPETITION_ERROR_RESPONSES,
+            204: OpenApiResponse(description="Membership removed."),
+        },
         tags=["game-competitions"],
     )
     def post(self, request: Any, competition_id: UUID) -> Response:
@@ -337,7 +357,7 @@ class CompetitionLeaveView(CompetitionApi):
 class CompetitionMemberColorView(CompetitionApi):
     @extend_schema(
         request=CompetitionColorSerializer,
-        responses={200: CompetitionResponseSerializer, 404: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def patch(self, request: Any, competition_id: UUID) -> Response:
@@ -360,7 +380,10 @@ class CompetitionMemberColorView(CompetitionApi):
 
 class CompetitionRemoveMemberView(CompetitionApi):
     @extend_schema(
-        responses={204: OpenApiResponse(description="Member removed."), 404: OpenApiResponse()},
+        responses={
+            **COMPETITION_ERROR_RESPONSES,
+            204: OpenApiResponse(description="Member removed."),
+        },
         tags=["game-competitions"],
     )
     def delete(self, request: Any, competition_id: UUID, player_id: int) -> Response:
@@ -386,7 +409,7 @@ class CompetitionRemoveMemberView(CompetitionApi):
 class CompetitionTransferView(CompetitionApi):
     @extend_schema(
         request=CompetitionTransferSerializer,
-        responses={200: CompetitionResponseSerializer, 404: OpenApiResponse()},
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
         tags=["game-competitions"],
     )
     def post(self, request: Any, competition_id: UUID) -> Response:

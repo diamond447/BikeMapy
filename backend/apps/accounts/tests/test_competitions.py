@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+from uuid import uuid4
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client, override_settings
@@ -12,10 +15,12 @@ from apps.accounts.competition_services import (
     join_competition,
     leave_competition,
     remove_member,
+    schedule_recomputation,
     set_member_color,
     transfer_ownership,
 )
 from apps.accounts.models import (
+    Competition,
     CompetitionMembership,
     CompetitionRecomputation,
     CompetitionResult,
@@ -185,3 +190,110 @@ def test_remove_member_is_not_allowed_for_non_owner() -> None:
     join_competition(member, invite_code=competition.invite_code)
     with pytest.raises(CompetitionError, match="owner"):
         remove_member(member, competition, owner)
+
+
+@override_settings(**SETTINGS)
+def test_non_member_cannot_distinguish_missing_competition_and_private_headers_are_consistent() -> (
+    None
+):
+    owner = player(60)
+    outsider = player(61)
+    competition, _ = create_competition(owner, name="Hidden")
+    client = authenticated_client(outsider)
+    inaccessible = client.get(reverse("game-competition-detail", args=[competition.pk]))
+    missing = client.get(reverse("game-competition-detail", args=[uuid4()]))
+    assert inaccessible.status_code == missing.status_code == 404
+    assert inaccessible.json() == missing.json() == {"detail": "Competition not found."}
+    assert inaccessible["Cache-Control"] == missing["Cache-Control"] == "private, no-store"
+
+
+@override_settings(**SETTINGS)
+def test_removal_selects_remaining_membership_and_preserves_newer_generation() -> None:
+    owner = player(70)
+    member = player(71)
+    other = player(72)
+    first, _ = create_competition(owner, name="First")
+    second, _ = create_competition(other, name="Second")
+    join_competition(member, invite_code=first.invite_code)
+    member.refresh_from_db()
+    member.active_competition = first
+    member.save(update_fields=("active_competition",))
+    join_competition(member, invite_code=second.invite_code)
+    member.refresh_from_db()
+    remove_member(owner, first, member)
+    member.refresh_from_db()
+    assert member.active_competition_id == second.pk
+
+    first.refresh_from_db()
+    first.revision = 2
+    first.save(update_fields=("revision", "updated_at"))
+    newer = CompetitionRecomputation.objects.create(competition=first, generation=2)
+    older = CompetitionRecomputation.objects.create(competition=first, generation=0)
+    result = CompetitionResult.objects.create(competition=first, player=owner, points=3)
+    recompute_competition_results_task.apply(args=[newer.pk]).get()
+    recompute_competition_results_task.apply(args=[older.pk]).get()
+    result.refresh_from_db()
+    assert result.computed_revision == 2
+
+
+@override_settings(**SETTINGS)
+def test_color_comparison_rejects_low_delta_e_cyan_variants() -> None:
+    owner = player(80)
+    member = player(81)
+    competition, _ = create_competition(owner, name="Contrast", color="#00FFFF")
+    with pytest.raises(CompetitionError, match="too close"):
+        join_competition(member, invite_code=competition.invite_code, color="#48FFFF")
+
+
+@override_settings(**SETTINGS)
+def test_invite_creation_and_rotation_retry_integrity_collisions() -> None:
+    owner = player(90)
+    original_create = Competition.objects.create
+    create_calls = 0
+
+    def flaky_create(**fields: object) -> Competition:
+        nonlocal create_calls
+        create_calls += 1
+        if create_calls == 1:
+            from django.db import IntegrityError
+
+            raise IntegrityError("invite race")
+        return original_create(**fields)
+
+    with patch.object(Competition.objects, "create", side_effect=flaky_create):
+        competition, _ = create_competition(owner, name="Retry")
+    assert competition.invite_code and create_calls == 2
+
+    save_calls = 0
+
+    def flaky_save(*args: object, **kwargs: object) -> None:
+        nonlocal save_calls
+        save_calls += 1
+        if save_calls == 1:
+            from django.db import IntegrityError
+
+            raise IntegrityError("invite race")
+
+    with patch.object(Competition, "save", side_effect=flaky_save):
+        from apps.accounts.competition_services import rotate_invite_code
+
+        rotate_invite_code(owner, competition)
+    assert save_calls == 2
+
+
+@override_settings(**SETTINGS)
+def test_dispatch_failure_is_recorded_for_sweeper_retry() -> None:
+    owner = player(100)
+    competition, _ = create_competition(owner, name="Outbox")
+    from apps.accounts.competition_services import _dispatch_recomputation
+
+    with patch(
+        "apps.accounts.tasks.recompute_competition_results_task.apply_async",
+        side_effect=RuntimeError("redis down"),
+    ):
+        job = schedule_recomputation(competition)
+        _dispatch_recomputation(job.pk)
+    job.refresh_from_db()
+    assert job.status == CompetitionRecomputation.Status.PENDING
+    assert job.attempts == 1
+    assert job.error == "redis down"

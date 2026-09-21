@@ -69,8 +69,30 @@ describe('GameCompetitions', () => {
   })
 
   it('shows a safe error when competition loading fails', async () => {
-    vi.spyOn(apiClient, 'GET').mockResolvedValue(result(undefined, 503) as never)
+    const get = vi
+      .spyOn(apiClient, 'GET')
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValue(result({ competitions: [], active_competition_id: null }) as never)
     render(<GameCompetitions copy={translations.en} />)
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not be reached/i)
+    await userEvent.setup().click(screen.getByRole('button', { name: /retry competitions/i }))
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+  })
+
+  it('preserves create and join fields when a mutation fails', async () => {
+    vi.spyOn(apiClient, 'GET').mockResolvedValue(
+      result({ competitions: [], active_competition_id: null }) as never,
+    )
+    vi.spyOn(apiClient, 'POST').mockRejectedValue(new Error('network down'))
+    const user = userEvent.setup()
+    render(<GameCompetitions copy={translations.en} />)
+    const name = await screen.findByLabelText('Create competition')
+    const invite = screen.getByPlaceholderText('Enter invite code')
+    await user.type(name, 'Rain loop')
+    await user.click(screen.getByRole('button', { name: 'Create competition' }))
+    expect(name).toHaveValue('Rain loop')
+    await user.type(invite, 'JOIN123')
+    await user.click(screen.getByRole('button', { name: 'Join competition' }))
+    expect(invite).toHaveValue('JOIN123')
   })
 })

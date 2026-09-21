@@ -431,6 +431,10 @@ export interface components {
       name: string
       color?: string
     }
+    CompetitionErrorResponse: {
+      detail: string
+      code?: string
+    }
     CompetitionJoin: {
       invite_code: string
       color?: string
@@ -976,12 +980,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionsResponse']
         }
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       401: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1008,12 +1045,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
       400: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1036,12 +1106,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1063,12 +1166,45 @@ export interface operations {
         }
         content?: never
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1097,12 +1233,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1124,12 +1293,45 @@ export interface operations {
         }
         content?: never
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1152,12 +1354,45 @@ export interface operations {
         }
         content?: never
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1186,12 +1421,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1214,12 +1482,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1242,12 +1543,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1276,12 +1610,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }
@@ -1308,12 +1675,45 @@ export interface operations {
           'application/json': components['schemas']['CompetitionResponse']
         }
       }
-      /** @description No response body */
       400: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
       }
     }
   }

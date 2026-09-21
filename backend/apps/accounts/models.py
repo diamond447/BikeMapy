@@ -224,6 +224,9 @@ class CompetitionRecomputation(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     error = models.CharField(max_length=240, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [

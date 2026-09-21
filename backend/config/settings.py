@@ -412,6 +412,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.accounts.retry_revocations",
         "schedule": 900,
     },
+    "dispatch-game-recomputations": {
+        "task": "bikemapy.accounts.dispatch_competition_recomputations",
+        "schedule": 60,
+    },
 }
 
 # Health monitoring treats a daily crawl as stale after this configurable

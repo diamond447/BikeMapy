@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import secrets
+from datetime import timedelta
 from math import sqrt
 from typing import Any
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from .models import (
     Competition,
@@ -28,7 +30,9 @@ DEFAULT_COLORS = (
     "#E76F51",
     "#577590",
 )
-MIN_COLOR_DISTANCE = 72
+MIN_COLOR_DELTA_E = 18.0
+MAX_DISPATCH_ATTEMPTS = 5
+DISPATCH_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
 
 
 class CompetitionError(Exception):
@@ -62,14 +66,33 @@ def normalize_color(value: Any) -> str:
     return color
 
 
-def _color_distance(first: str, second: str) -> float:
-    left = tuple(int(first[offset : offset + 2], 16) for offset in (1, 3, 5))
-    right = tuple(int(second[offset : offset + 2], 16) for offset in (1, 3, 5))
-    return sqrt(float(sum((a - b) ** 2 for a, b in zip(left, right, strict=True))))
+def _color_lab(color: str) -> tuple[float, float, float]:
+    """Convert sRGB to CIE Lab (D65) for perceptual color comparisons."""
+
+    channels = [int(color[offset : offset + 2], 16) / 255 for offset in (1, 3, 5)]
+    linear = [
+        channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    x = (linear[0] * 0.4124 + linear[1] * 0.3576 + linear[2] * 0.1805) / 0.95047
+    y = linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722
+    z = (linear[0] * 0.0193 + linear[1] * 0.1192 + linear[2] * 0.9505) / 1.08883
+
+    def pivot(value: float) -> float:
+        return value ** (1 / 3) if value > 0.008856 else 7.787 * value + 16 / 116
+
+    fx, fy, fz = pivot(x), pivot(y), pivot(z)
+    return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def _color_delta_e(first: str, second: str) -> float:
+    left = _color_lab(first)
+    right = _color_lab(second)
+    return sqrt(sum((a - b) ** 2 for a, b in zip(left, right, strict=True)))
 
 
 def ensure_distinguishable(color: str, existing: list[str]) -> None:
-    if any(_color_distance(color, candidate) < MIN_COLOR_DISTANCE for candidate in existing):
+    if any(_color_delta_e(color, candidate) < MIN_COLOR_DELTA_E for candidate in existing):
         raise CompetitionError(
             "That color is too close to a member color in this competition.",
             code="color_not_distinguishable",
@@ -78,25 +101,30 @@ def ensure_distinguishable(color: str, existing: list[str]) -> None:
 
 def available_color(existing: list[str]) -> str:
     for color in DEFAULT_COLORS:
-        if all(_color_distance(color, candidate) >= MIN_COLOR_DISTANCE for candidate in existing):
+        if all(_color_delta_e(color, candidate) >= MIN_COLOR_DELTA_E for candidate in existing):
             return color
     # A deterministic fallback keeps joins possible after the palette is full.
     for red in range(0, 256, 32):
         for green in range(0, 256, 32):
             for blue in range(0, 256, 32):
                 candidate = f"#{red:02X}{green:02X}{blue:02X}"
-                if all(
-                    _color_distance(candidate, value) >= MIN_COLOR_DISTANCE for value in existing
-                ):
+                if all(_color_delta_e(candidate, value) >= MIN_COLOR_DELTA_E for value in existing):
                     return candidate
     raise CompetitionError("No sufficiently distinct member color is available.", code="no_color")
 
 
 def _new_invite_code() -> str:
-    while True:
-        code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(INVITE_LENGTH))
-        if not Competition.objects.filter(invite_code=code).exists():
-            return code
+    return "".join(secrets.choice(INVITE_ALPHABET) for _ in range(INVITE_LENGTH))
+
+
+def _create_with_unique_invite(**fields: Any) -> Competition:
+    for _ in range(MAX_DISPATCH_ATTEMPTS):
+        try:
+            with transaction.atomic():
+                return Competition.objects.create(**fields, invite_code=_new_invite_code())
+        except IntegrityError:
+            continue
+    raise CompetitionError("Could not allocate a unique invite code.", code="invite_unavailable")
 
 
 def _membership(player: Player, competition: Competition) -> CompetitionMembership:
@@ -111,10 +139,24 @@ def _dispatch_recomputation(job_id: int) -> None:
     try:
         from .tasks import recompute_competition_results_task
 
-        recompute_competition_results_task.delay(job_id)
-    except Exception:
-        # The durable pending row is the source of truth; a worker can retry it.
+        recompute_competition_results_task.apply_async(args=(job_id,))
+    except Exception as exc:
+        with transaction.atomic():
+            job = CompetitionRecomputation.objects.select_for_update().get(pk=job_id)
+            job.attempts += 1
+            job.error = str(exc)[:240]
+            if job.attempts >= MAX_DISPATCH_ATTEMPTS:
+                job.status = CompetitionRecomputation.Status.FAILED
+            else:
+                retry_index = min(job.attempts - 1, len(DISPATCH_RETRY_SECONDS) - 1)
+                job.status = CompetitionRecomputation.Status.PENDING
+                job.next_attempt_at = timezone.now() + timedelta(
+                    seconds=DISPATCH_RETRY_SECONDS[retry_index]
+                )
+            job.save(update_fields=("attempts", "status", "error", "next_attempt_at"))
         return
+    with transaction.atomic():
+        CompetitionRecomputation.objects.filter(pk=job_id).update(dispatched_at=timezone.now())
 
 
 def schedule_recomputation(
@@ -135,10 +177,9 @@ def schedule_recomputation(
 def create_competition(
     player: Player, *, name: Any, color: Any = None
 ) -> tuple[Competition, CompetitionMembership]:
+    player = Player.objects.select_for_update().get(pk=player.pk)
     selected_color = normalize_color(color) if color is not None else available_color([])
-    competition = Competition.objects.create(
-        owner=player, name=normalize_name(name), invite_code=_new_invite_code()
-    )
+    competition = _create_with_unique_invite(owner=player, name=normalize_name(name))
     membership = CompetitionMembership.objects.create(
         competition=competition, player=player, color=selected_color
     )
@@ -152,6 +193,7 @@ def create_competition(
 def join_competition(
     player: Player, *, invite_code: Any, color: Any = None
 ) -> tuple[Competition, CompetitionMembership]:
+    player = Player.objects.select_for_update().get(pk=player.pk)
     code = str(invite_code or "").strip().upper()
     try:
         competition = Competition.objects.select_for_update().get(invite_code=code, is_active=True)
@@ -173,6 +215,8 @@ def join_competition(
 
 @transaction.atomic
 def switch_competition(player: Player, competition: Competition) -> CompetitionMembership:
+    player = Player.objects.select_for_update().get(pk=player.pk)
+    competition = Competition.objects.select_for_update().get(pk=competition.pk)
     membership = _membership(player, competition)
     Player.objects.filter(pk=player.pk).update(active_competition=competition)
     player.active_competition = competition
@@ -198,8 +242,18 @@ def rotate_invite_code(player: Player, competition: Competition) -> Competition:
         raise CompetitionError(
             "Only the competition owner can rotate the invite code.", code="owner_required"
         )
-    locked.invite_code = _new_invite_code()
-    locked.save(update_fields=("invite_code", "updated_at"))
+    for _ in range(MAX_DISPATCH_ATTEMPTS):
+        locked.invite_code = _new_invite_code()
+        try:
+            with transaction.atomic():
+                locked.save(update_fields=("invite_code", "updated_at"))
+            break
+        except IntegrityError:
+            continue
+    else:
+        raise CompetitionError(
+            "Could not allocate a unique invite code.", code="invite_unavailable"
+        )
     return locked
 
 
@@ -221,6 +275,7 @@ def set_member_color(
 def remove_member(
     owner: Player, competition: Competition, member: Player
 ) -> CompetitionRecomputation:
+    member = Player.objects.select_for_update().get(pk=member.pk)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
     _membership(owner, locked)
     if locked.owner_id != owner.pk:
@@ -238,7 +293,13 @@ def remove_member(
     CompetitionResult.objects.filter(competition=locked, player=member).delete()
     membership.delete()
     if member.active_competition_id == locked.pk:
-        replacement = locked.memberships.exclude(player=member).order_by("joined_at", "pk").first()
+        replacement = (
+            CompetitionMembership.objects.select_for_update()
+            .filter(player=member)
+            .exclude(competition=locked)
+            .order_by("joined_at", "pk")
+            .first()
+        )
         Player.objects.filter(pk=member.pk).update(
             active_competition=replacement.competition_id if replacement else None
         )
@@ -247,6 +308,7 @@ def remove_member(
 
 @transaction.atomic
 def leave_competition(player: Player, competition: Competition) -> CompetitionRecomputation:
+    player = Player.objects.select_for_update().get(pk=player.pk)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
     _membership(player, locked)
     if locked.owner_id == player.pk:
@@ -257,7 +319,13 @@ def leave_competition(player: Player, competition: Competition) -> CompetitionRe
     CompetitionResult.objects.filter(competition=locked, player=player).delete()
     CompetitionMembership.objects.filter(competition=locked, player=player).delete()
     if player.active_competition_id == locked.pk:
-        replacement = player.competition_memberships.order_by("joined_at", "pk").first()
+        replacement = (
+            CompetitionMembership.objects.select_for_update()
+            .filter(player=player)
+            .exclude(competition=locked)
+            .order_by("joined_at", "pk")
+            .first()
+        )
         Player.objects.filter(pk=player.pk).update(
             active_competition=replacement.competition_id if replacement else None
         )

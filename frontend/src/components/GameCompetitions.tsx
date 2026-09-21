@@ -14,6 +14,7 @@ function errorDetail(error: unknown): string | null {
 export function GameCompetitions({ copy }: { copy: Copy }) {
   const [competitions, setCompetitions] = useState<Competition[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -22,15 +23,28 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
   const [renameId, setRenameId] = useState<string | null>(null)
   const [rename, setRename] = useState('')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     setLoading(true)
-    const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
-    rememberCsrfToken(result.response)
-    if (result.data && Array.isArray(result.data.competitions))
-      setCompetitions(result.data.competitions)
-    else if (result.response?.status !== 401)
-      setMessage(errorDetail(result.error) ?? copy.gameCompetitionError)
-    setLoading(false)
+    setLoadError(false)
+    try {
+      const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
+      rememberCsrfToken(result.response)
+      if (result.data && Array.isArray(result.data.competitions)) {
+        setCompetitions(result.data.competitions)
+        return true
+      }
+      if (result.response?.status !== 401) {
+        setMessage(errorDetail(result.error) ?? copy.gameCompetitionError)
+        setLoadError(true)
+      }
+      return false
+    } catch {
+      setMessage(copy.gameCompetitionError)
+      setLoadError(true)
+      return false
+    } finally {
+      setLoading(false)
+    }
   }, [copy.gameCompetitionError])
 
   useEffect(() => {
@@ -40,7 +54,7 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
 
   const action = async (
     run: () => Promise<{ response?: Response; data?: unknown; error?: unknown }>,
-  ) => {
+  ): Promise<boolean> => {
     setBusy(true)
     setMessage(null)
     try {
@@ -48,11 +62,13 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
       rememberCsrfToken(result.response)
       if (result.response?.status && result.response.status >= 400) {
         setMessage(errorDetail(result.error) ?? copy.gameCompetitionError)
+        return false
       } else {
-        await load()
+        return await load()
       }
     } catch {
       setMessage(copy.gameCompetitionError)
+      return false
     } finally {
       setBusy(false)
     }
@@ -60,31 +76,45 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
 
   const create = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    await action(() =>
-      apiClient.POST('/api/v1/game/competitions/', {
-        body: { name: name.trim(), color: newColor },
-        credentials: 'include',
-        headers: csrfHeaders(),
-      }),
+    if (
+      await action(() =>
+        apiClient.POST('/api/v1/game/competitions/', {
+          body: { name: name.trim(), color: newColor },
+          credentials: 'include',
+          headers: csrfHeaders(),
+        }),
+      )
     )
-    setName('')
+      setName('')
   }
 
   const join = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    await action(() =>
-      apiClient.POST('/api/v1/game/competitions/join/', {
-        body: { invite_code: invite.trim(), color: newColor },
-        credentials: 'include',
-        headers: csrfHeaders(),
-      }),
+    if (
+      await action(() =>
+        apiClient.POST('/api/v1/game/competitions/join/', {
+          body: { invite_code: invite.trim(), color: newColor },
+          credentials: 'include',
+          headers: csrfHeaders(),
+        }),
+      )
     )
-    setInvite('')
+      setInvite('')
   }
 
   const current = competitions.find((competition) => competition.is_selected) ?? competitions[0]
 
   if (loading) return <p className="game-account-status">{copy.gameCompetitionsLoading}</p>
+
+  if (loadError)
+    return (
+      <div className="game-account-message">
+        <p role="alert">{message ?? copy.gameCompetitionError}</p>
+        <button type="button" className="game-account-primary" onClick={() => void load()}>
+          {copy.gameCompetitionRetry}
+        </button>
+      </div>
+    )
 
   return (
     <section className="game-competitions" aria-labelledby="game-competitions-heading">
