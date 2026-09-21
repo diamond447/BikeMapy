@@ -117,6 +117,18 @@ URL, with the imported relation IDs present in that discovery result. The
 sample must never be presented as evidence that Overpass discovered a national
 catalogue or as a substitute for production candidate selection.
 
+The discovery artifact is retained as the exact response bytes, represented in
+the manifest by `discovery_artifact_content_base64` and its SHA-256
+`discovery_result_sha256`; the importer decodes and parses those bytes and
+derives relation membership, tags, and OSM `version`/`timestamp`/`changeset`
+fields from them. A caller-authored ID/tag dictionary or a hash of such a
+dictionary is not discovery evidence. The artifact URL must be a separate
+trusted retained artifact, never the selected relation's download URL. A
+`regional_extract` record additionally carries `overpass_failure_evidence`:
+the approved Overpass endpoint and query, UTC `attempted_at`, an HTTP/network
+failure status and error, and base64 log bytes with their exact SHA-256. The
+`overpass_unavailable` flag alone is insufficient.
+
 ### Deterministic international-route exclusion
 
 Before applying the allow predicate, normalize each `network`, `ref`, `name`,

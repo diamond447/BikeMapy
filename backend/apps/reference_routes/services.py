@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -212,10 +213,61 @@ def _validate_http_evidence(metadata: dict[str, Any]) -> None:
             raise ValueError(f"Manifest HTTP evidence marks {conditional} both present and absent")
 
 
-def _canonical_json_sha256(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+def _decode_verified_content(value: Any, *, field: str, expected_hash: Any) -> bytes:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field} is required")
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        raise ValueError(f"{field} hash is invalid")
+    try:
+        content = base64.b64decode(value.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise ValueError(f"{field} is not valid base64") from exc
+    if not content or hashlib.sha256(content).hexdigest() != expected_hash:
+        raise ValueError(f"{field} hash does not match retained bytes")
+    return content
+
+
+def _parse_verified_discovery_bytes(metadata: dict[str, Any]) -> dict[str, Any]:
+    content = _decode_verified_content(
+        metadata.get("discovery_artifact_content_base64"),
+        field="Production discovery artifact content",
+        expected_hash=metadata.get("discovery_result_sha256"),
+    )
+    try:
+        discovery = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Production discovery artifact is not valid JSON") from exc
+    if not isinstance(discovery, dict) or not isinstance(discovery.get("elements"), list):
+        raise ValueError("Production discovery artifact is not an OSM response")
+    osm3s = discovery.get("osm3s")
+    if not isinstance(osm3s, dict) or not osm3s.get("timestamp_osm_base"):
+        raise ValueError("Production discovery artifact lacks OSM timestamp evidence")
+    return discovery
+
+
+def _validate_overpass_failure_evidence(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("Regional discovery requires retained Overpass failure evidence")
+    if (
+        value.get("endpoint") != OSM_OVERPASS_ENDPOINT
+        or value.get("query_text") != OSM_DISCOVERY_QUERY
+    ):
+        raise ValueError("Overpass failure evidence is not bound to the approved request")
+    _parse_utc_timestamp(value.get("attempted_at"), field="overpass attempted_at")
+    network_status = value.get("network_status")
+    if network_status not in {"http_error", "network_error"}:
+        raise ValueError("Overpass failure evidence status is invalid")
+    if network_status == "http_error" and (
+        isinstance(value.get("http_status"), bool)
+        or not isinstance(value.get("http_status"), int)
+        or not 400 <= value["http_status"] < 600
+    ):
+        raise ValueError("Overpass HTTP failure status is invalid")
+    if not isinstance(value.get("error"), str) or not value["error"].strip():
+        raise ValueError("Overpass failure error text is required")
+    _decode_verified_content(
+        value.get("log_base64"), field="Overpass failure log", expected_hash=value.get("log_sha256")
+    )
 
 
 def _validate_discovery_evidence(
@@ -257,6 +309,10 @@ def _validate_discovery_evidence(
         or artifact_parts.scheme != configured_parts.scheme
         or artifact_parts.netloc != configured_parts.netloc
         or not artifact_parts.path.startswith(configured_parts.path.rstrip("/") + "/")
+        or not any(
+            marker in artifact_parts.path.split("/") for marker in ("discovery", "artifacts")
+        )
+        or not artifact_parts.path.casefold().endswith(".json")
         or (
             artifact_parts.scheme == endpoint_parts.scheme
             and artifact_parts.netloc == endpoint_parts.netloc
@@ -264,36 +320,18 @@ def _validate_discovery_evidence(
         )
     ):
         raise ValueError("Production discovery artifact must be a separate trusted artifact")
-    discovery_payload = metadata["discovery_result_payload"]
-    if not isinstance(discovery_payload, dict):
-        raise ValueError("Production discovery result payload is required")
-    if _canonical_json_sha256(discovery_payload) != metadata["discovery_result_sha256"]:
-        raise ValueError("Production discovery hash does not match the retained result")
-    if (
-        discovery_payload.get("format") != "bikemapy-reference-discovery-v1"
-        or discovery_payload.get("mechanism") != mechanism
-        or discovery_payload.get("artifact_url") != artifact
-        or discovery_payload.get("executed_at") != metadata["discovery_executed_at"]
-        or discovery_payload.get("selected_relation_ids") != discovery_ids
-    ):
-        raise ValueError("Production discovery result metadata is not bound to its manifest")
+    discovery_payload = _parse_verified_discovery_bytes(metadata)
     if mechanism == "overpass":
-        if (
-            discovery_payload.get("endpoint") != OSM_OVERPASS_ENDPOINT
-            or discovery_payload.get("query_text") != OSM_DISCOVERY_QUERY
-            or metadata["discovery_query_or_extract_id"]
-            != f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
+        if metadata["discovery_query_or_extract_id"] != (
+            f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
         ):
             raise ValueError("Production Overpass discovery must use the approved query")
-    elif (
-        not metadata.get("overpass_unavailable")
-        or not isinstance(discovery_payload.get("extract_provider"), str)
-        or not discovery_payload["extract_provider"].strip()
-        or not isinstance(discovery_payload.get("extract_date"), str)
-        or not discovery_payload["extract_date"].strip()
-        or not str(metadata["discovery_query_or_extract_id"]).startswith("regional-extract:")
-    ):
+    elif metadata.get("overpass_unavailable") is not True or not str(
+        metadata["discovery_query_or_extract_id"]
+    ).startswith("regional-extract:"):
         raise ValueError("Regional discovery requires recorded Overpass-first fallback evidence")
+    if mechanism == "regional_extract":
+        _validate_overpass_failure_evidence(metadata.get("overpass_failure_evidence"))
     payload_elements = discovery_payload.get("elements")
     if not isinstance(payload_elements, list):
         raise ValueError("Production discovery result must retain relation records")
@@ -320,6 +358,13 @@ def _validate_discovery_evidence(
             raise ValueError(
                 "Production discovery relation tags do not match the imported snapshot"
             )
+        if any(
+            not isinstance(discovered[route_id].get(field), (int, str))
+            or discovered[route_id].get(field) in (None, "")
+            for field in ("version", "timestamp", "changeset")
+        ):
+            raise ValueError("Production discovery relation lacks OSM provenance fields")
+    metadata["discovery_result_payload"] = discovery_payload
     if executed_at > timezone.now().astimezone(UTC) + timedelta(minutes=5):
         raise ValueError("Production discovery execution time is in the future")
 
@@ -372,6 +417,7 @@ def _validate_source_evidence(
             "discovery_result_sha256",
             "discovery_artifact_url",
             "discovery_selected_relation_ids",
+            "discovery_artifact_content_base64",
         )
         if any(not metadata.get(field) for field in discovery_fields):
             raise ValueError("Production import requires complete discovery evidence")

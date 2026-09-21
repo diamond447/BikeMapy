@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -55,6 +56,72 @@ def _url_matches_offer_base(value: str, base: str) -> bool:
     )
 
 
+def _verified_discovery_content(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    encoded = metadata.get("discovery_artifact_content_base64")
+    expected_hash = metadata.get("discovery_result_sha256")
+    if not isinstance(encoded, str) or not isinstance(expected_hash, str):
+        return None
+    try:
+        content = base64.b64decode(encoded.encode("ascii"), validate=True)
+        if not content or hashlib.sha256(content).hexdigest() != expected_hash:
+            return None
+        discovery = json.loads(content)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(discovery, dict)
+        or not isinstance(discovery.get("elements"), list)
+        or not isinstance(discovery.get("osm3s"), dict)
+        or not discovery["osm3s"].get("timestamp_osm_base")
+    ):
+        return None
+    try:
+        source_timestamp = datetime.fromisoformat(
+            str(discovery["osm3s"]["timestamp_osm_base"]).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if source_timestamp.tzinfo is None or source_timestamp.utcoffset() != timedelta(0):
+        return None
+    return discovery
+
+
+def _valid_overpass_failure_evidence(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if (
+        value.get("endpoint") != OSM_OVERPASS_ENDPOINT
+        or value.get("query_text") != OSM_DISCOVERY_QUERY
+    ):
+        return False
+    if not isinstance(value.get("attempted_at"), str) or not value["attempted_at"].strip():
+        return False
+    try:
+        attempted_at = datetime.fromisoformat(value["attempted_at"].replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if attempted_at.tzinfo is None or attempted_at.utcoffset() != timedelta(0):
+        return False
+    if value.get("network_status") not in {"http_error", "network_error"}:
+        return False
+    if value["network_status"] == "http_error" and (
+        isinstance(value.get("http_status"), bool)
+        or not isinstance(value.get("http_status"), int)
+        or not 400 <= value["http_status"] < 600
+    ):
+        return False
+    if not isinstance(value.get("error"), str) or not value["error"].strip():
+        return False
+    encoded, expected_hash = value.get("log_base64"), value.get("log_sha256")
+    if not isinstance(encoded, str) or not isinstance(expected_hash, str):
+        return False
+    try:
+        content = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return bool(content) and hashlib.sha256(content).hexdigest() == expected_hash
+
+
 def has_deployable_derivative_offer(
     collection: ReferenceCollection, source_import: Any | None = None
 ) -> bool:
@@ -77,22 +144,21 @@ def has_deployable_derivative_offer(
             "discovery_result_sha256",
             "discovery_artifact_url",
             "discovery_selected_relation_ids",
-            "discovery_result_payload",
+            "discovery_artifact_content_base64",
         )
     ):
         return False
-    discovery_payload = metadata["discovery_result_payload"]
-    if not isinstance(discovery_payload, dict):
+    discovery_payload = _verified_discovery_content(metadata)
+    if discovery_payload is None:
+        return False
+    executed_at = metadata.get("discovery_executed_at")
+    if not isinstance(executed_at, str):
         return False
     try:
-        payload_hash = hashlib.sha256(
-            json.dumps(
-                discovery_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode()
-        ).hexdigest()
-    except (TypeError, ValueError):
+        parsed_executed_at = datetime.fromisoformat(executed_at.replace("Z", "+00:00"))
+    except ValueError:
         return False
-    if payload_hash != metadata["discovery_result_sha256"]:
+    if parsed_executed_at.tzinfo is None or parsed_executed_at.utcoffset() != timedelta(0):
         return False
     expected_ids = metadata.get("expected_relation_ids")
     discovery_ids = metadata.get("discovery_selected_relation_ids")
@@ -102,10 +168,6 @@ def has_deployable_derivative_offer(
         or any(not isinstance(value, int) or isinstance(value, bool) for value in expected_ids)
         or any(not isinstance(value, int) or isinstance(value, bool) for value in discovery_ids)
         or sorted(expected_ids) != sorted(discovery_ids)
-        or discovery_payload.get("selected_relation_ids") != discovery_ids
-        or discovery_payload.get("artifact_url") != metadata.get("discovery_artifact_url")
-        or discovery_payload.get("executed_at") != metadata.get("discovery_executed_at")
-        or discovery_payload.get("mechanism") != metadata.get("discovery_mechanism")
     ):
         return False
     artifact = metadata.get("discovery_artifact_url")
@@ -120,6 +182,10 @@ def has_deployable_derivative_offer(
         or artifact_parts.scheme != configured_parts.scheme
         or artifact_parts.netloc != configured_parts.netloc
         or not artifact_parts.path.startswith(configured_parts.path.rstrip("/") + "/")
+        or not any(
+            marker in artifact_parts.path.split("/") for marker in ("discovery", "artifacts")
+        )
+        or not artifact_parts.path.casefold().endswith(".json")
         or (
             artifact_parts.scheme == source_parts.scheme
             and artifact_parts.netloc == source_parts.netloc
@@ -129,15 +195,14 @@ def has_deployable_derivative_offer(
         return False
     mechanism = metadata.get("discovery_mechanism")
     query_id = str(metadata.get("discovery_query_or_extract_id", ""))
-    if mechanism == "overpass" and (
-        query_id != f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
-        or discovery_payload.get("endpoint") != OSM_OVERPASS_ENDPOINT
-        or discovery_payload.get("query_text") != OSM_DISCOVERY_QUERY
+    if mechanism == "overpass" and query_id != (
+        f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
     ):
         return False
     if mechanism == "regional_extract" and (
         not query_id.startswith("regional-extract:")
         or metadata.get("overpass_unavailable") is not True
+        or not _valid_overpass_failure_evidence(metadata.get("overpass_failure_evidence"))
     ):
         return False
     elements = discovery_payload.get("elements")
@@ -150,6 +215,37 @@ def has_deployable_derivative_offer(
     }
     if not set(expected_ids).issubset(discovered_ids):
         return False
+    raw_elements = (
+        source_import.raw_payload.get("elements", [])
+        if isinstance(source_import.raw_payload, dict)
+        else []
+    )
+    source_relations = {
+        item.get("id"): item
+        for item in raw_elements
+        if isinstance(item, dict) and item.get("type") == "relation"
+    }
+    for route_id in expected_ids:
+        discovered_relation = next(
+            (
+                item
+                for item in elements
+                if isinstance(item, dict)
+                and item.get("type") == "relation"
+                and item.get("id") == route_id
+            ),
+            None,
+        )
+        if (
+            not isinstance(discovered_relation, dict)
+            or route_id not in source_relations
+            or discovered_relation.get("tags") != source_relations[route_id].get("tags")
+            or any(
+                discovered_relation.get(field) in (None, "")
+                for field in ("version", "timestamp", "changeset")
+            )
+        ):
+            return False
     offer = getattr(source_import, "alteration_offer", None)
     return bool(offer and offer.is_complete_for(source_import, configured))
 

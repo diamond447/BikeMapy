@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +20,6 @@ from apps.api.views_reference_routes import reference_queryset
 from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.reference_routes.models import (
     OSM_DISCOVERY_QUERY,
-    OSM_OVERPASS_ENDPOINT,
     ReferenceAlterationOffer,
     ReferenceCollection,
     ReferenceImport,
@@ -120,15 +120,13 @@ def import_production_snapshot(
     executed_at = "2026-09-21T00:00:00Z"
     artifact_url = f"{OFFER_BASE_URL}/blob/main/discovery/{'-'.join(map(str, relation_ids))}.json"
     discovery_payload = {
-        "format": "bikemapy-reference-discovery-v1",
-        "mechanism": "overpass",
-        "endpoint": OSM_OVERPASS_ENDPOINT,
-        "query_text": OSM_DISCOVERY_QUERY,
-        "executed_at": executed_at,
-        "artifact_url": artifact_url,
-        "selected_relation_ids": relation_ids,
+        "version": 0.6,
+        "osm3s": {"timestamp_osm_base": executed_at},
         "elements": relations,
     }
+    discovery_bytes = json.dumps(
+        discovery_payload, ensure_ascii=False, separators=(",", ":")
+    ).encode()
     return _import_osm_snapshot(
         collection=item,
         payload=data,
@@ -142,17 +140,10 @@ def import_production_snapshot(
                 f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
             ),
             "discovery_executed_at": executed_at,
-            "discovery_result_sha256": hashlib.sha256(
-                json.dumps(
-                    discovery_payload,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest(),
+            "discovery_result_sha256": hashlib.sha256(discovery_bytes).hexdigest(),
             "discovery_artifact_url": artifact_url,
             "discovery_selected_relation_ids": relation_ids,
-            "discovery_result_payload": discovery_payload,
+            "discovery_artifact_content_base64": base64.b64encode(discovery_bytes).decode(),
         },
     )
 
@@ -336,15 +327,12 @@ def test_production_discovery_artifact_and_hash_are_verifiable() -> None:
     relation = payload()["elements"][0]
     executed_at = "2026-09-21T00:00:00Z"
     discovery_payload = {
-        "format": "bikemapy-reference-discovery-v1",
-        "mechanism": "overpass",
-        "endpoint": OSM_OVERPASS_ENDPOINT,
-        "query_text": OSM_DISCOVERY_QUERY,
-        "executed_at": executed_at,
-        "artifact_url": "https://www.openstreetmap.org/api/0.6/relation/101/full.json",
-        "selected_relation_ids": [101],
+        "version": 0.6,
+        "osm3s": {"timestamp_osm_base": executed_at},
         "elements": [relation],
     }
+    discovery_bytes = json.dumps(discovery_payload, separators=(",", ":")).encode()
+    artifact_url = "https://www.openstreetmap.org/api/0.6/relation/101/full.json"
     metadata: dict[str, Any] = {
         "import_mode": "production",
         "production_import": True,
@@ -353,27 +341,20 @@ def test_production_discovery_artifact_and_hash_are_verifiable() -> None:
         "discovery_mechanism": "overpass",
         "discovery_query_or_extract_id": "overpass-query-v1",
         "discovery_executed_at": executed_at,
-        "discovery_result_sha256": hashlib.sha256(
-            json.dumps(
-                discovery_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode()
-        ).hexdigest(),
-        "discovery_artifact_url": discovery_payload["artifact_url"],
+        "discovery_result_sha256": hashlib.sha256(discovery_bytes).hexdigest(),
+        "discovery_artifact_url": artifact_url,
         "discovery_selected_relation_ids": [101],
-        "discovery_result_payload": discovery_payload,
+        "discovery_artifact_content_base64": base64.b64encode(discovery_bytes).decode(),
     }
+    metadata["discovery_artifact_url"] = f"{OFFER_BASE_URL}/blob/main/docs/osm-alterations.md"
     with pytest.raises(ValueError, match="separate trusted artifact"):
         import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
-    metadata["discovery_artifact_url"] = f"{OFFER_BASE_URL}/discovery.json"
-    metadata["discovery_result_payload"]["artifact_url"] = metadata["discovery_artifact_url"]
-    metadata["discovery_result_sha256"] = hashlib.sha256(
-        json.dumps(
-            metadata["discovery_result_payload"],
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    metadata["discovery_artifact_url"] = (
+        "https://www.openstreetmap.org/api/0.6/relation/101/full.json"
+    )
+    with pytest.raises(ValueError, match="separate trusted artifact"):
+        import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
+    metadata["discovery_artifact_url"] = f"{OFFER_BASE_URL}/blob/main/discovery/101.json"
     with pytest.raises(ValueError, match="approved query"):
         import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
 
@@ -395,6 +376,37 @@ def test_test_mode_imports_are_disabled_without_explicit_runtime_setting() -> No
     item = collection()
     with pytest.raises(ValueError, match="Test imports are disabled"):
         import_osm_snapshot(collection=item, payload=payload())
+
+
+def test_regional_discovery_rejects_bare_overpass_unavailable_flag() -> None:
+    item = collection()
+    data = payload()
+    executed_at = "2026-09-21T00:00:00Z"
+    discovery_payload = {
+        "version": 0.6,
+        "osm3s": {"timestamp_osm_base": executed_at},
+        "elements": [data["elements"][0]],
+    }
+    discovery_bytes = json.dumps(discovery_payload, separators=(",", ":")).encode()
+    with pytest.raises(ValueError, match="failure evidence"):
+        import_osm_snapshot(
+            collection=item,
+            payload=data,
+            response_metadata={
+                "import_mode": "production",
+                "production_import": True,
+                "expected_relation_ids": [101],
+                "expected_relation_count": 1,
+                "discovery_mechanism": "regional_extract",
+                "discovery_query_or_extract_id": "regional-extract:cz-2026-09",
+                "discovery_executed_at": executed_at,
+                "discovery_result_sha256": hashlib.sha256(discovery_bytes).hexdigest(),
+                "discovery_artifact_url": f"{OFFER_BASE_URL}/blob/main/discovery/101.json",
+                "discovery_selected_relation_ids": [101],
+                "discovery_artifact_content_base64": base64.b64encode(discovery_bytes).decode(),
+                "overpass_unavailable": True,
+            },
+        )
 
 
 def test_direct_incomplete_offer_and_sibling_origin_never_publish_or_appear() -> None:

@@ -110,13 +110,19 @@ class Command(BaseCommand):
                 "discovery_result_sha256",
                 "discovery_artifact_url",
                 "discovery_selected_relation_ids",
-                "discovery_result_payload",
+                "discovery_artifact_content_base64",
             }
             discovery_missing = sorted(discovery_required - set(manifest))
             if discovery_missing:
                 raise CommandError(
                     "Production manifest is missing discovery evidence: "
                     + ", ".join(discovery_missing)
+                )
+            if manifest.get("discovery_mechanism") == "regional_extract" and not manifest.get(
+                "overpass_failure_evidence"
+            ):
+                raise CommandError(
+                    "Regional production manifests require retained Overpass failure evidence"
                 )
         ids = manifest["selected_relation_ids"]
         headers = manifest["http_headers"]
@@ -185,10 +191,14 @@ class Command(BaseCommand):
                     "discovery_executed_at": manifest.get("discovery_executed_at"),
                     "discovery_result_sha256": manifest.get("discovery_result_sha256"),
                     "discovery_artifact_url": manifest.get("discovery_artifact_url"),
-                    "discovery_result_payload": manifest.get("discovery_result_payload"),
+                    "discovery_artifact_content_base64": manifest.get(
+                        "discovery_artifact_content_base64"
+                    ),
                     "discovery_selected_relation_ids": manifest.get(
                         "discovery_selected_relation_ids"
                     ),
+                    "overpass_unavailable": manifest.get("overpass_unavailable"),
+                    "overpass_failure_evidence": manifest.get("overpass_failure_evidence"),
                 },
             )
         except ValueError as exc:
