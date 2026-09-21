@@ -1,7 +1,6 @@
 """Operator command for bounded reference-route refreshes and validation."""
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -9,7 +8,11 @@ from urllib.parse import urlsplit
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.reference_routes.models import ReferenceCollection, ReferenceSourceKind
-from apps.reference_routes.services import blocked_via_czechia_import, import_osm_snapshot
+from apps.reference_routes.services import (
+    _parse_utc_timestamp,
+    blocked_via_czechia_import,
+    import_osm_snapshot,
+)
 
 
 class Command(BaseCommand):
@@ -50,9 +53,15 @@ class Command(BaseCommand):
             "source_timestamp",
             "http_status",
             "http_headers",
+            "http_header_absence",
             "sha256",
             "selected_relation_ids",
             "expected_relation_count",
+            "expected_way_count",
+            "expected_node_count",
+            "relation_version",
+            "relation_changeset",
+            "relation_timestamp",
         }
         missing = sorted(required - set(manifest))
         if missing:
@@ -76,9 +85,7 @@ class Command(BaseCommand):
         ):
             raise CommandError("OSM manifest HTTP headers are invalid")
         try:
-            retrieved_at = datetime.fromisoformat(
-                str(manifest["retrieved_at"]).replace("Z", "+00:00")
-            )
+            retrieved_at = _parse_utc_timestamp(manifest["retrieved_at"], field="retrieved_at")
             http_status = int(manifest["http_status"])
         except (TypeError, ValueError) as exc:
             raise CommandError("OSM manifest timestamp or HTTP status is invalid") from exc
@@ -96,25 +103,29 @@ class Command(BaseCommand):
             raise CommandError("OSM manifest endpoint/query is not the exact reviewed API request")
         if not 200 <= http_status < 300:
             raise CommandError("OSM manifest HTTP status must be successful")
-        self.stdout.write(
-            json.dumps(
-                import_osm_snapshot(
-                    collection=collection,
-                    payload=payload,
-                    endpoint=str(manifest["endpoint"]),
-                    query_text=str(manifest["query"]),
-                    retrieved_at=retrieved_at,
-                    response_metadata={
-                        "complete": True,
-                        "expected_relation_count": manifest["expected_relation_count"],
-                        "expected_relation_ids": ids,
-                        "http_status": http_status,
-                        "http_headers": headers,
-                        "raw_sha256": manifest["sha256"],
-                        "source_timestamp": manifest["source_timestamp"],
-                    },
-                ),
-                sort_keys=True,
-                default=str,
+        try:
+            result = import_osm_snapshot(
+                collection=collection,
+                payload=payload,
+                endpoint=str(manifest["endpoint"]),
+                query_text=str(manifest["query"]),
+                retrieved_at=retrieved_at,
+                response_metadata={
+                    "complete": True,
+                    "expected_relation_count": manifest["expected_relation_count"],
+                    "expected_relation_ids": ids,
+                    "expected_way_count": manifest["expected_way_count"],
+                    "expected_node_count": manifest["expected_node_count"],
+                    "relation_version": manifest["relation_version"],
+                    "relation_changeset": manifest["relation_changeset"],
+                    "relation_timestamp": manifest["relation_timestamp"],
+                    "http_status": http_status,
+                    "http_headers": headers,
+                    "http_header_absence": manifest["http_header_absence"],
+                    "raw_sha256": manifest["sha256"],
+                    "source_timestamp": manifest["source_timestamp"],
+                },
             )
-        )
+        except ValueError as exc:
+            raise CommandError(str(exc)) from exc
+        self.stdout.write(json.dumps(result, sort_keys=True, default=str))

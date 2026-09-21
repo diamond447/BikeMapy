@@ -1,0 +1,77 @@
+{
+  "status": "reviewed-derived-mutation-bundle",
+  "base_fixture": "osm-cz-representative.json",
+  "base_sha256": "f4ae6f3d3ffbeb65cccf752287634f51d753533a24b049d7a9cebeaede563300",
+  "relation_id": 7689870,
+  "derivation": "Each case is produced by applying its named operation to the reviewed raw API fixture before importing it.",
+  "mutations": [
+    {
+      "label": "missing-member",
+      "operation": "remove_way",
+      "member_index": 0,
+      "expected": "reject",
+      "expected_diagnostics": ["missing_way"]
+    },
+    {
+      "label": "missing-node",
+      "operation": "remove_node",
+      "member_index": 0,
+      "expected": "reject",
+      "expected_diagnostics": ["missing_nodes"]
+    },
+    {
+      "label": "duplicate-member",
+      "operation": "duplicate_member",
+      "member_index": 0,
+      "expected": "reject",
+      "expected_diagnostics": ["duplicate_member"]
+    },
+    {
+      "label": "duplicate-segment",
+      "operation": "copy_way_nodes",
+      "source_member_index": 0,
+      "target_member_index": 1,
+      "expected": "reject",
+      "expected_diagnostics": ["duplicate_segment"]
+    },
+    {
+      "label": "disconnected",
+      "operation": "replace_way_geometry",
+      "member_index": 0,
+      "expected": "reject",
+      "expected_diagnostics": ["disconnected_geometry"]
+    },
+    {
+      "label": "unordered-member-list",
+      "operation": "reverse_members",
+      "expected": "accept",
+      "expected_diagnostics": []
+    },
+    {
+      "label": "signed-wrong-order",
+      "operation": "signed_reverse_members",
+      "expected": "reject",
+      "expected_diagnostics": ["signed_direction_order"]
+    },
+    {
+      "label": "undirected-way-reversal",
+      "operation": "reverse_way_nodes",
+      "member_index": 0,
+      "expected": "accept",
+      "expected_diagnostics": []
+    },
+    {
+      "label": "directional-way-reversal",
+      "operation": "forward_reverse_way",
+      "member_index": 0,
+      "expected": "reject",
+      "expected_diagnostics": ["signed_direction_order"]
+    },
+    {
+      "label": "empty-invalid",
+      "operation": "empty_members",
+      "expected": "reject",
+      "expected_diagnostics": ["empty_geometry"]
+    }
+  ]
+}

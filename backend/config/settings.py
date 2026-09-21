@@ -64,6 +64,10 @@ REFERENCE_ROUTE_AUTHORIZER = os.getenv(
     "REFERENCE_ROUTE_AUTHORIZER",
     "apps.api.reference_authorization.default_reference_route_authorizer",
 )
+REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = os.getenv(
+    "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL",
+    "https://github.com/diamond447/BikeMapy/blob/main/docs/osm-alterations.md",
+)
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")

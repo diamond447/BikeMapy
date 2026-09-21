@@ -79,6 +79,33 @@ update cursor. A changed relation version, changeset, timestamp, member set,
 or payload hash creates a new immutable BikeMapy version; unchanged payloads
 are idempotent. This is the concrete source and mechanism issue #53 must use.
 
+### 2026-09-21 implementation evidence amendment: bounded OSM API fallback
+
+The approved bounded Overpass discovery query remains the only discovery
+mechanism and is run first. If its snapshot is unavailable, an operator may
+use the OSM API v0.6 `/api/0.6/relation/<id>/full.json` endpoint only for the
+relation IDs already selected by that query (or by a previously retained
+complete Overpass snapshot). This fallback is not national discovery and must
+never enumerate relation IDs, scrape individual elements, or replace the
+approved candidate predicate.
+
+The fallback is capped at 50 selected relation requests per refresh, issued
+serially at no more than one request per second, with at most one bounded
+operator-triggered fallback refresh in addition to the monthly cached
+refresh. Every relation response is stored byte-for-byte with a per-relation
+manifest containing the exact endpoint and query, UTC retrieval time, HTTP
+status and headers (including an explicit absence record for ETag and
+Last-Modified when unavailable), payload SHA-256, relation version,
+changeset, timestamp, selected ID, and complete way/node counts. A response
+missing a selected member or node, or with any evidence mismatch, is rejected
+before activation.
+
+The fallback is temporary evidence collection, not permission to increase
+scraping volume. Once Overpass is available again, refreshes revert to the
+approved bounded Overpass snapshot. If the candidate set outgrows the stated
+limits, use a dated Czech regional extract with its provider and licence
+recorded; do not expand API requests or use per-element scraping.
+
 ### Deterministic international-route exclusion
 
 Before applying the allow predicate, normalize each `network`, `ref`, `name`,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
@@ -26,6 +27,11 @@ def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def has_deployable_derivative_offer(collection: ReferenceCollection) -> bool:
+    configured = str(getattr(settings, "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL", "") or "")
+    return bool(configured) and collection.derivative_offer_url == configured
 
 
 class ReferenceSourceKind(models.TextChoices):
@@ -133,6 +139,10 @@ class ReferenceCollection(models.Model):
             ):
                 raise ValidationError(
                     {"derivative_offer_url": "Use the tracked OSM alteration offer document."}
+                )
+            if not has_deployable_derivative_offer(self):
+                raise ValidationError(
+                    {"derivative_offer_url": "A deployable complete alteration offer is required."}
                 )
             if not _is_exact_https_url(
                 self.contact_url, hostname="www.openstreetmap.org", path="/fixthemap"
@@ -284,9 +294,11 @@ class ReferenceRoute(models.Model):
             if (
                 collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
                 or not collection.permission_granted
+                or not has_deployable_derivative_offer(collection)
             ):
                 raise ValidationError(
-                    "A blocked reference source cannot be published or activated."
+                    "A blocked reference source or incomplete alteration offer "
+                    "cannot be published or activated."
                 )
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
@@ -347,8 +359,12 @@ class ReferenceRouteVersion(models.Model):
             if (
                 collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
                 or not collection.permission_granted
+                or not has_deployable_derivative_offer(collection)
             ):
-                raise ValidationError("A blocked reference source cannot activate a version.")
+                raise ValidationError(
+                    "A blocked reference source or incomplete alteration offer "
+                    "cannot activate a version."
+                )
         if self.validation_status == ReferenceValidationStatus.VALID or self.active:
             required_attribution = (
                 "attribution_text",

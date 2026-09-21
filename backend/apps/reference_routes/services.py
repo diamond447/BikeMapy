@@ -10,8 +10,9 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 from django.db import transaction
 from django.utils import timezone
@@ -174,6 +175,138 @@ def _selected_relations(
         if member.get("type") == "relation" and isinstance(member.get("ref"), int)
     }
     return [relation for relation in candidates if relation.get("id") not in child_ids]
+
+
+def _parse_utc_timestamp(value: Any, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"{field} must be timezone-aware UTC")
+    return parsed.astimezone(UTC)
+
+
+def _validate_http_evidence(metadata: dict[str, Any]) -> None:
+    headers = metadata.get("http_headers")
+    absence = metadata.get("http_header_absence")
+    if headers is None and absence is None:
+        return
+    if not isinstance(headers, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str) or not value.strip()
+        for key, value in headers.items()
+    ):
+        raise ValueError("Manifest HTTP headers must contain non-empty string values")
+    if not isinstance(absence, list) or any(
+        not isinstance(value, str) or not value.strip() for value in absence
+    ):
+        raise ValueError("Manifest HTTP header absence must be a list of names")
+    normalized = {key.casefold(): value.strip() for key, value in headers.items()}
+    absent = {value.casefold() for value in absence}
+    if not normalized.get("content-type"):
+        raise ValueError("Manifest HTTP evidence requires a non-empty content-type header")
+    for conditional in ("etag", "last-modified"):
+        if conditional not in normalized and conditional not in absent:
+            raise ValueError(
+                f"Manifest HTTP evidence must record whether {conditional} was provided"
+            )
+        if conditional in normalized and conditional in absent:
+            raise ValueError(f"Manifest HTTP evidence marks {conditional} both present and absent")
+
+
+def _validate_source_evidence(
+    *,
+    parsed: dict[str, Any],
+    metadata: dict[str, Any],
+    endpoint: str,
+    selected: list[dict[str, Any]],
+) -> datetime | None:
+    """Validate manifest evidence against the actual immutable response payload."""
+    _validate_http_evidence(metadata)
+    expected_ids = metadata.get("expected_relation_ids")
+    if expected_ids is not None:
+        if (
+            not isinstance(expected_ids, list)
+            or not expected_ids
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in expected_ids)
+            or len(set(expected_ids)) != len(expected_ids)
+        ):
+            raise ValueError("Manifest relation IDs must be a non-empty unique integer list")
+        expected_count = metadata.get("expected_relation_count")
+        if isinstance(expected_count, bool) or not isinstance(expected_count, int):
+            raise ValueError("Manifest relation count is invalid")
+        selected_ids = sorted(int(relation["id"]) for relation in selected)
+        if sorted(expected_ids) != selected_ids or expected_count != len(selected):
+            raise ValueError("Manifest selected relation IDs/count do not match the payload")
+    count_fields = ("expected_way_count", "expected_node_count")
+    present_counts = [field in metadata for field in count_fields]
+    if any(present_counts):
+        if not all(present_counts) or any(
+            isinstance(metadata[field], bool) or not isinstance(metadata[field], int)
+            for field in count_fields
+        ):
+            raise ValueError("Manifest way/node counts are invalid")
+        actual_way_count = sum(
+            isinstance(item, dict) and item.get("type") == "way"
+            for item in parsed.get("elements", [])
+        )
+        actual_node_count = sum(
+            isinstance(item, dict) and item.get("type") == "node"
+            for item in parsed.get("elements", [])
+        )
+        if (
+            metadata["expected_way_count"] != actual_way_count
+            or metadata["expected_node_count"] != actual_node_count
+        ):
+            raise ValueError("Manifest way/node counts do not match the complete payload")
+    relation_fields = ("relation_version", "relation_changeset", "relation_timestamp")
+    present_relation_fields = [field in metadata for field in relation_fields]
+    if any(present_relation_fields):
+        if not all(present_relation_fields) or len(selected) != 1:
+            raise ValueError("Manifest relation metadata is incomplete or ambiguous")
+        relation = selected[0]
+        for field in ("relation_version", "relation_changeset"):
+            value = metadata[field]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"Manifest {field} is invalid")
+            if relation.get(field.removeprefix("relation_")) != value:
+                raise ValueError(f"Manifest {field} does not match the selected relation")
+        if str(relation.get("timestamp", "")) != str(metadata["relation_timestamp"]):
+            raise ValueError("Manifest relation_timestamp does not match the selected relation")
+        _parse_utc_timestamp(str(metadata["relation_timestamp"]), field="relation_timestamp")
+    relation_timestamp = selected[0].get("timestamp") if len(selected) == 1 else None
+    osm3s_timestamp = (
+        parsed.get("osm3s", {}).get("timestamp_osm_base")
+        if isinstance(parsed.get("osm3s"), dict)
+        else None
+    )
+    endpoint_parts = urlsplit(endpoint)
+    is_osm_api_relation = (
+        endpoint_parts.hostname == "www.openstreetmap.org"
+        and endpoint_parts.path.startswith("/api/0.6/relation/")
+        and endpoint_parts.path.endswith("/full.json")
+    )
+    if is_osm_api_relation and not relation_timestamp:
+        raise ValueError("OSM API response is missing the selected relation timestamp")
+    evidence_value = (
+        relation_timestamp if is_osm_api_relation else relation_timestamp or osm3s_timestamp
+    )
+    if evidence_value is None and "source_timestamp" in metadata:
+        raise ValueError("Manifest source_timestamp has no corresponding payload evidence")
+    source_timestamp = (
+        _parse_utc_timestamp(str(evidence_value), field="payload source timestamp")
+        if evidence_value
+        else None
+    )
+    if "source_timestamp" in metadata:
+        manifest_timestamp = _parse_utc_timestamp(
+            metadata["source_timestamp"], field="source_timestamp"
+        )
+        if source_timestamp is None or manifest_timestamp != source_timestamp:
+            raise ValueError("Manifest source_timestamp does not match payload evidence")
+    return source_timestamp
 
 
 def _point(value: dict[str, Any]) -> tuple[float, float] | None:
@@ -528,26 +661,17 @@ def import_osm_snapshot(
         if metadata.get("expected_relation_count") is None:
             raise ValueError("Manifest relation count is required with selected IDs")
     retrieved = retrieved_at or timezone.now()
-    source_timestamp = None
-    source_base = (
-        parsed.get("osm3s", {}).get("timestamp_osm_base")
-        if isinstance(parsed.get("osm3s"), dict)
-        else None
+    if not timezone.is_aware(retrieved) or retrieved.utcoffset() != timedelta(0):
+        raise ValueError("retrieved_at must be timezone-aware UTC")
+    relations, ways = _relation_elements(parsed)
+    selected = _selected_relations(relations, parsed, expected_ids)
+    source_timestamp = _validate_source_evidence(
+        parsed=parsed,
+        metadata=metadata,
+        endpoint=endpoint,
+        selected=selected,
     )
-    source_base = source_base or metadata.get("source_timestamp")
-    if source_base:
-        try:
-            source_timestamp = datetime.fromisoformat(str(source_base).replace("Z", "+00:00"))
-        except ValueError:
-            metadata = {**metadata, "source_timestamp_parse_error": str(source_base)}
-    manifest_timestamp = metadata.get("source_timestamp")
-    if manifest_timestamp is not None:
-        if (
-            source_timestamp is None
-            or not source_base
-            or str(manifest_timestamp) != str(source_base)
-        ):
-            raise ValueError("OSM timestamp does not match the manifest")
+    source_base = source_timestamp.isoformat().replace("+00:00", "Z") if source_timestamp else None
     with transaction.atomic():
         if stored_import_id is not None:
             source_import = ReferenceImport.objects.select_for_update().get(pk=stored_import_id)
@@ -590,20 +714,6 @@ def import_osm_snapshot(
                 "invalid": 0,
                 "recomputations": 0,
             }
-        try:
-            relations, ways = _relation_elements(parsed)
-        except ValueError as exc:
-            source_import.status = ReferenceImportStatus.FAILED
-            source_import.diagnostics = [RouteDiagnostic("incomplete_snapshot", str(exc)).as_dict()]
-            source_import.save(update_fields=["status", "diagnostics"])
-            return {
-                "status": "failed",
-                "import_id": source_import.pk,
-                "created": 0,
-                "invalid": 0,
-                "recomputations": 0,
-            }
-        selected = _selected_relations(relations, parsed, expected_ids)
         node_points = {
             int(item["id"]): item
             for item in parsed.get("elements", [])
@@ -825,19 +935,24 @@ def store_pending_snapshot(
     ):
         raise PermissionError("This source collection is not approved for ingestion")
     collection.full_clean()
+    if not timezone.is_aware(retrieved_at) or retrieved_at.utcoffset() != timedelta(0):
+        raise ValueError("retrieved_at must be timezone-aware UTC")
     raw, parsed = _response_bytes(raw_response)
     checksum = hashlib.sha256(raw).hexdigest()
-    source_base = (
-        parsed.get("osm3s", {}).get("timestamp_osm_base")
-        if isinstance(parsed.get("osm3s"), dict)
-        else None
-    ) or response_metadata.get("source_timestamp")
-    if not source_base:
+    relations, ways = _relation_elements(parsed)
+    selected = _selected_relations(
+        relations,
+        parsed,
+        response_metadata.get("expected_relation_ids"),
+    )
+    source_timestamp = _validate_source_evidence(
+        parsed=parsed,
+        metadata=response_metadata,
+        endpoint=endpoint,
+        selected=selected,
+    )
+    if source_timestamp is None:
         raise ValueError("OSM snapshot is missing its source timestamp")
-    try:
-        source_timestamp = datetime.fromisoformat(str(source_base).replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError("OSM snapshot has an invalid osm3s timestamp") from exc
     return ReferenceImport.objects.get_or_create(
         collection=collection,
         checksum=checksum,

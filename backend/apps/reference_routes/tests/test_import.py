@@ -73,9 +73,9 @@ def payload(*, changed: bool = False) -> dict[str, Any]:
     }
 
 
-def collection() -> ReferenceCollection:
+def collection(*, slug: str = "osm-cz") -> ReferenceCollection:
     return ReferenceCollection.objects.create(
-        slug="osm-cz",
+        slug=slug,
         name="OSM numbered routes",
         source_kind=ReferenceSourceKind.OSM_NUMBERED,
         source_url="https://www.openstreetmap.org",
@@ -140,6 +140,18 @@ def test_source_gate_blocks_import_and_activation() -> None:
         collection=item, source_identifier="blocked", title="Blocked", active=True
     )
     with pytest.raises(ValidationError):
+        route.save()
+
+
+@override_settings(REFERENCE_ROUTE_DERIVATIVE_OFFER_URL="")
+def test_missing_deployable_alteration_offer_blocks_import_and_activation() -> None:
+    item = collection()
+    with pytest.raises(ValidationError):
+        item.full_clean()
+    route = ReferenceRoute(
+        collection=item, source_identifier="missing-offer", title="Missing offer", active=True
+    )
+    with pytest.raises(ValidationError, match="alteration offer"):
         route.save()
 
 
@@ -325,6 +337,167 @@ def test_manifest_fails_closed_for_http_error_and_missing_evidence(tmp_path: Any
             manifest_path,
         )
     assert not item.imports.exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "relation_version",
+        "relation_changeset",
+        "relation_timestamp",
+        "expected_way_count",
+        "expected_node_count",
+        "source_timestamp",
+        "retrieved_at",
+        "content_type",
+        "header_absence",
+        "payload_node_count",
+        "payload_source_timestamp",
+    ],
+)
+def test_manifest_evidence_fields_fail_closed(tmp_path: Any, mutation: str) -> None:
+    item = collection()
+    payload_data = json.loads(
+        Path("backend/apps/reference_routes/fixtures/osm-cz-representative.json").read_text()
+    )
+    manifest = json.loads(
+        Path(
+            "backend/apps/reference_routes/fixtures/osm-cz-representative.manifest.json"
+        ).read_text()
+    )
+    if mutation == "relation_version":
+        manifest["relation_version"] += 1
+    elif mutation == "relation_changeset":
+        manifest["relation_changeset"] += 1
+    elif mutation == "relation_timestamp":
+        manifest["relation_timestamp"] = "2026-09-17T07:11:42Z"
+    elif mutation == "expected_way_count":
+        manifest["expected_way_count"] += 1
+    elif mutation == "expected_node_count":
+        manifest["expected_node_count"] += 1
+    elif mutation == "source_timestamp":
+        manifest["source_timestamp"] = "2026-09-17T07:11:42Z"
+    elif mutation == "retrieved_at":
+        manifest["retrieved_at"] = "2026-09-20T21:36:47"
+    elif mutation == "content_type":
+        manifest["http_headers"]["content-type"] = ""
+    elif mutation == "header_absence":
+        manifest["http_header_absence"] = ["etag"]
+    elif mutation == "payload_node_count":
+        removed = False
+        retained = []
+        for element in payload_data["elements"]:
+            if not removed and element.get("type") == "node":
+                removed = True
+                continue
+            retained.append(element)
+        payload_data["elements"] = retained
+    elif mutation == "payload_source_timestamp":
+        payload_data["elements"][-1]["timestamp"] = "2026-09-17T07:11:42Z"
+        manifest["relation_timestamp"] = "2026-09-17T07:11:42Z"
+    else:  # pragma: no cover
+        raise AssertionError(mutation)
+    payload_path = tmp_path / "snapshot.json"
+    manifest_path = tmp_path / "snapshot.manifest.json"
+    payload_bytes = (
+        Path("backend/apps/reference_routes/fixtures/osm-cz-representative.json").read_bytes()
+        if mutation not in {"payload_node_count", "payload_source_timestamp"}
+        else json.dumps(payload_data, separators=(",", ":")).encode()
+    )
+    if mutation in {"payload_node_count", "payload_source_timestamp"}:
+        manifest["sha256"] = hashlib.sha256(payload_bytes).hexdigest()
+    payload_path.write_bytes(payload_bytes)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(CommandError):
+        call_command(
+            "refresh_reference_routes",
+            "--collection",
+            item.slug,
+            "--payload-file",
+            payload_path,
+            "--manifest",
+            manifest_path,
+        )
+    assert not item.imports.exists()
+
+
+def _apply_reviewed_mutation(data: dict[str, Any], mutation: dict[str, Any]) -> None:
+    relation = next(element for element in data["elements"] if element.get("type") == "relation")
+    members = relation["members"]
+    ways = [element for element in data["elements"] if element.get("type") == "way"]
+
+    def member_way(index: int) -> dict[str, Any]:
+        way_id = members[index]["ref"]
+        return next(way for way in ways if way["id"] == way_id)
+
+    operation = mutation["operation"]
+    if operation == "remove_way":
+        way_id = members[mutation["member_index"]]["ref"]
+        data["elements"] = [
+            element
+            for element in data["elements"]
+            if not (element.get("type") == "way" and element.get("id") == way_id)
+        ]
+    elif operation == "remove_node":
+        node_id = member_way(mutation["member_index"])["nodes"][0]
+        data["elements"] = [
+            element
+            for element in data["elements"]
+            if not (element.get("type") == "node" and element.get("id") == node_id)
+        ]
+    elif operation == "duplicate_member":
+        members.append(dict(members[mutation["member_index"]]))
+    elif operation == "copy_way_nodes":
+        source = member_way(mutation["source_member_index"])
+        target = member_way(mutation["target_member_index"])
+        target["nodes"] = list(source["nodes"])
+    elif operation == "replace_way_geometry":
+        member_way(mutation["member_index"])["geometry"] = [
+            {"lon": 12.1, "lat": 48.6},
+            {"lon": 12.2, "lat": 48.6},
+        ]
+    elif operation == "reverse_members":
+        relation["members"] = list(reversed(members))
+    elif operation == "signed_reverse_members":
+        relation["tags"]["signed_direction"] = "yes"
+        relation["members"] = [{**member, "role": "forward"} for member in reversed(members)]
+    elif operation == "reverse_way_nodes":
+        way = member_way(mutation["member_index"])
+        way["nodes"] = list(reversed(way["nodes"]))
+    elif operation == "forward_reverse_way":
+        relation["tags"]["signed_direction"] = "yes"
+        for member in members:
+            member["role"] = "forward"
+        way = member_way(mutation["member_index"])
+        way["nodes"] = list(reversed(way["nodes"]))
+    elif operation == "empty_members":
+        relation["members"] = []
+    else:  # pragma: no cover
+        raise AssertionError(operation)
+
+
+def test_reviewed_mutation_bundle_covers_geometry_gates() -> None:
+    fixture_path = Path("backend/apps/reference_routes/fixtures/osm-cz-representative.json")
+    manifest_path = Path(
+        "backend/apps/reference_routes/fixtures/osm-cz-representative-mutations.manifest.json"
+    )
+    base_bytes = fixture_path.read_bytes()
+    manifest = json.loads(manifest_path.read_text())
+    assert hashlib.sha256(base_bytes).hexdigest() == manifest["base_sha256"]
+    base = json.loads(base_bytes)
+    for mutation in manifest["mutations"]:
+        item = collection(slug=f"osm-cz-{mutation['label']}")
+        data = json.loads(json.dumps(base))
+        _apply_reviewed_mutation(data, mutation)
+        result = import_osm_snapshot(collection=item, payload=data)
+        source_import = ReferenceImport.objects.get(collection=item)
+        if mutation["expected"] == "accept":
+            assert result["created"] == 1
+            assert not source_import.diagnostics
+        else:
+            assert result["invalid"] == 1
+            diagnostics = {entry["code"] for entry in source_import.diagnostics[0]["diagnostics"]}
+            assert set(mutation["expected_diagnostics"]) <= diagnostics
 
 
 def test_duplicate_missing_and_disconnected_members_are_diagnostics() -> None:
