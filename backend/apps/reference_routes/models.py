@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -15,6 +17,15 @@ from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
 from apps.catalogue.fields import RouteGeometryField
+
+OSM_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
+OSM_DISCOVERY_QUERY = """[out:json][timeout:90];
+area["ISO3166-1"="CZ"]["admin_level"="2"]->.cz;
+relation["type"="route"]["route"="bicycle"]["ref"]
+  ["network"~"^(lcn|rcn|ncn)$"](area.cz);
+out meta;
+>>;
+out meta geom;"""
 
 
 def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
@@ -53,9 +64,11 @@ def has_deployable_derivative_offer(
     if source_import is None:
         return True
     metadata = source_import.response_metadata or {}
+    if metadata.get("import_mode") != "production" or metadata.get("production_import") is not True:
+        return False
     if metadata.get("validation_sample") is True:
         return False
-    if metadata.get("production_import") is True and not all(
+    if not all(
         metadata.get(field)
         for field in (
             "discovery_mechanism",
@@ -64,8 +77,78 @@ def has_deployable_derivative_offer(
             "discovery_result_sha256",
             "discovery_artifact_url",
             "discovery_selected_relation_ids",
+            "discovery_result_payload",
         )
     ):
+        return False
+    discovery_payload = metadata["discovery_result_payload"]
+    if not isinstance(discovery_payload, dict):
+        return False
+    try:
+        payload_hash = hashlib.sha256(
+            json.dumps(
+                discovery_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+    except (TypeError, ValueError):
+        return False
+    if payload_hash != metadata["discovery_result_sha256"]:
+        return False
+    expected_ids = metadata.get("expected_relation_ids")
+    discovery_ids = metadata.get("discovery_selected_relation_ids")
+    if (
+        not isinstance(expected_ids, list)
+        or not isinstance(discovery_ids, list)
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in expected_ids)
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in discovery_ids)
+        or sorted(expected_ids) != sorted(discovery_ids)
+        or discovery_payload.get("selected_relation_ids") != discovery_ids
+        or discovery_payload.get("artifact_url") != metadata.get("discovery_artifact_url")
+        or discovery_payload.get("executed_at") != metadata.get("discovery_executed_at")
+        or discovery_payload.get("mechanism") != metadata.get("discovery_mechanism")
+    ):
+        return False
+    artifact = metadata.get("discovery_artifact_url")
+    artifact_parts = urlsplit(str(artifact))
+    configured_parts = urlsplit(configured)
+    source_parts = urlsplit(str(source_import.endpoint))
+    if (
+        artifact_parts.scheme != "https"
+        or not artifact_parts.netloc
+        or artifact_parts.query
+        or artifact_parts.fragment
+        or artifact_parts.scheme != configured_parts.scheme
+        or artifact_parts.netloc != configured_parts.netloc
+        or not artifact_parts.path.startswith(configured_parts.path.rstrip("/") + "/")
+        or (
+            artifact_parts.scheme == source_parts.scheme
+            and artifact_parts.netloc == source_parts.netloc
+            and artifact_parts.path == source_parts.path
+        )
+    ):
+        return False
+    mechanism = metadata.get("discovery_mechanism")
+    query_id = str(metadata.get("discovery_query_or_extract_id", ""))
+    if mechanism == "overpass" and (
+        query_id != f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
+        or discovery_payload.get("endpoint") != OSM_OVERPASS_ENDPOINT
+        or discovery_payload.get("query_text") != OSM_DISCOVERY_QUERY
+    ):
+        return False
+    if mechanism == "regional_extract" and (
+        not query_id.startswith("regional-extract:")
+        or metadata.get("overpass_unavailable") is not True
+    ):
+        return False
+    elements = discovery_payload.get("elements")
+    if not isinstance(elements, list):
+        return False
+    discovered_ids = {
+        item.get("id")
+        for item in elements
+        if isinstance(item, dict) and item.get("type") == "relation"
+    }
+    if not set(expected_ids).issubset(discovered_ids):
         return False
     offer = getattr(source_import, "alteration_offer", None)
     return bool(offer and offer.is_complete_for(source_import, configured))
@@ -293,7 +376,11 @@ class ReferenceAlterationOffer(models.Model):
     def clean(self) -> None:
         super().clean()
         allowed_base = str(getattr(settings, "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL", "") or "")
-        if not allowed_base or not self.is_complete_for(self.source_import, allowed_base):
+        if (
+            not allowed_base
+            or self.source_import.response_metadata.get("import_mode") != "production"
+            or not self.is_complete_for(self.source_import, allowed_base)
+        ):
             raise ValidationError("Alteration offer evidence is incomplete or hash-mismatched.")
 
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012

@@ -68,6 +68,9 @@ REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = os.getenv(
     "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL",
     "",
 )
+# Synthetic source snapshots are useful in local tests, but must be explicitly
+# enabled and can never satisfy the production publication gate.
+REFERENCE_ROUTE_ALLOW_TEST_IMPORTS = env_bool("REFERENCE_ROUTE_ALLOW_TEST_IMPORTS", False)
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")

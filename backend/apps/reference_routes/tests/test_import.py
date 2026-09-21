@@ -18,6 +18,8 @@ from django.utils import timezone
 from apps.api.views_reference_routes import reference_queryset
 from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.reference_routes.models import (
+    OSM_DISCOVERY_QUERY,
+    OSM_OVERPASS_ENDPOINT,
     ReferenceAlterationOffer,
     ReferenceCollection,
     ReferenceImport,
@@ -47,6 +49,7 @@ OFFER_BASE_URL = "https://github.com/diamond447/BikeMapy"
 @pytest.fixture(autouse=True)
 def configure_test_offer_base(settings: Any) -> None:
     settings.REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = OFFER_BASE_URL
+    settings.REFERENCE_ROUTE_ALLOW_TEST_IMPORTS = True
 
 
 def payload(*, changed: bool = False) -> dict[str, Any]:
@@ -108,6 +111,52 @@ def import_osm_snapshot(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return _import_osm_snapshot(*args, **kwargs)
 
 
+def import_production_snapshot(
+    item: ReferenceCollection, *, changed: bool = False, data: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    data = data or payload(changed=changed)
+    relations = [element for element in data["elements"] if element["type"] == "relation"]
+    relation_ids = [relation["id"] for relation in relations]
+    executed_at = "2026-09-21T00:00:00Z"
+    artifact_url = f"{OFFER_BASE_URL}/blob/main/discovery/{'-'.join(map(str, relation_ids))}.json"
+    discovery_payload = {
+        "format": "bikemapy-reference-discovery-v1",
+        "mechanism": "overpass",
+        "endpoint": OSM_OVERPASS_ENDPOINT,
+        "query_text": OSM_DISCOVERY_QUERY,
+        "executed_at": executed_at,
+        "artifact_url": artifact_url,
+        "selected_relation_ids": relation_ids,
+        "elements": relations,
+    }
+    return _import_osm_snapshot(
+        collection=item,
+        payload=data,
+        response_metadata={
+            "import_mode": "production",
+            "production_import": True,
+            "expected_relation_count": len(relation_ids),
+            "expected_relation_ids": relation_ids,
+            "discovery_mechanism": "overpass",
+            "discovery_query_or_extract_id": (
+                f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
+            ),
+            "discovery_executed_at": executed_at,
+            "discovery_result_sha256": hashlib.sha256(
+                json.dumps(
+                    discovery_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+            "discovery_artifact_url": artifact_url,
+            "discovery_selected_relation_ids": relation_ids,
+            "discovery_result_payload": discovery_payload,
+        },
+    )
+
+
 def publish_offer(item: ReferenceCollection) -> None:
     source_import = item.imports.order_by("-pk").first()
     assert source_import is not None
@@ -126,11 +175,11 @@ def publish_offer(item: ReferenceCollection) -> None:
 
 def test_import_is_idempotent_and_changed_geometry_schedules_recomputation() -> None:
     item = collection()
-    first = import_osm_snapshot(collection=item, payload=payload())
+    first = import_production_snapshot(item)
     assert first["created"] == 1
-    unchanged = import_osm_snapshot(collection=item, payload=payload())
+    unchanged = import_production_snapshot(item)
     assert unchanged["status"] == "unchanged"
-    changed = import_osm_snapshot(collection=item, payload=payload(changed=True))
+    changed = import_production_snapshot(item, changed=True)
     assert changed["created"] == 1
     route = ReferenceRoute.objects.get(collection=item)
     assert route.current_version is not None
@@ -194,7 +243,7 @@ def test_missing_deployable_alteration_offer_blocks_import_and_activation() -> N
 
 def test_alteration_offer_is_immutable_hash_bound_and_required_per_version() -> None:
     item = collection()
-    import_osm_snapshot(collection=item, payload=payload())
+    import_production_snapshot(item)
     source_import = item.imports.get()
     with pytest.raises(ValueError, match="hash"):
         record_alteration_offer(
@@ -213,7 +262,7 @@ def test_alteration_offer_is_immutable_hash_bound_and_required_per_version() -> 
         offer.save()
     route = ReferenceRoute.objects.get(collection=item)
     approve_reference_route(route, reviewer="reviewer")
-    import_osm_snapshot(collection=item, payload=payload(changed=True))
+    import_production_snapshot(item, changed=True)
     route.refresh_from_db()
     assert route.publication_status == "pending"
     with pytest.raises(ValidationError, match="alteration offer"):
@@ -254,7 +303,8 @@ def test_validation_sample_requires_test_mode_and_cannot_activate(tmp_path: Any)
     )
     source_import = item.imports.get()
     assert source_import.response_metadata["validation_sample"] is True
-    publish_offer(item)
+    with pytest.raises(ValueError, match="production imports"):
+        publish_offer(item)
     version = ReferenceRouteVersion.objects.get(source_import=source_import)
     route = version.route
     route.current_version = version
@@ -283,33 +333,73 @@ def test_production_import_requires_non_circular_discovery_evidence() -> None:
 
 def test_production_discovery_artifact_and_hash_are_verifiable() -> None:
     item = collection()
+    relation = payload()["elements"][0]
+    executed_at = "2026-09-21T00:00:00Z"
     discovery_payload = {
-        "query_or_extract_id": "overpass-query-v1",
+        "format": "bikemapy-reference-discovery-v1",
+        "mechanism": "overpass",
+        "endpoint": OSM_OVERPASS_ENDPOINT,
+        "query_text": OSM_DISCOVERY_QUERY,
+        "executed_at": executed_at,
+        "artifact_url": "https://www.openstreetmap.org/api/0.6/relation/101/full.json",
         "selected_relation_ids": [101],
+        "elements": [relation],
     }
-    metadata = {
+    metadata: dict[str, Any] = {
         "import_mode": "production",
         "production_import": True,
         "expected_relation_ids": [101],
         "expected_relation_count": 1,
         "discovery_mechanism": "overpass",
         "discovery_query_or_extract_id": "overpass-query-v1",
-        "discovery_executed_at": "2026-09-21T00:00:00Z",
-        "discovery_result_sha256": "0" * 64,
-        "discovery_artifact_url": "file:///tmp/discovery.json",
+        "discovery_executed_at": executed_at,
+        "discovery_result_sha256": hashlib.sha256(
+            json.dumps(
+                discovery_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest(),
+        "discovery_artifact_url": discovery_payload["artifact_url"],
         "discovery_selected_relation_ids": [101],
         "discovery_result_payload": discovery_payload,
     }
-    with pytest.raises(ValueError, match="artifact URL"):
+    with pytest.raises(ValueError, match="separate trusted artifact"):
         import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
     metadata["discovery_artifact_url"] = f"{OFFER_BASE_URL}/discovery.json"
-    with pytest.raises(ValueError, match="hash"):
+    metadata["discovery_result_payload"]["artifact_url"] = metadata["discovery_artifact_url"]
+    metadata["discovery_result_sha256"] = hashlib.sha256(
+        json.dumps(
+            metadata["discovery_result_payload"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    with pytest.raises(ValueError, match="approved query"):
         import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
+
+
+def test_test_mode_is_never_deployable_even_when_enabled_for_fixtures() -> None:
+    item = collection()
+    import_osm_snapshot(collection=item, payload=payload())
+    with pytest.raises(ValueError, match="production imports"):
+        publish_offer(item)
+    route = ReferenceRoute.objects.get(collection=item)
+    route.active = True
+    route.publication_status = "approved"
+    with pytest.raises(ValidationError, match="blocked reference source"):
+        route.save(update_fields=["active", "publication_status", "updated_at"])
+
+
+@override_settings(REFERENCE_ROUTE_ALLOW_TEST_IMPORTS=False)
+def test_test_mode_imports_are_disabled_without_explicit_runtime_setting() -> None:
+    item = collection()
+    with pytest.raises(ValueError, match="Test imports are disabled"):
+        import_osm_snapshot(collection=item, payload=payload())
 
 
 def test_direct_incomplete_offer_and_sibling_origin_never_publish_or_appear() -> None:
     item = collection()
-    import_osm_snapshot(collection=item, payload=payload())
+    import_production_snapshot(item)
     source_import = item.imports.get()
     with pytest.raises(ValidationError):
         ReferenceAlterationOffer.objects.create(
@@ -368,7 +458,7 @@ def test_operator_and_human_review_are_required_before_activation() -> None:
 
 def test_invalid_refresh_does_not_replace_published_route() -> None:
     item = collection()
-    import_osm_snapshot(collection=item, payload=payload())
+    import_production_snapshot(item)
     route = ReferenceRoute.objects.get(collection=item)
     publish_offer(item)
     approve_reference_route(route, reviewer="reviewer")
@@ -931,7 +1021,7 @@ def test_postgis_geometry_is_linestring_with_srid() -> None:
 )
 def test_reference_endpoints_require_game_session_claim() -> None:
     item = collection()
-    import_osm_snapshot(collection=item, payload=payload())
+    import_production_snapshot(item)
     publish_offer(item)
     approve_reference_route(ReferenceRoute.objects.get(collection=item), reviewer="reviewer")
     client = Client()
@@ -964,7 +1054,7 @@ def test_reference_endpoints_require_game_session_claim() -> None:
 )
 def test_reference_api_paginates_and_filters_active_stages() -> None:
     item = collection()
-    import_osm_snapshot(collection=item, payload=payload())
+    import_production_snapshot(item)
     parent = ReferenceRoute.objects.get(collection=item)
     publish_offer(item)
     approve_reference_route(parent, reviewer="reviewer")
@@ -976,7 +1066,7 @@ def test_reference_api_paginates_and_filters_active_stages() -> None:
         relation["tags"]["ref"] = route_number
         relation["members"][0]["ref"] = 500 + int(route_number)
         way["id"] = 500 + int(route_number)
-        import_osm_snapshot(collection=item, payload=extra)
+        import_production_snapshot(item, data=extra)
         publish_offer(item)
         approve_reference_route(
             ReferenceRoute.objects.get(route_number=route_number), reviewer="reviewer"

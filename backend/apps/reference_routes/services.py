@@ -21,6 +21,8 @@ from django.utils import timezone
 from apps.catalogue.fields import _GIS_AVAILABLE
 
 from .models import (
+    OSM_DISCOVERY_QUERY,
+    OSM_OVERPASS_ENDPOINT,
     ReferenceAlterationOffer,
     ReferenceCollection,
     ReferenceImport,
@@ -33,14 +35,6 @@ from .models import (
     ReferenceValidationStatus,
 )
 
-OSM_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
-OSM_DISCOVERY_QUERY = """[out:json][timeout:90];
-area["ISO3166-1"="CZ"]["admin_level"="2"]->.cz;
-relation["type"="route"]["route"="bicycle"]["ref"]
-  ["network"~"^(lcn|rcn|ncn)$"](area.cz);
-out meta;
->>;
-out meta geom;"""
 MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 MAX_RELATIONS = 5_000
 MAX_MEMBERS_PER_RELATION = 5_000
@@ -218,6 +212,118 @@ def _validate_http_evidence(metadata: dict[str, Any]) -> None:
             raise ValueError(f"Manifest HTTP evidence marks {conditional} both present and absent")
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _validate_discovery_evidence(
+    *,
+    parsed: dict[str, Any],
+    metadata: dict[str, Any],
+    endpoint: str,
+    expected_ids: list[int],
+) -> None:
+    """Require a retained discovery result that is distinct from the snapshot.
+
+    A caller must provide the independently retained Overpass result, including
+    the selected relation records.  A hash of a caller-authored list of IDs is
+    deliberately insufficient evidence of discovery.
+    """
+    mechanism = metadata["discovery_mechanism"]
+    executed_at = _parse_utc_timestamp(
+        metadata["discovery_executed_at"], field="discovery_executed_at"
+    )
+    discovery_ids = metadata["discovery_selected_relation_ids"]
+    if (
+        not isinstance(discovery_ids, list)
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in discovery_ids)
+        or sorted(discovery_ids) != sorted(expected_ids)
+    ):
+        raise ValueError("Production discovery IDs must exactly match imported IDs")
+    artifact = metadata["discovery_artifact_url"]
+    artifact_parts = urlsplit(artifact)
+    endpoint_parts = urlsplit(endpoint)
+    configured_parts = urlsplit(
+        str(getattr(settings, "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL", "") or "")
+    )
+    if (
+        artifact_parts.scheme != "https"
+        or not artifact_parts.netloc
+        or artifact_parts.query
+        or artifact_parts.fragment
+        or not configured_parts.scheme
+        or artifact_parts.scheme != configured_parts.scheme
+        or artifact_parts.netloc != configured_parts.netloc
+        or not artifact_parts.path.startswith(configured_parts.path.rstrip("/") + "/")
+        or (
+            artifact_parts.scheme == endpoint_parts.scheme
+            and artifact_parts.netloc == endpoint_parts.netloc
+            and artifact_parts.path == endpoint_parts.path
+        )
+    ):
+        raise ValueError("Production discovery artifact must be a separate trusted artifact")
+    discovery_payload = metadata["discovery_result_payload"]
+    if not isinstance(discovery_payload, dict):
+        raise ValueError("Production discovery result payload is required")
+    if _canonical_json_sha256(discovery_payload) != metadata["discovery_result_sha256"]:
+        raise ValueError("Production discovery hash does not match the retained result")
+    if (
+        discovery_payload.get("format") != "bikemapy-reference-discovery-v1"
+        or discovery_payload.get("mechanism") != mechanism
+        or discovery_payload.get("artifact_url") != artifact
+        or discovery_payload.get("executed_at") != metadata["discovery_executed_at"]
+        or discovery_payload.get("selected_relation_ids") != discovery_ids
+    ):
+        raise ValueError("Production discovery result metadata is not bound to its manifest")
+    if mechanism == "overpass":
+        if (
+            discovery_payload.get("endpoint") != OSM_OVERPASS_ENDPOINT
+            or discovery_payload.get("query_text") != OSM_DISCOVERY_QUERY
+            or metadata["discovery_query_or_extract_id"]
+            != f"overpass:{hashlib.sha256(OSM_DISCOVERY_QUERY.encode()).hexdigest()}"
+        ):
+            raise ValueError("Production Overpass discovery must use the approved query")
+    elif (
+        not metadata.get("overpass_unavailable")
+        or not isinstance(discovery_payload.get("extract_provider"), str)
+        or not discovery_payload["extract_provider"].strip()
+        or not isinstance(discovery_payload.get("extract_date"), str)
+        or not discovery_payload["extract_date"].strip()
+        or not str(metadata["discovery_query_or_extract_id"]).startswith("regional-extract:")
+    ):
+        raise ValueError("Regional discovery requires recorded Overpass-first fallback evidence")
+    payload_elements = discovery_payload.get("elements")
+    if not isinstance(payload_elements, list):
+        raise ValueError("Production discovery result must retain relation records")
+    discovered = {
+        item["id"]: item
+        for item in payload_elements
+        if isinstance(item, dict)
+        and item.get("type") == "relation"
+        and isinstance(item.get("id"), int)
+    }
+    source_relations = {
+        item["id"]: item
+        for item in parsed.get("elements", [])
+        if isinstance(item, dict)
+        and item.get("type") == "relation"
+        and isinstance(item.get("id"), int)
+    }
+    if any(
+        route_id not in discovered or route_id not in source_relations for route_id in expected_ids
+    ):
+        raise ValueError("Production discovery result does not contain imported relation records")
+    for route_id in expected_ids:
+        if discovered[route_id].get("tags") != source_relations[route_id].get("tags"):
+            raise ValueError(
+                "Production discovery relation tags do not match the imported snapshot"
+            )
+    if executed_at > timezone.now().astimezone(UTC) + timedelta(minutes=5):
+        raise ValueError("Production discovery execution time is in the future")
+
+
 def _validate_source_evidence(
     *,
     parsed: dict[str, Any],
@@ -227,8 +333,10 @@ def _validate_source_evidence(
 ) -> datetime | None:
     """Validate manifest evidence against the actual immutable response payload."""
     import_mode = metadata.get("import_mode")
-    if import_mode is not None and import_mode not in {"test", "production", "validation"}:
+    if import_mode not in {"test", "production", "validation"}:
         raise ValueError("Import mode is unsupported")
+    if import_mode == "test" and not getattr(settings, "REFERENCE_ROUTE_ALLOW_TEST_IMPORTS", False):
+        raise ValueError("Test imports are disabled outside an explicit test runtime")
     if import_mode == "production" and metadata.get("production_import") is not True:
         raise ValueError("Production imports require production mode")
     if import_mode == "validation" and metadata.get("validation_sample") is not True:
@@ -269,49 +377,20 @@ def _validate_source_evidence(
             raise ValueError("Production import requires complete discovery evidence")
         if metadata["discovery_mechanism"] not in {"overpass", "regional_extract"}:
             raise ValueError("Production discovery mechanism is unsupported")
-        _parse_utc_timestamp(metadata["discovery_executed_at"], field="discovery_executed_at")
         if (
             not isinstance(metadata["discovery_result_sha256"], str)
             or len(metadata["discovery_result_sha256"]) != 64
             or any(char not in "0123456789abcdef" for char in metadata["discovery_result_sha256"])
         ):
             raise ValueError("Production discovery result hash is invalid")
-        discovered_ids = metadata["discovery_selected_relation_ids"]
-        if (
-            not isinstance(discovered_ids, list)
-            or any(
-                not isinstance(value, int) or isinstance(value, bool) for value in discovered_ids
-            )
-            or expected_ids is None
-            or not set(expected_ids) <= set(discovered_ids)
-        ):
-            raise ValueError("Production selected IDs are absent from discovery evidence")
-        if (
-            not isinstance(metadata["discovery_artifact_url"], str)
-            or urlsplit(metadata["discovery_artifact_url"]).scheme != "https"
-            or not urlsplit(metadata["discovery_artifact_url"]).netloc
-            or urlsplit(metadata["discovery_artifact_url"]).query
-            or urlsplit(metadata["discovery_artifact_url"]).fragment
-        ):
-            raise ValueError("Production discovery artifact URL is invalid")
-        discovery_payload = metadata.get("discovery_result_payload")
-        if not isinstance(discovery_payload, dict):
-            raise ValueError("Production discovery result payload is required")
-        discovery_payload_hash = hashlib.sha256(
-            json.dumps(
-                discovery_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode()
-        ).hexdigest()
-        if discovery_payload_hash != metadata["discovery_result_sha256"]:
-            raise ValueError("Production discovery hash does not match the retained result")
-        payload_ids = discovery_payload.get("selected_relation_ids")
-        payload_query = discovery_payload.get("query_or_extract_id")
-        if (
-            payload_query != metadata["discovery_query_or_extract_id"]
-            or not isinstance(payload_ids, list)
-            or not set(expected_ids) <= set(payload_ids)
-        ):
-            raise ValueError("Production discovery result does not contain selected IDs")
+        if expected_ids is None:
+            raise ValueError("Production discovery evidence requires selected relation IDs")
+        _validate_discovery_evidence(
+            parsed=parsed,
+            metadata=metadata,
+            endpoint=endpoint,
+            expected_ids=expected_ids,
+        )
     count_fields = ("expected_way_count", "expected_node_count")
     present_counts = [field in metadata for field in count_fields]
     if any(present_counts):
@@ -1084,6 +1163,8 @@ def record_alteration_offer(
         raise ValueError("A deployable alteration-offer base URL is not configured")
     if source_import.status != ReferenceImportStatus.VALID:
         raise ValueError("Only a valid source import can receive an alteration offer")
+    if source_import.response_metadata.get("import_mode") != "production":
+        raise ValueError("Only production imports can receive a deployable alteration offer")
     if offered_snapshot_hash != source_import.raw_response_sha256:
         raise ValueError("Alteration offer hash does not match the immutable source snapshot")
     if not timezone.is_aware(published_at) or published_at.utcoffset() != timedelta(0):
