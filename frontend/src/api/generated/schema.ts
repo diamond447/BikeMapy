@@ -434,6 +434,9 @@ export interface components {
     CompetitionErrorResponse: {
       detail: string
       code?: string
+      fields?: {
+        [key: string]: string[]
+      }
     }
     CompetitionJoin: {
       invite_code: string

@@ -227,6 +227,10 @@ class CompetitionRecomputation(models.Model):
     attempts = models.PositiveSmallIntegerField(default=0)
     next_attempt_at = models.DateTimeField(default=timezone.now)
     dispatched_at = models.DateTimeField(null=True, blank=True)
+    lease_token = models.CharField(max_length=64, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    dispatch_token = models.CharField(max_length=64, blank=True)
+    dispatch_lease_until = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [

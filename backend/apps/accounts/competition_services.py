@@ -6,7 +6,9 @@ import secrets
 from datetime import timedelta
 from math import sqrt
 from typing import Any
+from uuid import uuid4
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -143,14 +145,70 @@ def _locked_player(player: Player) -> Player:
     return Player.objects.select_for_update().get(pk=player.pk)
 
 
-def _dispatch_recomputation(job_id: int) -> None:
+def _claim_recomputation_dispatch(job_id: int | None = None) -> tuple[int, str] | None:
+    """Atomically claim an outbox row before publishing it to the broker."""
+
+    now = timezone.now()
+    stale_dispatch = now - timedelta(minutes=10)
+    candidate_ids = (
+        [job_id]
+        if job_id is not None
+        else list(
+            CompetitionRecomputation.objects.filter(
+                Q(status=CompetitionRecomputation.Status.PENDING)
+                | Q(status=CompetitionRecomputation.Status.FAILED),
+                attempts__lt=MAX_DISPATCH_ATTEMPTS,
+                next_attempt_at__lte=now,
+            )
+            .filter(Q(dispatched_at__isnull=True) | Q(dispatched_at__lt=stale_dispatch))
+            .order_by("created_at", "pk")
+            .values_list("pk", flat=True)[:100]
+        )
+    )
+    for candidate_id in candidate_ids:
+        with transaction.atomic():
+            try:
+                job_ref = CompetitionRecomputation.objects.get(pk=candidate_id)
+                # Keep the worker and service lock order consistent.
+                Competition.objects.select_for_update().get(pk=job_ref.competition_id)
+                job = CompetitionRecomputation.objects.select_for_update().get(pk=candidate_id)
+            except CompetitionRecomputation.DoesNotExist:
+                continue
+            if job.status not in {
+                CompetitionRecomputation.Status.PENDING,
+                CompetitionRecomputation.Status.FAILED,
+            }:
+                continue
+            if job.attempts >= MAX_DISPATCH_ATTEMPTS or job.next_attempt_at > now:
+                continue
+            if job.dispatched_at is not None and job.dispatched_at >= stale_dispatch:
+                continue
+            if job.dispatch_token and job.dispatch_lease_until and job.dispatch_lease_until > now:
+                continue
+            token = uuid4().hex
+            job.dispatch_token = token
+            job.dispatch_lease_until = now + timedelta(
+                seconds=settings.GAME_RECOMPUTATION_DISPATCH_LEASE_SECONDS
+            )
+            job.save(update_fields=("dispatch_token", "dispatch_lease_until"))
+            return job.pk, token
+    return None
+
+
+def _dispatch_recomputation(job_id: int, *, dispatch_token: str | None = None) -> bool:
+    claim = (job_id, dispatch_token) if dispatch_token else _claim_recomputation_dispatch(job_id)
+    if claim is None:
+        return False
+    claimed_job_id, token = claim
     try:
         from .tasks import recompute_competition_results_task
 
-        recompute_competition_results_task.apply_async(args=(job_id,))
+        recompute_competition_results_task.apply_async(args=(claimed_job_id,))
     except Exception as exc:
         with transaction.atomic():
-            job = CompetitionRecomputation.objects.select_for_update().get(pk=job_id)
+            job = CompetitionRecomputation.objects.select_for_update().get(pk=claimed_job_id)
+            if job.dispatch_token != token:
+                return False
             job.attempts += 1
             job.error = str(exc)[:240]
             if job.attempts >= MAX_DISPATCH_ATTEMPTS:
@@ -161,10 +219,24 @@ def _dispatch_recomputation(job_id: int) -> None:
                 job.next_attempt_at = timezone.now() + timedelta(
                     seconds=DISPATCH_RETRY_SECONDS[retry_index]
                 )
-            job.save(update_fields=("attempts", "status", "error", "next_attempt_at"))
-        return
+            job.dispatch_token = ""
+            job.dispatch_lease_until = None
+            job.save(
+                update_fields=(
+                    "attempts",
+                    "status",
+                    "error",
+                    "next_attempt_at",
+                    "dispatch_token",
+                    "dispatch_lease_until",
+                )
+            )
+        return False
     with transaction.atomic():
-        CompetitionRecomputation.objects.filter(pk=job_id).update(dispatched_at=timezone.now())
+        CompetitionRecomputation.objects.filter(pk=claimed_job_id, dispatch_token=token).update(
+            dispatched_at=timezone.now(), dispatch_token="", dispatch_lease_until=None
+        )
+    return True
 
 
 def schedule_recomputation(

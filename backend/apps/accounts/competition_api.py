@@ -85,6 +85,9 @@ class CompetitionTransferSerializer(serializers.Serializer[dict[str, Any]]):
 class CompetitionErrorResponseSerializer(serializers.Serializer[dict[str, Any]]):
     detail = serializers.CharField()
     code = serializers.CharField(required=False)
+    fields = serializers.DictField(
+        child=serializers.ListField(child=serializers.CharField()), required=False
+    )
 
 
 COMPETITION_ERROR_RESPONSES = {

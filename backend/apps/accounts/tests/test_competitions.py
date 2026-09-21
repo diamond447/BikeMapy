@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from time import monotonic
 from unittest.mock import patch
 from uuid import uuid4
@@ -8,6 +9,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.accounts.competition_services import (
     CompetitionError,
@@ -28,7 +30,10 @@ from apps.accounts.models import (
     ImportedActivity,
     Player,
 )
-from apps.accounts.tasks import recompute_competition_results_task
+from apps.accounts.tasks import (
+    dispatch_competition_recomputations_task,
+    recompute_competition_results_task,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -343,3 +348,67 @@ def test_recompute_failure_persists_attempts_and_stops_at_retry_limit() -> None:
     assert terminal["status"] == "failed"
     assert job.attempts == 5
     assert job.error
+
+
+@override_settings(**SETTINGS)
+def test_recomputation_worker_lease_distinguishes_fresh_and_stale_jobs() -> None:
+    owner = player(120)
+    competition, _ = create_competition(owner, name="Leases")
+    job = CompetitionRecomputation.objects.create(
+        competition=competition,
+        generation=1,
+        status=CompetitionRecomputation.Status.RUNNING,
+        attempts=1,
+        lease_token="live-worker",
+        lease_until=timezone.now() + timedelta(minutes=5),
+    )
+    fresh = recompute_competition_results_task.apply(args=[job.pk]).get()
+    assert fresh["status"] == "in_progress"
+    job.refresh_from_db()
+    assert job.attempts == 1
+
+    job.lease_until = timezone.now() - timedelta(seconds=1)
+    job.save(update_fields=("lease_until",))
+    recovered = recompute_competition_results_task.apply(args=[job.pk]).get()
+    assert recovered["status"] == "completed"
+    job.refresh_from_db()
+    assert job.attempts == 2
+    assert job.lease_token == ""
+    assert job.lease_until is None
+
+
+@override_settings(**SETTINGS)
+def test_stale_worker_lease_is_recovered_by_dispatch_sweeper() -> None:
+    owner = player(121)
+    competition, _ = create_competition(owner, name="Expired lease")
+    job = CompetitionRecomputation.objects.create(
+        competition=competition,
+        generation=1,
+        status=CompetitionRecomputation.Status.RUNNING,
+        attempts=1,
+        lease_token="dead-worker",
+        lease_until=timezone.now() - timedelta(minutes=1),
+    )
+    result = dispatch_competition_recomputations_task.apply(args=[1]).get()
+    assert result == {"dispatched": 0}
+    job.refresh_from_db()
+    assert job.status == CompetitionRecomputation.Status.FAILED
+    assert job.error == "Worker lease expired."
+    assert job.lease_token == ""
+    assert job.lease_until is None
+
+
+@override_settings(**SETTINGS)
+def test_dispatch_claim_is_single_use_until_its_lease_expires() -> None:
+    owner = player(122)
+    competition, _ = create_competition(owner, name="Dispatch claim")
+    job = schedule_recomputation(competition)
+    from apps.accounts.competition_services import _claim_recomputation_dispatch
+
+    first = _claim_recomputation_dispatch(job.pk)
+    second = _claim_recomputation_dispatch(job.pk)
+    assert first is not None
+    assert second is None
+    job.refresh_from_db()
+    assert job.dispatch_token == first[1]
+    assert job.dispatch_lease_until is not None
