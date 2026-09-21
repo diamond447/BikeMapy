@@ -15,8 +15,10 @@ from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
+from apps.api.views_reference_routes import reference_queryset
 from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.reference_routes.models import (
+    ReferenceAlterationOffer,
     ReferenceCollection,
     ReferenceImport,
     ReferenceRecomputation,
@@ -28,11 +30,13 @@ from apps.reference_routes.services import (
     _assemble_geometry,
     approve_reference_route,
     blocked_via_czechia_import,
-    import_osm_snapshot,
     link_stage,
     record_alteration_offer,
     store_pending_snapshot,
     validate_osm_candidate,
+)
+from apps.reference_routes.services import (
+    import_osm_snapshot as _import_osm_snapshot,
 )
 from apps.reference_routes.tasks import refresh_reference_routes
 
@@ -97,6 +101,11 @@ def collection(*, slug: str = "osm-cz") -> ReferenceCollection:
         permission_granted=True,
         active=True,
     )
+
+
+def import_osm_snapshot(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("response_metadata", {"import_mode": "test"})
+    return _import_osm_snapshot(*args, **kwargs)
 
 
 def publish_offer(item: ReferenceCollection) -> None:
@@ -257,16 +266,95 @@ def test_validation_sample_requires_test_mode_and_cannot_activate(tmp_path: Any)
 def test_production_import_requires_non_circular_discovery_evidence() -> None:
     item = collection()
     data = payload()
+    with pytest.raises(ValueError, match="explicit import_mode"):
+        import_osm_snapshot(collection=item, payload=data, response_metadata={})
     with pytest.raises(ValueError, match="discovery evidence"):
         import_osm_snapshot(
             collection=item,
             payload=data,
             response_metadata={
                 "production_import": True,
+                "import_mode": "production",
                 "expected_relation_ids": [101],
                 "expected_relation_count": 1,
             },
         )
+
+
+def test_production_discovery_artifact_and_hash_are_verifiable() -> None:
+    item = collection()
+    discovery_payload = {
+        "query_or_extract_id": "overpass-query-v1",
+        "selected_relation_ids": [101],
+    }
+    metadata = {
+        "import_mode": "production",
+        "production_import": True,
+        "expected_relation_ids": [101],
+        "expected_relation_count": 1,
+        "discovery_mechanism": "overpass",
+        "discovery_query_or_extract_id": "overpass-query-v1",
+        "discovery_executed_at": "2026-09-21T00:00:00Z",
+        "discovery_result_sha256": "0" * 64,
+        "discovery_artifact_url": "file:///tmp/discovery.json",
+        "discovery_selected_relation_ids": [101],
+        "discovery_result_payload": discovery_payload,
+    }
+    with pytest.raises(ValueError, match="artifact URL"):
+        import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
+    metadata["discovery_artifact_url"] = f"{OFFER_BASE_URL}/discovery.json"
+    with pytest.raises(ValueError, match="hash"):
+        import_osm_snapshot(collection=item, payload=payload(), response_metadata=metadata)
+
+
+def test_direct_incomplete_offer_and_sibling_origin_never_publish_or_appear() -> None:
+    item = collection()
+    import_osm_snapshot(collection=item, payload=payload())
+    source_import = item.imports.get()
+    with pytest.raises(ValidationError):
+        ReferenceAlterationOffer.objects.create(
+            source_import=source_import,
+            manifest_url=f"{OFFER_BASE_URL}/manifest.json",
+            artifact_url=f"{OFFER_BASE_URL}/artifact.json",
+            method_url=f"{OFFER_BASE_URL}/method.md",
+            published_at=timezone.now(),
+            offered_snapshot_hash="0" * 64,
+            operator_evidence="bypass",
+        )
+    publish_offer(item)
+    item.derivative_offer_url = (
+        "https://github.com/diamond447/BikeMapy-evil/docs/osm-alterations.md"
+    )
+    item.save(update_fields=["derivative_offer_url", "updated_at"])
+    route = ReferenceRoute.objects.get(collection=item)
+    route.publication_status = "approved"
+    route.active = True
+    with pytest.raises(ValidationError):
+        route.save(update_fields=["publication_status", "active", "updated_at"])
+
+
+def test_bulk_created_validation_route_is_filtered_from_public_queryset() -> None:
+    item = collection()
+    import_osm_snapshot(
+        collection=item,
+        payload=payload(),
+        response_metadata={
+            "import_mode": "validation",
+            "validation_sample": True,
+            "validation_test_mode": True,
+        },
+    )
+    version = ReferenceRouteVersion.objects.get()
+    route = ReferenceRoute(
+        collection=item,
+        source_identifier="bulk-validation",
+        title="Bulk validation",
+        active=True,
+        publication_status="approved",
+        current_version=version,
+    )
+    ReferenceRoute.objects.bulk_create([route])
+    assert not reference_queryset().filter(pk=route.pk).exists()
 
 
 def test_operator_and_human_review_are_required_before_activation() -> None:
@@ -405,6 +493,7 @@ def test_operator_command_and_celery_task_use_bounded_stored_snapshot(tmp_path: 
         retrieved_at=timezone.now(),
         response_metadata={
             "complete": True,
+            "import_mode": "test",
             "expected_relation_count": 1,
             "expected_relation_ids": [101],
             "http_status": 200,
@@ -637,7 +726,7 @@ def test_incomplete_snapshot_is_rejected_without_routes() -> None:
     result = import_osm_snapshot(
         collection=item,
         payload=payload(),
-        response_metadata={"complete": False},
+        response_metadata={"complete": False, "import_mode": "test"},
     )
     assert result["status"] == "failed"
     assert item.routes.count() == 0
@@ -678,6 +767,7 @@ def test_manifest_selected_child_relation_is_imported_exactly() -> None:
         collection=item,
         payload=data,
         response_metadata={
+            "import_mode": "test",
             "expected_relation_count": 2,
             "expected_relation_ids": [101, 102],
             "http_status": 200,

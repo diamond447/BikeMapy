@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from django.conf import settings
-from django.db.models import F, Prefetch, QuerySet
+from django.db.models import Prefetch, QuerySet
 from django.utils.module_loading import import_string
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -25,6 +25,7 @@ from apps.reference_routes.models import (
     ReferenceRouteVersion,
     ReferenceSourceKind,
     ReferenceValidationStatus,
+    has_deployable_derivative_offer,
 )
 
 from .serializers_reference_routes import ReferenceRouteListSerializer, ReferenceRouteSerializer
@@ -70,40 +71,56 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
     active_stage_versions = ReferenceRouteVersion.objects.filter(
         active=True,
         validation_status=ReferenceValidationStatus.VALID,
-        source_import__alteration_offer__published_at__isnull=False,
-        source_import__alteration_offer__offered_snapshot_hash=F(
-            "source_import__raw_response_sha256"
-        ),
-        source_import__alteration_offer__manifest_url__startswith=offer_base,
-        source_import__alteration_offer__artifact_url__startswith=offer_base,
-        source_import__alteration_offer__method_url__startswith=offer_base,
-    )
+    ).select_related("route__collection", "source_import", "source_import__alteration_offer")
+    active_stage_version_ids = [
+        version.pk
+        for version in active_stage_versions
+        if has_deployable_derivative_offer(version.route.collection, version.source_import)
+    ]
+    active_stage_versions = active_stage_versions.filter(pk__in=active_stage_version_ids)
     active_stages = ReferenceRoute.objects.filter(
         active=True,
         publication_status="approved",
         current_version__isnull=False,
         current_version__validation_status=ReferenceValidationStatus.VALID,
-        current_version__source_import__alteration_offer__published_at__isnull=False,
-        current_version__source_import__alteration_offer__offered_snapshot_hash=F(
-            "current_version__source_import__raw_response_sha256"
-        ),
-        current_version__source_import__alteration_offer__manifest_url__startswith=offer_base,
-        current_version__source_import__alteration_offer__artifact_url__startswith=offer_base,
-        current_version__source_import__alteration_offer__method_url__startswith=offer_base,
-    ).prefetch_related(Prefetch("current_version", queryset=active_stage_versions))
-    return (
-        ReferenceRoute.objects.filter(
-            active=True,
-            publication_status="approved",
-            current_version__isnull=False,
-            current_version__validation_status=ReferenceValidationStatus.VALID,
-            collection__active=True,
-            collection__permission_granted=True,
-            collection__source_kind=ReferenceSourceKind.OSM_NUMBERED,
-            parent__isnull=True,
-        )
-        .select_related("collection", "current_version")
-        .prefetch_related(Prefetch("stages", queryset=active_stages))
+    ).select_related(
+        "collection",
+        "current_version",
+        "current_version__source_import",
+        "current_version__source_import__alteration_offer",
+    )
+    active_stage_ids = [
+        route.pk
+        for route in active_stages
+        if route.current_version
+        and has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+    ]
+    active_stages = active_stages.filter(pk__in=active_stage_ids).prefetch_related(
+        Prefetch("current_version", queryset=active_stage_versions)
+    )
+    candidates = ReferenceRoute.objects.filter(
+        active=True,
+        publication_status="approved",
+        current_version__isnull=False,
+        current_version__validation_status=ReferenceValidationStatus.VALID,
+        collection__active=True,
+        collection__permission_granted=True,
+        collection__source_kind=ReferenceSourceKind.OSM_NUMBERED,
+        parent__isnull=True,
+    ).select_related(
+        "collection",
+        "current_version",
+        "current_version__source_import",
+        "current_version__source_import__alteration_offer",
+    )
+    candidate_ids = [
+        route.pk
+        for route in candidates
+        if route.current_version
+        and has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+    ]
+    return candidates.filter(pk__in=candidate_ids).prefetch_related(
+        Prefetch("stages", queryset=active_stages)
     )
 
 

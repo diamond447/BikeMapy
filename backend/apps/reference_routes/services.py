@@ -226,6 +226,13 @@ def _validate_source_evidence(
     selected: list[dict[str, Any]],
 ) -> datetime | None:
     """Validate manifest evidence against the actual immutable response payload."""
+    import_mode = metadata.get("import_mode")
+    if import_mode is not None and import_mode not in {"test", "production", "validation"}:
+        raise ValueError("Import mode is unsupported")
+    if import_mode == "production" and metadata.get("production_import") is not True:
+        raise ValueError("Production imports require production mode")
+    if import_mode == "validation" and metadata.get("validation_sample") is not True:
+        raise ValueError("Validation mode requires a validation-only manifest")
     _validate_http_evidence(metadata)
     expected_ids = metadata.get("expected_relation_ids")
     if expected_ids is not None:
@@ -281,9 +288,30 @@ def _validate_source_evidence(
             raise ValueError("Production selected IDs are absent from discovery evidence")
         if (
             not isinstance(metadata["discovery_artifact_url"], str)
-            or not urlsplit(metadata["discovery_artifact_url"]).scheme
+            or urlsplit(metadata["discovery_artifact_url"]).scheme != "https"
+            or not urlsplit(metadata["discovery_artifact_url"]).netloc
+            or urlsplit(metadata["discovery_artifact_url"]).query
+            or urlsplit(metadata["discovery_artifact_url"]).fragment
         ):
             raise ValueError("Production discovery artifact URL is invalid")
+        discovery_payload = metadata.get("discovery_result_payload")
+        if not isinstance(discovery_payload, dict):
+            raise ValueError("Production discovery result payload is required")
+        discovery_payload_hash = hashlib.sha256(
+            json.dumps(
+                discovery_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+        if discovery_payload_hash != metadata["discovery_result_sha256"]:
+            raise ValueError("Production discovery hash does not match the retained result")
+        payload_ids = discovery_payload.get("selected_relation_ids")
+        payload_query = discovery_payload.get("query_or_extract_id")
+        if (
+            payload_query != metadata["discovery_query_or_extract_id"]
+            or not isinstance(payload_ids, list)
+            or not set(expected_ids) <= set(payload_ids)
+        ):
+            raise ValueError("Production discovery result does not contain selected IDs")
     count_fields = ("expected_way_count", "expected_node_count")
     present_counts = [field in metadata for field in count_fields]
     if any(present_counts):
@@ -683,8 +711,10 @@ def import_osm_snapshot(
     if not collection.permission_granted:
         raise PermissionError("This source collection is not approved for ingestion")
     collection.full_clean()
+    if response_metadata is None or "import_mode" not in response_metadata:
+        raise ValueError("Source imports require an explicit import_mode")
     raw, parsed = _response_bytes(payload)
-    metadata = dict(response_metadata or {})
+    metadata = dict(response_metadata)
     checksum = hashlib.sha256(raw).hexdigest()
     manifest_hash = metadata.get("raw_sha256") or metadata.get("sha256")
     if manifest_hash is not None and str(manifest_hash) != checksum:
@@ -979,6 +1009,8 @@ def store_pending_snapshot(
     ):
         raise PermissionError("This source collection is not approved for ingestion")
     collection.full_clean()
+    if "import_mode" not in response_metadata:
+        raise ValueError("Stored snapshots require an explicit import_mode")
     if not timezone.is_aware(retrieved_at) or retrieved_at.utcoffset() != timedelta(0):
         raise ValueError("retrieved_at must be timezone-aware UTC")
     raw, parsed = _response_bytes(raw_response)

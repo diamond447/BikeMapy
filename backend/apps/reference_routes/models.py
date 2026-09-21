@@ -290,9 +290,16 @@ class ReferenceAlterationOffer(models.Model):
             and bool(self.operator_evidence.strip())
         )
 
+    def clean(self) -> None:
+        super().clean()
+        allowed_base = str(getattr(settings, "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL", "") or "")
+        if not allowed_base or not self.is_complete_for(self.source_import, allowed_base):
+            raise ValidationError("Alteration offer evidence is incomplete or hash-mismatched.")
+
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
         if self.pk:
             raise ValidationError("Published alteration offers are immutable.")
+        self.full_clean()
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
     def delete(self, *args: object, **kwargs: object) -> tuple[int, dict[str, int]]:

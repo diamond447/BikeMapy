@@ -110,6 +110,7 @@ class Command(BaseCommand):
                 "discovery_result_sha256",
                 "discovery_artifact_url",
                 "discovery_selected_relation_ids",
+                "discovery_result_payload",
             }
             discovery_missing = sorted(discovery_required - set(manifest))
             if discovery_missing:
@@ -178,11 +179,13 @@ class Command(BaseCommand):
                     "validation_sample": validation_sample,
                     "validation_test_mode": validation_test_mode,
                     "production_import": not validation_sample,
+                    "import_mode": "validation" if validation_sample else "production",
                     "discovery_mechanism": manifest.get("discovery_mechanism"),
                     "discovery_query_or_extract_id": manifest.get("discovery_query_or_extract_id"),
                     "discovery_executed_at": manifest.get("discovery_executed_at"),
                     "discovery_result_sha256": manifest.get("discovery_result_sha256"),
                     "discovery_artifact_url": manifest.get("discovery_artifact_url"),
+                    "discovery_result_payload": manifest.get("discovery_result_payload"),
                     "discovery_selected_relation_ids": manifest.get(
                         "discovery_selected_relation_ids"
                     ),
