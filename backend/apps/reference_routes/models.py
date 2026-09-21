@@ -206,7 +206,13 @@ def has_deployable_derivative_offer(
         return False
     if parsed_executed_at.tzinfo is None or parsed_executed_at.utcoffset() != timedelta(0):
         return False
-    if parsed_executed_at > timezone.now() or parsed_executed_at > source_import.retrieved_at:
+    retrieved_at = source_import.retrieved_at
+    if (
+        not timezone.is_aware(retrieved_at)
+        or retrieved_at.utcoffset() != timedelta(0)
+        or retrieved_at > timezone.now()
+        or parsed_executed_at > retrieved_at
+    ):
         return False
     expected_ids = metadata.get("expected_relation_ids")
     discovery_ids = metadata.get("discovery_selected_relation_ids")

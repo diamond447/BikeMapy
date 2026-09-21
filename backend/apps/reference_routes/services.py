@@ -191,6 +191,15 @@ def _parse_utc_timestamp(value: Any, *, field: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _validate_retrieved_at(value: datetime) -> datetime:
+    if not timezone.is_aware(value) or value.utcoffset() != timedelta(0):
+        raise ValueError("retrieved_at must be timezone-aware UTC")
+    retrieved = value.astimezone(UTC)
+    if retrieved > timezone.now().astimezone(UTC):
+        raise ValueError("retrieved_at cannot be in the future")
+    return retrieved
+
+
 def _validate_http_evidence(metadata: dict[str, Any]) -> None:
     headers = metadata.get("http_headers")
     absence = metadata.get("http_header_absence")
@@ -926,8 +935,7 @@ def import_osm_snapshot(
         if metadata.get("expected_relation_count") is None:
             raise ValueError("Manifest relation count is required with selected IDs")
     retrieved = retrieved_at or timezone.now()
-    if not timezone.is_aware(retrieved) or retrieved.utcoffset() != timedelta(0):
-        raise ValueError("retrieved_at must be timezone-aware UTC")
+    retrieved = _validate_retrieved_at(retrieved)
     relations, ways = _relation_elements(parsed)
     selected = _selected_relations(relations, parsed, expected_ids)
     source_timestamp = _validate_source_evidence(
@@ -1207,8 +1215,7 @@ def store_pending_snapshot(
     collection.full_clean()
     if "import_mode" not in response_metadata:
         raise ValueError("Stored snapshots require an explicit import_mode")
-    if not timezone.is_aware(retrieved_at) or retrieved_at.utcoffset() != timedelta(0):
-        raise ValueError("retrieved_at must be timezone-aware UTC")
+    retrieved_at = _validate_retrieved_at(retrieved_at)
     raw, parsed = _response_bytes(raw_response)
     checksum = hashlib.sha256(raw).hexdigest()
     relations, ways = _relation_elements(parsed)

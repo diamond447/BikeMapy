@@ -2,7 +2,7 @@ import base64
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -33,6 +33,7 @@ from apps.reference_routes.models import (
 from apps.reference_routes.services import (
     _assemble_geometry,
     _validate_overpass_failure_evidence,
+    _validate_retrieved_at,
     approve_reference_route,
     blocked_via_czechia_import,
     link_stage,
@@ -462,6 +463,20 @@ def test_publication_gate_rechecks_mutated_evidence_without_stale_cache() -> Non
     assert not has_deployable_derivative_offer(item, source_import)
 
 
+def test_future_retrieval_is_rejected_at_import_and_publication_boundary() -> None:
+    item = collection()
+    future = datetime.fromisoformat("2999-01-01T00:00:00+00:00")
+    with pytest.raises(ValueError, match="retrieved_at cannot be in the future"):
+        import_osm_snapshot(collection=item, payload=payload(), retrieved_at=future)
+    now = timezone.now()
+    assert _validate_retrieved_at(now) == now.astimezone(UTC)
+    import_production_snapshot(item)
+    publish_offer(item)
+    source_import = item.imports.get()
+    source_import.retrieved_at = future
+    assert not has_deployable_derivative_offer(item, source_import)
+
+
 def test_test_mode_is_never_deployable_even_when_enabled_for_fixtures() -> None:
     item = collection()
     import_osm_snapshot(collection=item, payload=payload())
@@ -749,6 +764,33 @@ def test_manifest_fails_closed_for_http_error_and_missing_evidence(tmp_path: Any
             "--validation-test-mode",
         )
     assert not item.imports.exists()
+
+
+def test_manifest_rejects_future_retrieval_timestamp(tmp_path: Any) -> None:
+    item = collection()
+    payload_path = tmp_path / "snapshot.json"
+    manifest_path = tmp_path / "snapshot.manifest.json"
+    payload_path.write_bytes(
+        Path("backend/apps/reference_routes/fixtures/osm-cz-representative.json").read_bytes()
+    )
+    manifest = json.loads(
+        Path(
+            "backend/apps/reference_routes/fixtures/osm-cz-representative.manifest.json"
+        ).read_text()
+    )
+    manifest["retrieved_at"] = "2999-01-01T00:00:00Z"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(CommandError, match="retrieved_at cannot be in the future"):
+        call_command(
+            "refresh_reference_routes",
+            "--collection",
+            item.slug,
+            "--payload-file",
+            payload_path,
+            "--manifest",
+            manifest_path,
+            "--validation-test-mode",
+        )
 
 
 @pytest.mark.parametrize(
