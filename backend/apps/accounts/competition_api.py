@@ -96,9 +96,20 @@ COMPETITION_ERROR_RESPONSES = {
 }
 
 
+@extend_schema(auth=[{"cookieAuth": []}])  # type: ignore[list-item]
 class CompetitionApi(GameEndpoint):
     def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Response:
         return _private(super().dispatch(request, *args, **kwargs))
+
+    def handle_exception(self, exc: Exception) -> Response:
+        response = super().handle_exception(exc)
+        if response.status_code == 400:
+            response.data = {
+                "detail": "Request validation failed.",
+                "code": "validation_error",
+                "fields": response.data,
+            }
+        return _private(response)
 
     def _enabled(self) -> Response | None:
         return None if game_is_available() else self.unavailable()

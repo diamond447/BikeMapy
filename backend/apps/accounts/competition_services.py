@@ -8,6 +8,7 @@ from math import sqrt
 from typing import Any
 
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import (
@@ -32,6 +33,7 @@ DEFAULT_COLORS = (
 )
 MIN_COLOR_DELTA_E = 18.0
 MAX_DISPATCH_ATTEMPTS = 5
+MAX_INVITE_ATTEMPTS = 5
 DISPATCH_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
 
 
@@ -118,7 +120,7 @@ def _new_invite_code() -> str:
 
 
 def _create_with_unique_invite(**fields: Any) -> Competition:
-    for _ in range(MAX_DISPATCH_ATTEMPTS):
+    for _ in range(MAX_INVITE_ATTEMPTS):
         try:
             with transaction.atomic():
                 return Competition.objects.create(**fields, invite_code=_new_invite_code())
@@ -133,6 +135,12 @@ def _membership(player: Player, competition: Competition) -> CompetitionMembersh
     except CompetitionMembership.DoesNotExist as exc:
         # Deliberately do not distinguish a missing object from a non-member.
         raise CompetitionError("Competition not found.", code="not_found") from exc
+
+
+def _locked_player(player: Player) -> Player:
+    """Global lock order starts with Player, then Competition, then members."""
+
+    return Player.objects.select_for_update().get(pk=player.pk)
 
 
 def _dispatch_recomputation(job_id: int) -> None:
@@ -169,7 +177,6 @@ def schedule_recomputation(
         generation=competition.revision,
         defaults={"affected_player_id": affected_player_id},
     )
-    transaction.on_commit(lambda: _dispatch_recomputation(job.pk))
     return job
 
 
@@ -177,7 +184,7 @@ def schedule_recomputation(
 def create_competition(
     player: Player, *, name: Any, color: Any = None
 ) -> tuple[Competition, CompetitionMembership]:
-    player = Player.objects.select_for_update().get(pk=player.pk)
+    player = _locked_player(player)
     selected_color = normalize_color(color) if color is not None else available_color([])
     competition = _create_with_unique_invite(owner=player, name=normalize_name(name))
     membership = CompetitionMembership.objects.create(
@@ -193,7 +200,7 @@ def create_competition(
 def join_competition(
     player: Player, *, invite_code: Any, color: Any = None
 ) -> tuple[Competition, CompetitionMembership]:
-    player = Player.objects.select_for_update().get(pk=player.pk)
+    player = _locked_player(player)
     code = str(invite_code or "").strip().upper()
     try:
         competition = Competition.objects.select_for_update().get(invite_code=code, is_active=True)
@@ -225,6 +232,7 @@ def switch_competition(player: Player, competition: Competition) -> CompetitionM
 
 @transaction.atomic
 def rename_competition(player: Player, competition: Competition, *, name: Any) -> Competition:
+    player = _locked_player(player)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
     _membership(player, locked)
     if locked.owner_id != player.pk:
@@ -236,13 +244,14 @@ def rename_competition(player: Player, competition: Competition, *, name: Any) -
 
 @transaction.atomic
 def rotate_invite_code(player: Player, competition: Competition) -> Competition:
+    player = _locked_player(player)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
     _membership(player, locked)
     if locked.owner_id != player.pk:
         raise CompetitionError(
             "Only the competition owner can rotate the invite code.", code="owner_required"
         )
-    for _ in range(MAX_DISPATCH_ATTEMPTS):
+    for _ in range(MAX_INVITE_ATTEMPTS):
         locked.invite_code = _new_invite_code()
         try:
             with transaction.atomic():
@@ -261,6 +270,7 @@ def rotate_invite_code(player: Player, competition: Competition) -> Competition:
 def set_member_color(
     player: Player, competition: Competition, *, color: Any
 ) -> CompetitionMembership:
+    player = _locked_player(player)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
     membership = _membership(player, locked)
     selected = normalize_color(color)
@@ -334,6 +344,11 @@ def leave_competition(player: Player, competition: Competition) -> CompetitionRe
 
 @transaction.atomic
 def transfer_ownership(owner: Player, competition: Competition, new_owner: Player) -> Competition:
+    locked_players = list(
+        Player.objects.select_for_update().filter(pk__in=(owner.pk, new_owner.pk)).order_by("pk")
+    )
+    owner = next(player for player in locked_players if player.pk == owner.pk)
+    new_owner = next(player for player in locked_players if player.pk == new_owner.pk)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
     _membership(owner, locked)
     if locked.owner_id != owner.pk:
@@ -348,6 +363,14 @@ def transfer_ownership(owner: Player, competition: Competition, new_owner: Playe
 
 @transaction.atomic
 def delete_competition(owner: Player, competition: Competition) -> None:
+    # Lock every player that can be updated before taking the competition lock;
+    # this matches switch/remove and prevents Player↔Competition deadlocks.
+    locked_players = list(
+        Player.objects.select_for_update()
+        .filter(Q(active_competition=competition) | Q(pk=owner.pk))
+        .order_by("pk")
+    )
+    owner = next(player for player in locked_players if player.pk == owner.pk)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
     _membership(owner, locked)
     if locked.owner_id != owner.pk:

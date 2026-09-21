@@ -64,7 +64,9 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
         setMessage(errorDetail(result.error) ?? copy.gameCompetitionError)
         return false
       } else {
-        return await load()
+        const reloaded = await load()
+        if (!reloaded) setMessage(copy.gameCompetitionReloadError)
+        return true
       }
     } catch {
       setMessage(copy.gameCompetitionError)
@@ -315,9 +317,9 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
             <div className="game-competition-owner-actions">
               {renameId === current.id ? (
                 <form
-                  onSubmit={(event) => {
+                  onSubmit={async (event) => {
                     event.preventDefault()
-                    void action(() =>
+                    const succeeded = await action(() =>
                       apiClient.PATCH('/api/v1/game/competitions/{competition_id}/', {
                         params: { path: { competition_id: current.id } },
                         body: { name: rename },
@@ -325,7 +327,7 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
                         headers: csrfHeaders(),
                       }),
                     )
-                    setRenameId(null)
+                    if (succeeded) setRenameId(null)
                   }}
                 >
                   <input

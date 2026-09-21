@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import monotonic
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -208,6 +209,25 @@ def test_non_member_cannot_distinguish_missing_competition_and_private_headers_a
 
 
 @override_settings(**SETTINGS)
+def test_validation_and_csrf_failures_use_private_structured_json() -> None:
+    owner = player(62)
+    validation = authenticated_client(owner).post(reverse("game-competition-list"), {})
+    assert validation.status_code == 400
+    assert validation.json()["code"] == "validation_error"
+    assert validation["Cache-Control"] == "private, no-store"
+
+    csrf_client = Client(enforce_csrf_checks=True)
+    session = csrf_client.session
+    session["player_id"] = owner.pk
+    session["player_session_epoch"] = owner.session_epoch
+    session.save()
+    csrf = csrf_client.post(reverse("game-competition-list"), {"name": "Blocked"})
+    assert csrf.status_code == 403
+    assert csrf.json() == {"detail": "CSRF validation failed.", "code": "csrf_failed"}
+    assert csrf["Cache-Control"] == "private, no-store"
+
+
+@override_settings(**SETTINGS)
 def test_removal_selects_remaining_membership_and_preserves_newer_generation() -> None:
     owner = player(70)
     member = player(71)
@@ -287,13 +307,39 @@ def test_dispatch_failure_is_recorded_for_sweeper_retry() -> None:
     competition, _ = create_competition(owner, name="Outbox")
     from apps.accounts.competition_services import _dispatch_recomputation
 
+    started = monotonic()
     with patch(
         "apps.accounts.tasks.recompute_competition_results_task.apply_async",
         side_effect=RuntimeError("redis down"),
-    ):
+    ) as publish:
         job = schedule_recomputation(competition)
+        assert monotonic() - started < 1
+        publish.assert_not_called()
         _dispatch_recomputation(job.pk)
     job.refresh_from_db()
     assert job.status == CompetitionRecomputation.Status.PENDING
     assert job.attempts == 1
     assert job.error == "redis down"
+
+
+@override_settings(**SETTINGS)
+def test_recompute_failure_persists_attempts_and_stops_at_retry_limit() -> None:
+    owner = player(110)
+    competition, _ = create_competition(owner, name="Failure")
+    job = CompetitionRecomputation.objects.create(competition=competition, generation=1)
+    result = CompetitionResult.objects.create(competition=competition, player=owner, points=1)
+    with patch.object(CompetitionResult, "save", side_effect=RuntimeError("score failure")):
+        first = recompute_competition_results_task.apply(args=[job.pk]).get()
+    job.refresh_from_db()
+    assert first["status"] == "failed"
+    assert job.attempts == 1
+    job.attempts = 4
+    job.status = CompetitionRecomputation.Status.FAILED
+    job.save(update_fields=("attempts", "status"))
+    with patch.object(CompetitionResult, "save", side_effect=RuntimeError("score failure")):
+        terminal = recompute_competition_results_task.apply(args=[job.pk]).get()
+    job.refresh_from_db()
+    result.refresh_from_db()
+    assert terminal["status"] == "failed"
+    assert job.attempts == 5
+    assert job.error

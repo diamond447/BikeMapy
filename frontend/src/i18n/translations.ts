@@ -177,6 +177,8 @@ export const translations = {
     gameCompetitionsLoading: 'Loading competitions…',
     gameCompetitionError: 'Competitions could not be reached. Try again.',
     gameCompetitionRetry: 'Retry competitions',
+    gameCompetitionReloadError:
+      'The change was saved, but the latest competitions could not be loaded.',
     gameCompetitionSwitcher: 'Choose active competition',
     gameCompetitionCreate: 'Create competition',
     gameCompetitionJoin: 'Join competition',
@@ -373,6 +375,7 @@ export const translations = {
     gameCompetitionsLoading: 'Načítám soutěže…',
     gameCompetitionError: 'Soutěže nejsou dostupné. Zkuste to znovu.',
     gameCompetitionRetry: 'Načíst soutěže znovu',
+    gameCompetitionReloadError: 'Změna se uložila, ale aktuální soutěže se nepodařilo načíst.',
     gameCompetitionSwitcher: 'Vybrat aktivní soutěž',
     gameCompetitionCreate: 'Vytvořit soutěž',
     gameCompetitionJoin: 'Připojit se k soutěži',

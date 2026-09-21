@@ -40,15 +40,25 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
     """
 
     try:
+        # Global order is Competition -> Job for worker-side projections.
+        job_ref = CompetitionRecomputation.objects.get(pk=job_id)
         with transaction.atomic():
+            competition = Competition.objects.select_for_update().get(pk=job_ref.competition_id)
             job = CompetitionRecomputation.objects.select_for_update().get(pk=job_id)
             if job.status == CompetitionRecomputation.Status.COMPLETED:
                 return {"status": "completed", "job_id": job_id, "updated": 0}
-            competition = Competition.objects.select_for_update().get(pk=job.competition_id)
+            if job.attempts >= MAX_DISPATCH_ATTEMPTS:
+                job.status = CompetitionRecomputation.Status.FAILED
+                job.error = job.error or "Retry limit exhausted."
+                job.save(update_fields=("status", "error"))
+                return {"status": "failed", "job_id": job_id, "error": job.error}
             job.status = CompetitionRecomputation.Status.RUNNING
             job.attempts += 1
             job.started_at = timezone.now()
             job.save(update_fields=("status", "attempts", "started_at"))
+        with transaction.atomic():
+            competition = Competition.objects.select_for_update().get(pk=job_ref.competition_id)
+            job = CompetitionRecomputation.objects.select_for_update().get(pk=job_id)
             active_players = set(competition.memberships.values_list("player_id", flat=True))
             CompetitionResult.objects.filter(competition=competition).exclude(
                 player_id__in=active_players
@@ -69,6 +79,8 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
     except Exception as exc:
         with transaction.atomic():
             try:
+                job_ref = CompetitionRecomputation.objects.get(pk=job_id)
+                Competition.objects.select_for_update().get(pk=job_ref.competition_id)
                 job = CompetitionRecomputation.objects.select_for_update().get(pk=job_id)
             except CompetitionRecomputation.DoesNotExist:
                 return {"status": "missing", "job_id": job_id}
