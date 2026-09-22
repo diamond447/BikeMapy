@@ -363,6 +363,11 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     body = response.json()
     assert body["player"]["status"] == "fresh"
     assert body["player"]["covered_length_meters"] != "0.000"
+    if connection.vendor == "postgresql":
+        assert body["player"]["covered_geometry"] is not None
+    assert body["player"]["monthly"]
+    assert body["geometry"]["type"] == "LineString"
+    assert body["attribution"]["attribution_text"] == "Test"
     assert body["competition"]["status"] == "pending"
     assert body["route_id"] == str(route.pk)
     assert competition.is_active

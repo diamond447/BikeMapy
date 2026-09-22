@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import UUID
 
@@ -18,8 +19,12 @@ from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceValidationStatus,
     RouteCompletion,
+    RouteCompletionEvidence,
+    RouteCompletionMonthly,
     has_publishable_reference_source,
 )
+
+from .serializers_reference_routes import ReferenceAttributionSerializer, geometry_json
 
 
 class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -29,6 +34,8 @@ class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
     completion_percent = serializers.DecimalField(max_digits=7, decimal_places=3)
     calculated_at = serializers.DateTimeField(allow_null=True)
     error = serializers.CharField()
+    covered_geometry = serializers.JSONField(allow_null=True)
+    monthly = serializers.ListField(child=serializers.DictField())
 
 
 class ReferenceCompletionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -37,9 +44,20 @@ class ReferenceCompletionSerializer(serializers.Serializer[dict[str, Any]]):
     player = CompletionProjectionSerializer(allow_null=True)
     competition = CompletionProjectionSerializer(allow_null=True)
     stages = serializers.ListField(child=serializers.DictField())
+    title = serializers.CharField()
+    route_number = serializers.CharField(allow_blank=True)
+    source_kind = serializers.CharField()
+    geometry = serializers.JSONField(allow_null=True)
+    attribution = serializers.DictField()
 
 
-def _projection(value: RouteCompletion | None) -> dict[str, Any]:
+def _projection(
+    value: RouteCompletion | None,
+    *,
+    version: Any,
+    player: Any,
+    competition: Any,
+) -> dict[str, Any]:
     if value is None:
         return {
             "status": "pending",
@@ -48,14 +66,64 @@ def _projection(value: RouteCompletion | None) -> dict[str, Any]:
             "completion_percent": "0.000",
             "calculated_at": None,
             "error": "",
+            "covered_geometry": None,
+            "monthly": [],
         }
+    status = value.status
+    if status == "fresh" and value.route_checksum != version.checksum:
+        status = "stale"
+    if (
+        status == "fresh"
+        and competition is not None
+        and value.competition_id is not None
+        and value.membership_revision != competition.revision
+    ):
+        status = "stale"
+    monthly_query = RouteCompletionMonthly.objects.filter(
+        route_version=version,
+        subject_type=value.subject_type,
+    )
+    if value.player_id:
+        monthly_query = monthly_query.filter(player=player)
+    elif value.competition_id:
+        monthly_query = monthly_query.filter(competition=competition)
+    covered_geometry = None
+    evidence = RouteCompletionEvidence.objects.filter(completion=value).order_by("pk")
+    for item in evidence:
+        geometry = geometry_json(item.covered_geometry)
+        if geometry is None:
+            continue
+        if covered_geometry is None:
+            covered_geometry = geometry
+            continue
+        try:
+            from django.contrib.gis.geos import GEOSGeometry
+
+            first = GEOSGeometry(json.dumps(covered_geometry), srid=4326)
+            second = GEOSGeometry(json.dumps(geometry), srid=4326)
+            first.transform(5514)
+            second.transform(5514)
+            union = first.union(second)
+            union.transform(4326)
+            covered_geometry = geometry_json(union)
+        except (ImportError, OSError, TypeError, ValueError, RuntimeError):
+            # SQLite/GDAL-less deployments can still serve the projection.
+            pass
     return {
-        "status": value.status,
+        "status": status,
         "total_length_meters": value.total_length_meters,
         "covered_length_meters": value.covered_length_meters,
         "completion_percent": value.completion_percent,
         "calculated_at": value.calculated_at,
         "error": value.error,
+        "covered_geometry": covered_geometry,
+        "monthly": [
+            {
+                "month": item.month,
+                "covered_length_meters": item.covered_length_meters,
+            }
+            for item in monthly_query.order_by("month")
+        ],
     }
 
 
@@ -107,6 +175,19 @@ class ReferenceRouteCompletionView(GameEndpoint):
             if competition is not None
             else None
         )
+        attribution = dict(ReferenceAttributionSerializer(route.collection).data)
+        if not attribution.get("attribution_text"):
+            attribution["attribution_text"] = (
+                route.current_version.attribution_metadata.get("attribution_text")
+                or route.current_version.attribution
+            )
+        route_payload = {
+            "title": route.title,
+            "route_number": route.route_number,
+            "source_kind": route.collection.source_kind,
+            "geometry": geometry_json(route.current_version.normalized_geometry),
+            "attribution": attribution,
+        }
         stages = []
         stages_query = route.stages.filter(
             active=True,
@@ -127,15 +208,26 @@ class ReferenceRouteCompletionView(GameEndpoint):
                 {
                     "route_id": stage.pk,
                     "version": version.version_number,
+                    "title": stage.title,
+                    "route_number": stage.route_number,
+                    "geometry": geometry_json(version.normalized_geometry),
                     "player": _projection(
-                        RouteCompletion.objects.filter(route_version=version, player=player).first()
+                        RouteCompletion.objects.filter(
+                            route_version=version, player=player
+                        ).first(),
+                        version=version,
+                        player=player,
+                        competition=competition,
                     ),
                     "competition": _projection(
                         RouteCompletion.objects.filter(
                             route_version=version, competition=competition
                         ).first()
                         if competition is not None
-                        else None
+                        else None,
+                        version=version,
+                        player=player,
+                        competition=competition,
                     ),
                 }
             )
@@ -144,8 +236,19 @@ class ReferenceRouteCompletionView(GameEndpoint):
                 {
                     "route_id": route.pk,
                     "version": route.current_version.version_number,
-                    "player": _projection(player_result),
-                    "competition": _projection(competition_result),
+                    **route_payload,
+                    "player": _projection(
+                        player_result,
+                        version=route.current_version,
+                        player=player,
+                        competition=competition,
+                    ),
+                    "competition": _projection(
+                        competition_result,
+                        version=route.current_version,
+                        player=player,
+                        competition=competition,
+                    ),
                     "stages": stages,
                 }
             )

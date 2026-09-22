@@ -627,6 +627,10 @@ export interface components {
       /** Format: date-time */
       calculated_at: string | null
       error: string
+      covered_geometry: unknown
+      monthly: {
+        [key: string]: unknown
+      }[]
     }
     ElevationProfilePoint: {
       /** Format: double */
@@ -740,6 +744,13 @@ export interface components {
       stages: {
         [key: string]: unknown
       }[]
+      title: string
+      route_number: string
+      source_kind: string
+      geometry: unknown
+      attribution: {
+        [key: string]: unknown
+      }
     }
     ReferenceRoute: {
       /** Format: uuid */
@@ -753,6 +764,7 @@ export interface components {
       readonly attribution: {
         [key: string]: unknown
       }
+      readonly source_kind: string
       readonly version: number
       readonly version_attribution_metadata: {
         [key: string]: unknown
@@ -772,6 +784,7 @@ export interface components {
       readonly attribution: {
         [key: string]: unknown
       }
+      readonly source_kind: string
     }
     ReferenceStage: {
       /** Format: uuid */

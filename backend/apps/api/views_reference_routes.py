@@ -26,6 +26,7 @@ from apps.reference_routes.models import (
     ReferenceSourceKind,
     ReferenceValidationStatus,
     has_deployable_derivative_offer,
+    has_publishable_reference_source,
 )
 
 from .serializers_reference_routes import ReferenceRouteListSerializer, ReferenceRouteSerializer
@@ -75,7 +76,11 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
     active_stage_version_ids = [
         version.pk
         for version in active_stage_versions
-        if has_deployable_derivative_offer(version.route.collection, version.source_import)
+        if (
+            has_deployable_derivative_offer(version.route.collection, version.source_import)
+            if version.route.collection.source_kind == ReferenceSourceKind.OSM_NUMBERED
+            else has_publishable_reference_source(version.route.collection, version.source_import)
+        )
     ]
     active_stage_versions = active_stage_versions.filter(pk__in=active_stage_version_ids)
     active_stages = ReferenceRoute.objects.filter(
@@ -93,7 +98,13 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
         route.pk
         for route in active_stages
         if route.current_version
-        and has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+        and (
+            has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+            if route.collection.source_kind == ReferenceSourceKind.OSM_NUMBERED
+            else has_publishable_reference_source(
+                route.collection, route.current_version.source_import
+            )
+        )
     ]
     active_stages = active_stages.filter(pk__in=active_stage_ids).prefetch_related(
         Prefetch("current_version", queryset=active_stage_versions)
@@ -105,7 +116,10 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
         current_version__validation_status=ReferenceValidationStatus.VALID,
         collection__active=True,
         collection__permission_granted=True,
-        collection__source_kind=ReferenceSourceKind.OSM_NUMBERED,
+        collection__source_kind__in=(
+            ReferenceSourceKind.OSM_NUMBERED,
+            ReferenceSourceKind.VIA_CZECHIA,
+        ),
         parent__isnull=True,
     ).select_related(
         "collection",
@@ -117,7 +131,13 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
         route.pk
         for route in candidates
         if route.current_version
-        and has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+        and (
+            has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+            if route.collection.source_kind == ReferenceSourceKind.OSM_NUMBERED
+            else has_publishable_reference_source(
+                route.collection, route.current_version.source_import
+            )
+        )
     ]
     return candidates.filter(pk__in=candidate_ids).prefetch_related(
         Prefetch("stages", queryset=active_stages)
