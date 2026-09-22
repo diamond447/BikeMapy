@@ -11,8 +11,6 @@ from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
-from django.contrib.gis.db.models import GeometryField
-from django.contrib.gis.db.models.functions import GeoFunc
 from django.core.exceptions import ValidationError
 from django.db import connection
 from django.db.models import Q
@@ -39,11 +37,17 @@ MIN_ZOOM = 0
 MAX_ZOOM = 22
 
 
-class STSimplify(GeoFunc):
-    """PostGIS simplification function missing from Django's GIS helpers."""
+def _st_simplify(expression: Any, tolerance: float) -> Any:
+    """Build the PostGIS simplification expression only when GIS is available."""
 
-    function = "ST_Simplify"
-    output_field = GeometryField(srid=3857)
+    from django.contrib.gis.db.models import GeometryField
+    from django.contrib.gis.db.models.functions import GeoFunc
+
+    class STSimplify(GeoFunc):
+        function = "ST_Simplify"
+        output_field = GeometryField(srid=3857)
+
+    return STSimplify(expression, tolerance)
 
 
 class CompetitionMapMemberSerializer(serializers.Serializer[dict[str, Any]]):
@@ -450,7 +454,7 @@ class CompetitionMapView(GameEndpoint):
                 candidates.extend(
                     clipped_candidates.filter(geometry__intersects=envelope).annotate(
                         private_geometry=Transform(
-                            STSimplify(Transform(clipped_geometry, 3857), tolerance), 4326
+                            _st_simplify(Transform(clipped_geometry, 3857), tolerance), 4326
                         )
                     )[: MAX_FEATURES + 1]
                 )
