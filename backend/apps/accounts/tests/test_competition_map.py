@@ -8,6 +8,7 @@ from django.db import connection
 from django.test import Client, override_settings
 from django.urls import reverse
 
+import apps.accounts.competition_map_api as competition_map_api
 from apps.accounts.competition_services import create_competition, join_competition
 from apps.accounts.models import ImportedActivity, Player
 
@@ -38,7 +39,7 @@ def session_client(current: Player) -> Client:
     return client
 
 
-def viewport(**overrides: str) -> dict[str, str]:
+def viewport(**overrides: str | list[str]) -> dict[str, str | list[str]]:
     return {
         "west": "14",
         "south": "49",
@@ -89,7 +90,7 @@ def test_map_is_bounded_and_exposes_only_date_geometry_and_member_color() -> Non
         player=member,
         provider_activity_id="outside",
         calendar_date="2026-09-21",
-        geometry={"type": "LineString", "coordinates": [[16.1, 49.1], [16.2, 49.2]]},
+        geometry=line_geometry([(16.1, 49.1), (16.2, 49.2)]),
     )
     response = session_client(owner).get(
         reverse("game-competition-map", args=[competition.pk]), viewport()
@@ -141,7 +142,7 @@ def test_map_supports_antimeridian_viewports_without_leaking_coordinates() -> No
     ImportedActivity.objects.create(
         player=owner,
         provider_activity_id="dateline",
-        geometry=line_geometry([(179.5, 0.0), (-179.5, 0.0)]),
+        geometry=line_geometry([(179.5, 0.0), (-179.5, 0.0), (179.6, 0.2)]),
     )
     response = session_client(owner).get(
         reverse("game-competition-map", args=[competition.pk]),
@@ -158,6 +159,7 @@ def test_map_supports_antimeridian_viewports_without_leaking_coordinates() -> No
         else coordinates
     )
     assert all((179 <= point[0] <= 180) or (-180 <= point[0] <= -179) for point in flattened)
+    assert len(flattened) >= 4
 
 
 @override_settings(**SETTINGS)
@@ -166,3 +168,45 @@ def test_map_requires_session() -> None:
     competition, _ = create_competition(owner, name="Auth")
     response = Client().get(reverse("game-competition-map", args=[competition.pk]), viewport())
     assert response.status_code == 401
+
+
+@override_settings(**SETTINGS)
+def test_map_caps_dense_activity_results_deterministically() -> None:
+    owner = make_player(109)
+    competition, _ = create_competition(owner, name="Dense")
+    geometry = line_geometry([(14.1, 49.1), (14.2, 49.2)])
+    ImportedActivity.objects.bulk_create(
+        [
+            ImportedActivity(
+                player=owner,
+                provider_activity_id=f"dense-{index:04d}",
+                calendar_date="2026-09-21",
+                geometry=geometry,
+            )
+            for index in range(250)
+        ]
+    )
+    url = reverse("game-competition-map", args=[competition.pk])
+    response = session_client(owner).get(url, viewport())
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["activities"]) == competition_map_api.MAX_FEATURES_PER_MEMBER
+    assert payload["truncated"] is True
+    ids = [activity["id"] for activity in payload["activities"]]
+    repeat = session_client(owner).get(url, viewport()).json()
+    assert ids == [activity["id"] for activity in repeat["activities"]]
+
+
+@override_settings(**SETTINGS)
+def test_map_caps_member_ids_and_metadata_before_activity_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = make_player(110)
+    competition, _ = create_competition(owner, name="Member limits")
+    url = reverse("game-competition-map", args=[competition.pk])
+    client = session_client(owner)
+    assert client.get(url, viewport(member=[str(index) for index in range(101)])).status_code == 400
+    monkeypatch.setattr(competition_map_api, "MAX_MEMBER_METADATA_BYTES", 1)
+    response = client.get(url, viewport())
+    assert response.status_code == 413
+    assert response.json()["code"] == "member_limit"

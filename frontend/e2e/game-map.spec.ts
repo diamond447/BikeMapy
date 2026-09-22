@@ -79,7 +79,14 @@ test('game map keeps competition controls outside the public catalogue URL', asy
   await expect(
     page.getByRole('complementary', { name: 'Trace detail' }).getByText(activity.calendar_date),
   ).toBeVisible()
-  await expect(page.getByRole('button', { name: /close trace detail/i })).toBeFocused()
+  const close = page.getByRole('button', { name: /close trace detail/i })
+  await expect(close).toBeFocused()
+  await close.click()
+  await expect(trace).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(close).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(trace).toBeFocused()
   await expect(page).not.toHaveURL(/member|competition=/)
   expect(workerFailures).toEqual([])
 })

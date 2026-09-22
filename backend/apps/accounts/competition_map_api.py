@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
+from django.contrib.gis.db.models import GeometryField
+from django.contrib.gis.db.models.functions import GeoFunc
 from django.core.exceptions import ValidationError
 from django.db import connection
-from django.db.models import Q, QuerySet
+from django.db.models import Q
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
@@ -30,8 +33,17 @@ MAX_COORDINATES = 120_000
 MAX_CANDIDATES_SQLITE = MAX_FEATURES * 8
 MAX_SOURCE_COORDINATES = 4_000
 MAX_RESPONSE_BYTES = 4_000_000
+MAX_MEMBERS = 100
+MAX_MEMBER_METADATA_BYTES = 64_000
 MIN_ZOOM = 0
 MAX_ZOOM = 22
+
+
+class STSimplify(GeoFunc):
+    """PostGIS simplification function missing from Django's GIS helpers."""
+
+    function = "ST_Simplify"
+    output_field = GeometryField(srid=3857)
 
 
 class CompetitionMapMemberSerializer(serializers.Serializer[dict[str, Any]]):
@@ -240,7 +252,11 @@ def _clip_points(
 
 
 def _simplify(
-    geometry: Any, zoom: int, bounds: tuple[float, float, float, float] | None = None
+    geometry: Any,
+    zoom: int,
+    bounds: tuple[float, float, float, float] | None = None,
+    *,
+    already_simplified: bool = False,
 ) -> dict[str, Any] | None:
     payload = geometry_payload(geometry)
     if not payload or payload.get("type") not in {"LineString", "MultiLineString"}:
@@ -274,9 +290,10 @@ def _simplify(
                     srid=4326,
                 )
                 line = line.intersection(envelope)
-            line.transform(3857)
-            line = line.simplify(tolerance, preserve_topology=True)
-            line.transform(4326)
+            if not already_simplified:
+                line.transform(3857)
+                line = line.simplify(tolerance, preserve_topology=True)
+                line.transform(4326)
             payload = geometry_payload(line)
             if payload:
                 line_parts = _line_parts(payload)
@@ -303,15 +320,17 @@ def _simplify(
     }
 
 
-def _member_ids(request: Any, memberships: QuerySet[CompetitionMembership]) -> set[int]:
+def _member_ids(request: Any, memberships: Sequence[CompetitionMembership]) -> set[int]:
     values = request.query_params.getlist("member")
     if not values:
-        return set(memberships.values_list("player_id", flat=True))
+        return {membership.player_id for membership in memberships[:MAX_MEMBERS]}
+    if len(values) > MAX_MEMBERS:
+        raise ParseError(f"member accepts at most {MAX_MEMBERS} values")
     try:
         selected = {int(value) for value in values}
     except (TypeError, ValueError):
         raise ParseError("member must be a player id") from None
-    known = set(memberships.values_list("player_id", flat=True))
+    known = {membership.player_id for membership in memberships}
     # The client uses zero as an explicit, non-member sentinel when every
     # visibility checkbox is off; it must not silently mean "all members".
     if selected == {0}:
@@ -359,8 +378,10 @@ class CompetitionMapView(GameEndpoint):
             return _private(Response({"detail": "Competition not found."}, status=404))
         west, south, east, north, zoom = _parse_viewport(request)
         viewport_parts = _viewport_parts(west, east, south, north)
-        memberships = CompetitionMembership.objects.filter(competition=competition).select_related(
-            "player"
+        memberships = list(
+            CompetitionMembership.objects.filter(competition=competition)
+            .select_related("player")
+            .order_by("joined_at", "pk")
         )
         selected_ids = _member_ids(request, memberships)
         members = [
@@ -368,13 +389,28 @@ class CompetitionMapView(GameEndpoint):
             for membership in memberships
             if membership.player_id in selected_ids
         ]
+        member_bytes = len(json.dumps(members, separators=(",", ":")).encode())
+        if member_bytes > MAX_MEMBER_METADATA_BYTES:
+            return _private(
+                Response(
+                    {
+                        "detail": "Competition member metadata exceeds the map response limit.",
+                        "code": "member_limit",
+                    },
+                    status=413,
+                )
+            )
         queryset = ImportedActivity.objects.filter(
             player_id__in=selected_ids,
             removed_at__isnull=True,
             geometry__isnull=False,
         ).order_by("calendar_date", "pk")
         if connection.vendor == "postgresql":
-            from django.contrib.gis.db.models.functions import Intersection, NumPoints
+            from django.contrib.gis.db.models.functions import (
+                Intersection,
+                NumPoints,
+                Transform,
+            )
             from django.contrib.gis.geos import Polygon
 
             envelopes = [Polygon.from_bbox(part) for part in viewport_parts]
@@ -389,10 +425,14 @@ class CompetitionMapView(GameEndpoint):
             )
             candidate_count = clipped_candidates.count()
             candidates: list[ImportedActivity] = []
+            tolerance = max(0.5, 156543.03392804097 / (2**zoom) * 0.5)
             for envelope in envelopes:
+                clipped_geometry = Intersection("geometry", envelope)
                 candidates.extend(
                     clipped_candidates.filter(geometry__intersects=envelope).annotate(
-                        private_geometry=Intersection("geometry", envelope)
+                        private_geometry=Transform(
+                            STSimplify(Transform(clipped_geometry, 3857), tolerance), 4326
+                        )
                     )[: MAX_FEATURES + 1]
                 )
         else:
@@ -425,13 +465,12 @@ class CompetitionMapView(GameEndpoint):
                 continue
             payload: dict[str, Any] = payloads[0]
             if len(payloads) > 1:
+                merged_parts = [
+                    part for payload_part in payloads for part in _line_parts(payload_part)
+                ]
                 payload = {
                     "type": "MultiLineString",
-                    "coordinates": [
-                        part.get("coordinates", [])
-                        for part in payloads
-                        if part.get("type") == "LineString"
-                    ],
+                    "coordinates": merged_parts,
                 }
             if connection.vendor != "postgresql" and len(viewport_parts) > 1:
                 clipped_parts = []
@@ -459,6 +498,7 @@ class CompetitionMapView(GameEndpoint):
                 payload,
                 zoom,
                 viewport_parts[0] if len(viewport_parts) == 1 else None,
+                already_simplified=connection.vendor == "postgresql",
             )
             if geometry is None:
                 continue
@@ -499,6 +539,8 @@ class CompetitionMapView(GameEndpoint):
             "max_coordinates": MAX_COORDINATES,
             "max_source_coordinates": MAX_SOURCE_COORDINATES,
             "max_response_bytes": MAX_RESPONSE_BYTES,
+            "max_members": MAX_MEMBERS,
+            "max_member_metadata_bytes": MAX_MEMBER_METADATA_BYTES,
         }
         response_payload = {
             "status": state,
@@ -509,11 +551,16 @@ class CompetitionMapView(GameEndpoint):
             "limits": limits,
             "bounds": {"west": west, "south": south, "east": east, "north": north},
         }
-        while (
-            len(json.dumps(response_payload, default=str, separators=(",", ":")).encode())
-            > MAX_RESPONSE_BYTES
-            and activities
-        ):
-            activities.pop()
+        encoded_response = json.dumps(response_payload, default=str, separators=(",", ":")).encode()
+        if len(encoded_response) > MAX_RESPONSE_BYTES and activities:
+            keep_ratio = MAX_RESPONSE_BYTES / len(encoded_response)
+            keep_count = max(1, int(len(activities) * keep_ratio * 0.98))
+            del activities[keep_count:]
             response_payload["truncated"] = True
+            while (
+                len(json.dumps(response_payload, default=str, separators=(",", ":")).encode())
+                > MAX_RESPONSE_BYTES
+                and activities
+            ):
+                activities.pop()
         return _private(Response(response_payload))

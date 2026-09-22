@@ -1,11 +1,21 @@
 {
-  "status": "blocked",
-  "recorded_at": "2026-09-22",
-  "reason": "The local sandbox has no reachable PostGIS service at db.",
-  "command": "DJANGO_SETTINGS_MODULE=config.settings python scripts/benchmark_game_map.py --fixture-size 15000 --browser-url http://127.0.0.1:4173/game",
-  "runs": 30,
-  "budgets_ms": {
-    "api_p95": 250,
-    "browser_p95": 100
+  "environment": {
+    "database": "postgresql",
+    "database_name": "bikemapy",
+    "runs": 30
+  },
+  "fixture": {
+    "members": 80,
+    "activities": 1600,
+    "points_per_activity": 250,
+    "in_viewport_activities": 1200
+  },
+  "api_ms": {
+    "median": 962.2624834955786,
+    "p95": 1466.1918519996107
+  },
+  "browser_response_to_map_idle_ms": {
+    "median": 561.9999999925494,
+    "p95": 663.0
   }
 }

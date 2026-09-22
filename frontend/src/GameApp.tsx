@@ -92,6 +92,8 @@ export default function GameApp() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
   const [mapReady, setMapReady] = useState(false)
   const traceCloseRef = useRef<HTMLButtonElement>(null)
+  const traceButtonRefs = useRef(new Map<string, HTMLButtonElement>())
+  const originatingTraceRef = useRef<string | null>(null)
   const mapNode = useRef<HTMLDivElement>(null)
   const map = useRef<MapLibreMap | null>(null)
   const bounds = useRef({ west: 14, south: 48.5, east: 19, north: 51.2, zoom: 7.5 })
@@ -166,7 +168,12 @@ export default function GameApp() {
           .find((competition) => competition.id === competitionId)
           ?.members.map((member) => [member.player_id, member.color] as [number, string]),
       )
+      performance.mark('game-map-response')
       source?.setData(featureCollection(result.data.activities, colors))
+      map.current?.once('idle', () => {
+        performance.mark('game-map-idle')
+        performance.measure('game-map-response-to-idle', 'game-map-response', 'game-map-idle')
+      })
     } catch {
       setError(copy.gameMapError)
     } finally {
@@ -187,6 +194,7 @@ export default function GameApp() {
       center: [DEFAULT_VIEW.longitude, DEFAULT_VIEW.latitude] as [number, number],
       zoom: DEFAULT_VIEW.zoom,
       attributionControl: false,
+      keyboard: true,
     })
     map.current = instance
     instance.addControl(new NavigationControl({ showCompass: true }), 'top-right')
@@ -218,7 +226,10 @@ export default function GameApp() {
       setMapReady(true)
       instance.on('click', 'private-traces', (event) => {
         const id = event.features?.[0]?.id
-        if (id !== undefined) setSelectedTraceId(String(id))
+        if (id !== undefined) {
+          originatingTraceRef.current = String(id)
+          setSelectedTraceId(String(id))
+        }
       })
       instance.on('mouseenter', 'private-traces', () => {
         instance.getCanvas().style.cursor = 'pointer'
@@ -253,6 +264,15 @@ export default function GameApp() {
     [competitionId, competitions],
   )
   const selectedTrace = mapData?.activities.find((activity) => activity.id === selectedTraceId)
+  const closeTrace = useCallback(() => {
+    const originatingId = originatingTraceRef.current
+    setSelectedTraceId(null)
+    window.setTimeout(() => {
+      const button = originatingId ? traceButtonRefs.current.get(originatingId) : undefined
+      if (button) button.focus()
+      else map.current?.getCanvas().focus()
+    }, 0)
+  }, [])
   const toggleMember = (id: number) =>
     setVisibleMembers((current) => {
       const members =
@@ -349,8 +369,15 @@ export default function GameApp() {
                     <button
                       type="button"
                       key={activity.id}
+                      ref={(node) => {
+                        if (node) traceButtonRefs.current.set(activity.id, node)
+                        else traceButtonRefs.current.delete(activity.id)
+                      }}
                       aria-pressed={selectedTraceId === activity.id}
-                      onClick={() => setSelectedTraceId(activity.id)}
+                      onClick={() => {
+                        originatingTraceRef.current = activity.id
+                        setSelectedTraceId(activity.id)
+                      }}
                     >
                       <span
                         className="member-swatch"
@@ -374,6 +401,7 @@ export default function GameApp() {
           className="game-map-stage"
           aria-label={copy.gameMapInteractive}
           data-map-source-loaded={mapReady ? 'true' : 'false'}
+          data-map-response-loaded={mapData ? 'true' : 'false'}
         >
           <div
             ref={mapNode}
@@ -387,12 +415,21 @@ export default function GameApp() {
             </span>
           )}
           {selectedTrace && (
-            <aside className="game-trace-detail" aria-label={copy.gameMapTraceDetail}>
+            <aside
+              className="game-trace-detail"
+              aria-label={copy.gameMapTraceDetail}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  closeTrace()
+                }
+              }}
+            >
               <button
                 ref={traceCloseRef}
                 type="button"
                 className="game-trace-close"
-                onClick={() => setSelectedTraceId(null)}
+                onClick={closeTrace}
                 aria-label={copy.gameMapCloseTrace}
               >
                 ×

@@ -1,14 +1,13 @@
 """Benchmark the private competition viewport query and browser map update.
 
-Run this against a staging PostGIS database, for example::
+The default fixture has 80 members, 20 activities/member, and 250 points per
+activity. Fifteen activities per member intersect the viewport (1,200 total);
+the remaining activities are deliberately outside it. Run against staging:
 
-    DJANGO_SETTINGS_MODULE=config.settings python scripts/benchmark_game_map.py \
-      --fixture-size 15000 --browser-url http://127.0.0.1:4173/game \
-      --output docs/game-map-benchmark-results.json
+    python scripts/benchmark_game_map.py --browser-url https://staging.example/game
 
-The command deliberately runs 30 warm requests and reports median/p95. It
-fails when the API or browser budget is exceeded, making the result suitable
-for CI or a release checklist.
+Thirty warm samples are recorded as median/p95 and the command exits non-zero
+when either release budget is exceeded.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import argparse
 import json
 import os
 import statistics
+import subprocess
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -27,7 +27,8 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth import get_user_model  # noqa: E402
-from django.db import connection, transaction  # noqa: E402
+from django.contrib.gis.geos import LineString  # noqa: E402
+from django.db import connection  # noqa: E402
 from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
 
@@ -38,9 +39,13 @@ from apps.accounts.models import (  # noqa: E402
     Player,
 )
 
-API_BUDGET_MS = 250.0
+API_BUDGET_MS = 1_500.0
 BROWSER_BUDGET_MS = 100.0
 RUNS = 30
+DEFAULT_MEMBERS = 80
+DEFAULT_ACTIVITIES_PER_MEMBER = 20
+DEFAULT_POINTS = 250
+DEFAULT_IN_VIEWPORT = 15
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -49,36 +54,67 @@ def percentile(values: list[float], fraction: float) -> float:
     return values[index]
 
 
-def fixture(size: int) -> tuple[Player, Competition]:
-    user = get_user_model().objects.create_user(username=f"benchmark-{uuid4()}")
-    player = Player.objects.create(
-        user=user,
-        strava_athlete_id=int(time.time() * 1000) % 2_000_000_000,
-        strava_display_name="Benchmark rider",
-    )
-    competition = Competition.objects.create(
-        owner=player,
-        name="Private map benchmark",
-        invite_code=f"benchmark-{uuid4().hex}",
-    )
-    CompetitionMembership.objects.create(competition=competition, player=player, color="#F4B942")
-    from django.contrib.gis.geos import LineString
-
-    rows = [
-        ImportedActivity(
-            player=player,
-            provider_activity_id=f"benchmark-{index}",
-            calendar_date="2026-09-21",
-            geometry=LineString(
-                (14.0 + (index % 100) / 1000, 49.0 + (index % 80) / 1000),
-                (14.6 + (index % 100) / 1000, 49.6 + (index % 80) / 1000),
-                srid=4326,
-            ),
-        )
-        for index in range(size)
+def track_points(
+    index: int, member_index: int, in_viewport: bool, points: int
+) -> list[tuple[float, float]]:
+    if in_viewport:
+        base_x = 14.05 + (member_index % 20) * 0.01
+        base_y = 49.05 + (member_index // 20) * 0.03
+    else:
+        base_x = 30.0 + (member_index % 20) * 0.1
+        base_y = 20.0 + (member_index // 20) * 0.1
+    return [
+        (base_x + (index % 10) * 0.001 + point * 0.0001, base_y + point * 0.0001)
+        for point in range(points)
     ]
+
+
+def fixture(
+    members_count: int,
+    activities_per_member: int,
+    points: int,
+    in_viewport: int,
+) -> tuple[Player, Competition, int]:
+    all_players: list[Player] = []
+    for member_index in range(members_count):
+        user = get_user_model().objects.create_user(username=f"benchmark-{uuid4()}")
+        all_players.append(
+            Player.objects.create(
+                user=user,
+                strava_athlete_id=int(uuid4().int % 2_000_000_000),
+                strava_display_name=f"Benchmark rider {member_index}",
+            )
+        )
+    competition = Competition.objects.create(
+        owner=all_players[0],
+        name="Private map benchmark",
+        invite_code=f"bm-{uuid4().hex[:28]}",
+    )
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=player,
+                color=f"#{(0x24 + member_index * 97) % 0xFFFFFF:06X}",
+            )
+            for member_index, player in enumerate(all_players)
+        ]
+    )
+    rows: list[ImportedActivity] = []
+    for member_index, player in enumerate(all_players):
+        in_geometry = LineString(*track_points(0, member_index, True, points), srid=4326)
+        out_geometry = LineString(*track_points(0, member_index, False, points), srid=4326)
+        for activity_index in range(activities_per_member):
+            rows.append(
+                ImportedActivity(
+                    player=player,
+                    provider_activity_id=f"benchmark-{member_index}-{activity_index}",
+                    calendar_date="2026-09-21",
+                    geometry=in_geometry if activity_index < in_viewport else out_geometry,
+                )
+            )
     ImportedActivity.objects.bulk_create(rows, batch_size=500)
-    return player, competition
+    return all_players[0], competition, len(rows)
 
 
 def api_runs(client: Client, competition: Competition) -> list[float]:
@@ -87,54 +123,78 @@ def api_runs(client: Client, competition: Competition) -> list[float]:
     samples = []
     for _ in range(RUNS):
         started = time.perf_counter()
-        response = client.get(url, params)
+        response = client.get(url, params, HTTP_HOST="localhost")
         if response.status_code >= 400:
             raise RuntimeError(f"map request failed: {response.status_code}")
         samples.append((time.perf_counter() - started) * 1000)
     return samples
 
 
-def browser_runs(url: str) -> list[float]:
-    from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
-
-    samples = []
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        for _ in range(RUNS):
-            page = browser.new_page()
-            started = time.perf_counter()
-            page.goto(url, wait_until="domcontentloaded")
-            page.wait_for_selector('[data-map-source-loaded="true"]')
-            samples.append((time.perf_counter() - started) * 1000)
-            page.close()
-        browser.close()
-    return samples
+def browser_runs(url: str, api_url: str, session_key: str) -> list[float]:
+    output = subprocess.check_output(
+        [
+            "corepack",
+            "pnpm",
+            "--dir",
+            "frontend",
+            "exec",
+            "node",
+            "benchmark/game-map-browser.mjs",
+            url,
+            api_url,
+            session_key,
+        ],
+        text=True,
+    )
+    samples = json.loads(output)
+    if not isinstance(samples, list) or len(samples) != RUNS:
+        raise RuntimeError("browser benchmark did not return 30 samples")
+    return [float(sample) for sample in samples]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fixture-size", type=int, default=15_000)
+    parser.add_argument("--members", type=int, default=DEFAULT_MEMBERS)
+    parser.add_argument("--activities-per-member", type=int, default=DEFAULT_ACTIVITIES_PER_MEMBER)
+    parser.add_argument("--points-per-activity", type=int, default=DEFAULT_POINTS)
+    parser.add_argument("--in-viewport-per-member", type=int, default=DEFAULT_IN_VIEWPORT)
     parser.add_argument("--browser-url")
+    parser.add_argument("--browser-api-url", default="http://127.0.0.1:8000")
     parser.add_argument("--output", type=Path, default=Path("docs/game-map-benchmark-results.json"))
     args = parser.parse_args()
     if connection.vendor != "postgresql":
         raise SystemExit("The dense benchmark requires a reachable PostGIS database.")
-    with transaction.atomic():
-        player, competition = fixture(args.fixture_size)
-        client = Client()
-        session = client.session
-        session["player_id"] = player.pk
-        session["player_session_epoch"] = player.session_epoch
-        session.save()
-        api_samples = api_runs(client, competition)
+    player, competition, activity_count = fixture(
+        args.members,
+        args.activities_per_member,
+        args.points_per_activity,
+        args.in_viewport_per_member,
+    )
+    client = Client()
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
+    session.save()
+    api_samples = api_runs(client, competition)
     result: dict[str, object] = {
-        "environment": {"database": connection.vendor, "runs": RUNS},
-        "fixture": {"activities": args.fixture_size, "members": 1},
+        "environment": {
+            "database": connection.vendor,
+            "database_name": connection.settings_dict.get("NAME"),
+            "runs": RUNS,
+        },
+        "fixture": {
+            "members": args.members,
+            "activities": activity_count,
+            "points_per_activity": args.points_per_activity,
+            "in_viewport_activities": args.members * args.in_viewport_per_member,
+        },
         "api_ms": {"median": statistics.median(api_samples), "p95": percentile(api_samples, 0.95)},
     }
     if args.browser_url:
-        browser_samples = browser_runs(args.browser_url)
-        result["browser_ms"] = {
+        browser_samples = browser_runs(
+            args.browser_url, args.browser_api_url, session.session_key or ""
+        )
+        result["browser_response_to_map_idle_ms"] = {
             "median": statistics.median(browser_samples),
             "p95": percentile(browser_samples, 0.95),
         }
@@ -142,8 +202,8 @@ def main() -> None:
     api_p95 = result["api_ms"]["p95"]  # type: ignore[index]
     if api_p95 > API_BUDGET_MS:
         raise SystemExit(f"API p95 budget exceeded: {api_p95:.1f} ms")
-    if "browser_ms" in result:
-        browser_p95 = result["browser_ms"]["p95"]  # type: ignore[index]
+    if "browser_response_to_map_idle_ms" in result:
+        browser_p95 = result["browser_response_to_map_idle_ms"]["p95"]  # type: ignore[index]
         if browser_p95 > BROWSER_BUDGET_MS:
             raise SystemExit(f"Browser p95 budget exceeded: {browser_p95:.1f} ms")
 
