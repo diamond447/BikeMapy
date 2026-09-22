@@ -113,3 +113,46 @@ test('game map has no automated accessibility violations and honors reduced moti
     true,
   )
 })
+
+test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/*/map/**')
+  let mapCalls = 0
+  await page.route('**/api/v1/game/competitions/*/map/**', async (route) => {
+    mapCalls += 1
+    const url = new URL(route.request().url())
+    const selected = url.searchParams.getAll('member')
+    if (mapCalls === 2) await page.waitForTimeout(300)
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: selected.length && selected[0] !== '0' ? 'loaded' : 'empty',
+        competition_id: competition.id,
+        members: competition.members,
+        activities:
+          selected.length && selected[0] !== '0'
+            ? [
+                {
+                  ...activity,
+                  calendar_date: mapCalls >= 3 ? '2026-09-23' : activity.calendar_date,
+                },
+              ]
+            : [],
+        truncated: false,
+        limits: { max_features: 1200, max_coordinates: 120000 },
+      }),
+    })
+  })
+
+  await page.goto('/game')
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  const member = page.getByRole('checkbox').first()
+  const toggleRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes('/api/v1/game/competitions/') && request.url().includes('/map/'),
+  )
+  await member.uncheck()
+  await toggleRequest
+  await member.check()
+  await expect(page.getByRole('button', { name: '2026-09-23' })).toBeVisible()
+})

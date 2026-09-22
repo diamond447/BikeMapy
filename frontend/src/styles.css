@@ -1068,15 +1068,6 @@ h1 {
   max-height: 220px;
   overflow: auto;
 }
-.game-trace-items {
-  position: relative;
-}
-.game-trace-window {
-  left: 0;
-  position: absolute;
-  right: 0;
-  top: 0;
-}
 .game-trace-list button {
   align-items: center;
   background: transparent;

@@ -34,7 +34,9 @@ response ceiling, the API budget is 1,500 ms p95: it covers the bounded
 intersection, simplification, serialization, and response transfer for the
 maximum response, rather than a smaller typical map. A run is acceptable when
 the API p95 is below that ceiling and the browser adds no more than 100 ms to
-the GeoJSON source render after the response arrives. The browser probe waits
+the GeoJSON source render after the response arrives. The API probe performs
+one unmeasured warm-up request before collecting its 30 samples. The browser
+probe waits
 for the initial map and then toggles a member filter 30 times on that same
 page. Each sample waits for MapLibre's `private-traces` source to finish
 loading and one animation frame, so unrelated style/tile loading and later

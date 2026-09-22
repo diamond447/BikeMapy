@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- map fixture helper is unit-tested. */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AttributionControl,
   Map as MapLibreMap,
@@ -22,9 +22,6 @@ type MapActivity = components['schemas']['CompetitionMapActivity']
 
 const STORAGE_KEY = 'bikemapy:game-map'
 const DEFAULT_VIEW = { longitude: 16.6, latitude: 49.2, zoom: 7.5 }
-const TRACE_WINDOW_SIZE = 32
-const TRACE_ROW_HEIGHT = 40
-
 function readPrivateState(): { competitionId?: string; members?: number[] } {
   try {
     const value = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '{}') as unknown
@@ -92,7 +89,6 @@ export default function GameApp() {
   const [error, setError] = useState<string | null>(null)
   const [signedOut, setSignedOut] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
-  const [traceListStart, setTraceListStart] = useState(0)
   const [mapReady, setMapReady] = useState(false)
   const traceCloseRef = useRef<HTMLButtonElement>(null)
   const traceButtonRefs = useRef(new Map<string, HTMLButtonElement>())
@@ -103,6 +99,8 @@ export default function GameApp() {
   const mapCanRequest = useRef(false)
   const mapRequestInFlight = useRef(false)
   const lastMapRequestKey = useRef<string | null>(null)
+  const latestMapRequestKey = useRef<string | null>(null)
+  const mapRequestPending = useRef(false)
   const mapMeasureSequence = useRef(0)
   const bounds = useRef({ west: 14, south: 48.5, east: 19, north: 51.2, zoom: 7.5 })
   const loadMapRef = useRef<() => Promise<void>>(() => Promise.resolve())
@@ -147,16 +145,15 @@ export default function GameApp() {
   }, [loadCompetitions])
 
   const loadMap = useCallback(async () => {
-    if (
-      !competitionId ||
-      !map.current ||
-      !mapLoaded.current ||
-      !mapCanRequest.current ||
-      mapRequestInFlight.current
-    )
-      return
+    if (!competitionId || !map.current || !mapLoaded.current || !mapCanRequest.current) return
     setError(null)
     const current = bounds.current
+    const selectedCompetition = competitions.find((competition) => competition.id === competitionId)
+    const availableMembers = selectedCompetition?.members.map((member) => member.player_id) ?? []
+    const selected =
+      visibleMembers === null
+        ? availableMembers
+        : visibleMembers.filter((id) => availableMembers.includes(id))
     const requestKey = JSON.stringify([
       competitionId,
       Math.round(current.west * 1000),
@@ -164,18 +161,17 @@ export default function GameApp() {
       Math.round(current.east * 1000),
       Math.round(current.north * 1000),
       Math.round(current.zoom * 10),
-      visibleMembers,
+      selected,
     ])
+    latestMapRequestKey.current = requestKey
+    if (mapRequestInFlight.current) {
+      if (lastMapRequestKey.current !== requestKey) mapRequestPending.current = true
+      return
+    }
     if (lastMapRequestKey.current === requestKey) return
     lastMapRequestKey.current = requestKey
     mapRequestInFlight.current = true
     setMapLoading(true)
-    const selectedCompetition = competitions.find((competition) => competition.id === competitionId)
-    const availableMembers = selectedCompetition?.members.map((member) => member.player_id) ?? []
-    const selected =
-      visibleMembers === null
-        ? availableMembers
-        : visibleMembers.filter((id) => availableMembers.includes(id))
     try {
       const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/map/', {
         params: {
@@ -191,13 +187,14 @@ export default function GameApp() {
         },
         credentials: 'include',
       })
+      if (latestMapRequestKey.current !== requestKey) return
       if (result.response?.status === 401) {
         setSignedOut(true)
         return
       }
       if (result.response?.status === 404) throw new Error('map-not-found')
       if (!result.data) throw new Error('map-load')
-      setMapData(result.data)
+      startTransition(() => setMapData(result.data))
       const source = map.current?.getSource('private-traces') as GeoJSONSource | undefined
       const colors = new globalThis.Map(
         competitions
@@ -220,12 +217,15 @@ export default function GameApp() {
         source.setData(featureCollection(result.data.activities, colors))
       }
     } catch {
-      setError(copy.gameMapError)
+      if (latestMapRequestKey.current === requestKey) setError(copy.gameMapError)
     } finally {
+      const followUp = mapRequestPending.current || latestMapRequestKey.current !== requestKey
+      mapRequestPending.current = false
       mapRequestInFlight.current = false
       setMapLoading(false)
+      if (followUp) scheduleMapLoad()
     }
-  }, [competitionId, competitions, copy.gameMapError, visibleMembers])
+  }, [competitionId, competitions, copy.gameMapError, scheduleMapLoad, visibleMembers])
 
   useEffect(() => {
     loadMapRef.current = loadMap
@@ -303,6 +303,8 @@ export default function GameApp() {
       mapCanRequest.current = false
       mapRequestInFlight.current = false
       lastMapRequestKey.current = null
+      latestMapRequestKey.current = null
+      mapRequestPending.current = false
       if (mapLoadTimer.current !== null) window.clearTimeout(mapLoadTimer.current)
       mapLoadTimer.current = null
       instance.remove()
@@ -330,12 +332,6 @@ export default function GameApp() {
   )
   const selectedTrace = mapData?.activities.find((activity) => activity.id === selectedTraceId)
   const traceActivities = mapData?.activities ?? []
-  const safeTraceListStart = Math.min(
-    traceListStart,
-    Math.max(0, traceActivities.length - TRACE_WINDOW_SIZE),
-  )
-  const traceListEnd = Math.min(traceActivities.length, safeTraceListStart + TRACE_WINDOW_SIZE)
-  const visibleTraceActivities = traceActivities.slice(safeTraceListStart, traceListEnd)
   const closeTrace = useCallback(() => {
     const originatingId = originatingTraceRef.current
     setSelectedTraceId(null)
@@ -437,59 +433,34 @@ export default function GameApp() {
               {mapData && mapData.activities.length > 0 && (
                 <div className="game-trace-list" aria-label={copy.gameMapTraceList}>
                   <h2>{copy.gameMapTraceList}</h2>
-                  <div
-                    className="game-trace-viewport"
-                    onScroll={(event) => {
-                      const maxStart = Math.max(0, traceActivities.length - TRACE_WINDOW_SIZE)
-                      const nextStart = Math.min(
-                        maxStart,
-                        Math.max(
-                          0,
-                          Math.floor(event.currentTarget.scrollTop / TRACE_ROW_HEIGHT) - 2,
-                        ),
-                      )
-                      setTraceListStart((current) => (current === nextStart ? current : nextStart))
-                    }}
-                  >
-                    <div
-                      className="game-trace-items"
-                      style={{ height: `${traceActivities.length * TRACE_ROW_HEIGHT}px` }}
-                    >
-                      <div
-                        className="game-trace-window"
-                        style={{
-                          transform: `translateY(${safeTraceListStart * TRACE_ROW_HEIGHT}px)`,
+                  <div className="game-trace-viewport">
+                    {traceActivities.map((activity) => (
+                      <button
+                        type="button"
+                        key={activity.id}
+                        ref={(node) => {
+                          if (node) traceButtonRefs.current.set(activity.id, node)
+                          else traceButtonRefs.current.delete(activity.id)
+                        }}
+                        aria-pressed={selectedTraceId === activity.id}
+                        onClick={() => {
+                          originatingTraceRef.current = activity.id
+                          setSelectedTraceId(activity.id)
                         }}
                       >
-                        {visibleTraceActivities.map((activity) => (
-                          <button
-                            type="button"
-                            key={activity.id}
-                            ref={(node) => {
-                              if (node) traceButtonRefs.current.set(activity.id, node)
-                              else traceButtonRefs.current.delete(activity.id)
-                            }}
-                            aria-pressed={selectedTraceId === activity.id}
-                            onClick={() => {
-                              originatingTraceRef.current = activity.id
-                              setSelectedTraceId(activity.id)
-                            }}
-                          >
-                            <span
-                              className="member-swatch"
-                              style={{
-                                backgroundColor:
-                                  selectedCompetition?.members.find(
-                                    (member) => member.player_id === activity.player_id,
-                                  )?.color ?? '#2B8C76',
-                              }}
-                              aria-hidden="true"
-                            />
-                            <span>{activity.calendar_date ?? copy.gameMapDateUnknown}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                        <span
+                          className="member-swatch"
+                          style={{
+                            backgroundColor:
+                              selectedCompetition?.members.find(
+                                (member) => member.player_id === activity.player_id,
+                              )?.color ?? '#2B8C76',
+                          }}
+                          aria-hidden="true"
+                        />
+                        <span>{activity.calendar_date ?? copy.gameMapDateUnknown}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}

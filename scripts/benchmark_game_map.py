@@ -122,6 +122,9 @@ def fixture(
 def api_runs(client: Client, competition: Competition) -> list[float]:
     url = reverse("game-competition-map", args=[competition.pk])
     params = {"west": "14", "south": "49", "east": "15", "north": "50", "zoom": "12"}
+    warmup = client.get(url, params, HTTP_HOST="localhost")
+    if warmup.status_code >= 400:
+        raise RuntimeError(f"map warm-up failed: {warmup.status_code}")
     samples = []
     for _ in range(RUNS):
         started = time.perf_counter()
@@ -184,7 +187,7 @@ def main() -> None:
             "database_name": connection.settings_dict.get("NAME"),
             "runs": RUNS,
         },
-        "command": shlex.join(sys.argv),
+        "command": shlex.join(["uv", "run", "--locked", "--extra", "dev", "python", *sys.argv]),
         "fixture": {
             "members": args.members,
             "activities": activity_count,
