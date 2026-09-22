@@ -219,6 +219,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/competitions/{competition_id}/map/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Return only date-labelled traces inside an authenticated viewport. */
+    get: operations['v1_game_competitions_map_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/competitions/{competition_id}/members/{player_id}/': {
     parameters: {
       query?: never
@@ -488,15 +505,6 @@ export interface components {
       /** Format: date-time */
       created_at: string
       members: components['schemas']['CompetitionMember'][]
-      activities: components['schemas']['CompetitionActivity'][]
-    }
-    CompetitionActivity: {
-      /** Format: uuid */
-      id: string
-      player_id: number
-      /** Format: date */
-      calendar_date: string
-      geometry: unknown
     }
     CompetitionCreate: {
       name: string
@@ -512,6 +520,32 @@ export interface components {
     CompetitionJoin: {
       invite_code: string
       color?: string
+    }
+    CompetitionMapActivity: {
+      /** Format: uuid */
+      id: string
+      player_id: number
+      /** Format: date */
+      calendar_date: string | null
+      geometry: unknown
+    }
+    CompetitionMapMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+    }
+    CompetitionMapResponse: {
+      status: components['schemas']['StatusEnum']
+      /** Format: uuid */
+      competition_id: string
+      members: components['schemas']['CompetitionMapMember'][]
+      activities: components['schemas']['CompetitionMapActivity'][]
+      truncated: boolean
+      limits: {
+        [key: string]: number
+      }
     }
     CompetitionMember: {
       player_id: number
@@ -676,6 +710,13 @@ export interface components {
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
     }
+    /**
+     * @description * `loaded` - loaded
+     *     * `empty` - empty
+     *     * `syncing` - syncing
+     * @enum {string}
+     */
+    StatusEnum: 'loaded' | 'empty' | 'syncing'
     StravaWebhookPayload: {
       object_type: string
       object_id: number
@@ -1479,6 +1520,34 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_map_retrieve: {
+    parameters: {
+      query: {
+        east: number
+        member?: number[]
+        north: number
+        south: number
+        west: number
+        zoom: number
+      }
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionMapResponse']
         }
       }
     }
