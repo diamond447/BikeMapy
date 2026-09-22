@@ -4,6 +4,7 @@
     "database_name": "bikemapy",
     "runs": 30
   },
+  "command": "DJANGO_SETTINGS_MODULE=config.settings python scripts/benchmark_game_map.py --browser-url http://127.0.0.1:4173/game --browser-api-url http://127.0.0.1:8000 --output docs/game-map-benchmark-results.json",
   "fixture": {
     "members": 80,
     "activities": 1600,
@@ -11,11 +12,11 @@
     "in_viewport_activities": 1200
   },
   "api_ms": {
-    "median": 962.2624834955786,
-    "p95": 1466.1918519996107
+    "median": 896.6301125001337,
+    "p95": 1239.1930759995375
   },
-  "browser_response_to_map_idle_ms": {
-    "median": 561.9999999925494,
-    "p95": 663.0
+  "browser_response_to_render_ms": {
+    "median": 27.34999999962747,
+    "p95": 36.5
   }
 }

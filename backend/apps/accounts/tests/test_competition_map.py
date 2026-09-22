@@ -10,7 +10,7 @@ from django.urls import reverse
 
 import apps.accounts.competition_map_api as competition_map_api
 from apps.accounts.competition_services import create_competition, join_competition
-from apps.accounts.models import ImportedActivity, Player
+from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
 
 pytestmark = pytest.mark.django_db
 
@@ -210,3 +210,30 @@ def test_map_caps_member_ids_and_metadata_before_activity_query(
     response = client.get(url, viewport())
     assert response.status_code == 413
     assert response.json()["code"] == "member_limit"
+
+
+@override_settings(**SETTINGS)
+def test_map_bounds_membership_materialization_but_allows_explicit_late_member() -> None:
+    owner = make_player(111)
+    competition, _ = create_competition(owner, name="Large membership")
+    late_members = [make_player(1_000 + index) for index in range(competition_map_api.MAX_MEMBERS)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=member,
+                color="#123456",
+            )
+            for member in late_members
+        ]
+    )
+    client = session_client(owner)
+    url = reverse("game-competition-map", args=[competition.pk])
+
+    unfiltered = client.get(url, viewport()).json()
+    assert len(unfiltered["members"]) == competition_map_api.MAX_MEMBERS
+
+    late_member = late_members[-1]
+    selected = client.get(url, viewport(member=str(late_member.pk)))
+    assert selected.status_code == 200
+    assert [member["player_id"] for member in selected.json()["members"]] == [late_member.pk]

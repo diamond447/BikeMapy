@@ -29,10 +29,19 @@ date. Titles, exact timestamps, speed, provider IDs, and payload metadata are
 not part of the response contract.
 
 The benchmark should report median and p95 over at least 30 warm requests,
-separately for the PostGIS query and browser render. A run is acceptable when
-the API p95 is below 1,500 ms and the browser adds no more than 100 ms to the
-map update after the response arrives. These budgets are targets for the
-deployment benchmark; they are not inferred from a single local timing.
+separately for the PostGIS query and browser render. At the 1,200-trace
+response ceiling, the API budget is 1,500 ms p95: it covers the bounded
+intersection, simplification, serialization, and response transfer for the
+maximum response, rather than a smaller typical map. A run is acceptable when
+the API p95 is below that ceiling and the browser adds no more than 100 ms to
+the GeoJSON source render after the response arrives. The browser probe waits
+for the initial map and then toggles a member filter 30 times on that same
+page. Each sample waits for MapLibre's `private-traces` source to finish
+loading and one animation frame, so unrelated style/tile loading and later
+viewport requests are not included. These budgets are deployment targets tied
+to the response limits, not thresholds changed to fit one run.
 
 The reproducible command and the latest local result are recorded in
-[game-map-benchmark-results.json](game-map-benchmark-results.json).
+[game-map-benchmark-results.json](game-map-benchmark-results.json). The
+checked-in result was collected against local PostGIS with 30 API and browser
+samples.

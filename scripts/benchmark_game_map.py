@@ -15,8 +15,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -182,6 +184,7 @@ def main() -> None:
             "database_name": connection.settings_dict.get("NAME"),
             "runs": RUNS,
         },
+        "command": shlex.join(sys.argv),
         "fixture": {
             "members": args.members,
             "activities": activity_count,
@@ -194,7 +197,7 @@ def main() -> None:
         browser_samples = browser_runs(
             args.browser_url, args.browser_api_url, session.session_key or ""
         )
-        result["browser_response_to_map_idle_ms"] = {
+        result["browser_response_to_render_ms"] = {
             "median": statistics.median(browser_samples),
             "p95": percentile(browser_samples, 0.95),
         }
@@ -202,8 +205,8 @@ def main() -> None:
     api_p95 = result["api_ms"]["p95"]  # type: ignore[index]
     if api_p95 > API_BUDGET_MS:
         raise SystemExit(f"API p95 budget exceeded: {api_p95:.1f} ms")
-    if "browser_response_to_map_idle_ms" in result:
-        browser_p95 = result["browser_response_to_map_idle_ms"]["p95"]  # type: ignore[index]
+    if "browser_response_to_render_ms" in result:
+        browser_p95 = result["browser_response_to_render_ms"]["p95"]  # type: ignore[index]
         if browser_p95 > BROWSER_BUDGET_MS:
             raise SystemExit(f"Browser p95 budget exceeded: {browser_p95:.1f} ms")
 

@@ -1055,8 +1055,6 @@ h1 {
 }
 .game-trace-list {
   margin-top: 26px;
-  max-height: 260px;
-  overflow: auto;
 }
 .game-trace-list h2 {
   font:
@@ -1066,15 +1064,30 @@ h1 {
   margin: 0 0 8px;
   text-transform: uppercase;
 }
+.game-trace-viewport {
+  max-height: 220px;
+  overflow: auto;
+}
+.game-trace-items {
+  position: relative;
+}
+.game-trace-window {
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
 .game-trace-list button {
   align-items: center;
   background: transparent;
   border: 0;
   border-bottom: 1px solid rgba(16, 35, 42, 0.1);
+  box-sizing: border-box;
   color: #10232a;
   cursor: pointer;
   display: flex;
   gap: 9px;
+  height: 40px;
   padding: 9px 3px;
   text-align: left;
   width: 100%;

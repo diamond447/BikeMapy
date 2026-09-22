@@ -320,16 +320,23 @@ def _simplify(
     }
 
 
-def _member_ids(request: Any, memberships: Sequence[CompetitionMembership]) -> set[int]:
+def _requested_member_ids(request: Any) -> set[int] | None:
     values = request.query_params.getlist("member")
     if not values:
-        return {membership.player_id for membership in memberships[:MAX_MEMBERS]}
+        return None
     if len(values) > MAX_MEMBERS:
         raise ParseError(f"member accepts at most {MAX_MEMBERS} values")
     try:
         selected = {int(value) for value in values}
     except (TypeError, ValueError):
         raise ParseError("member must be a player id") from None
+    return selected
+
+
+def _member_ids(request: Any, memberships: Sequence[CompetitionMembership]) -> set[int]:
+    selected = _requested_member_ids(request)
+    if selected is None:
+        return {membership.player_id for membership in memberships[:MAX_MEMBERS]}
     known = {membership.player_id for membership in memberships}
     # The client uses zero as an explicit, non-member sentinel when every
     # visibility checkbox is off; it must not silently mean "all members".
@@ -378,11 +385,23 @@ class CompetitionMapView(GameEndpoint):
             return _private(Response({"detail": "Competition not found."}, status=404))
         west, south, east, north, zoom = _parse_viewport(request)
         viewport_parts = _viewport_parts(west, east, south, north)
-        memberships = list(
+        membership_query = (
             CompetitionMembership.objects.filter(competition=competition)
             .select_related("player")
             .order_by("joined_at", "pk")
         )
+        requested_ids = _requested_member_ids(request)
+        if requested_ids is None:
+            # The unfiltered map is intentionally capped at the documented
+            # member limit before either model rows or related players load.
+            memberships = list(membership_query[:MAX_MEMBERS])
+        elif requested_ids == {0}:
+            memberships = []
+        else:
+            # An explicit filter may name a member beyond the first page. Query
+            # only those IDs so authorization remains exact without
+            # materializing an arbitrarily large competition.
+            memberships = list(membership_query.filter(player_id__in=requested_ids))
         selected_ids = _member_ids(request, memberships)
         members = [
             _member_payload(membership, competition)
