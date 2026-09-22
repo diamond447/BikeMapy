@@ -217,7 +217,12 @@ export default function GameApp() {
         source.setData(featureCollection(result.data.activities, colors))
       }
     } catch {
-      if (latestMapRequestKey.current === requestKey) setError(copy.gameMapError)
+      if (latestMapRequestKey.current === requestKey) {
+        // Permit the visible Retry action to resend the same viewport after a
+        // failed request; successful requests remain deduplicated.
+        lastMapRequestKey.current = null
+        setError(copy.gameMapError)
+      }
     } finally {
       const followUp = mapRequestPending.current || latestMapRequestKey.current !== requestKey
       mapRequestPending.current = false

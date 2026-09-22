@@ -156,3 +156,33 @@ test('game map applies the latest member filter after an in-flight response', as
   await member.check()
   await expect(page.getByRole('button', { name: '2026-09-23' })).toBeVisible()
 })
+
+test('game map Retry repeats a failed map request', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/*/map/**')
+  let mapCalls = 0
+  await page.route('**/api/v1/game/competitions/*/map/**', async (route) => {
+    mapCalls += 1
+    if (mapCalls === 1) {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'loaded',
+        competition_id: competition.id,
+        members: competition.members,
+        activities: [activity],
+        truncated: false,
+        limits: { max_features: 1200, max_coordinates: 120000 },
+      }),
+    })
+  })
+
+  await page.goto('/game')
+  await expect(page.getByRole('alert')).toBeVisible()
+  await page.getByRole('button', { name: /retry/i }).click()
+  await expect(page.getByRole('button', { name: activity.calendar_date })).toBeVisible()
+  expect(mapCalls).toBe(2)
+})

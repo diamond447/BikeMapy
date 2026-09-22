@@ -44,6 +44,21 @@ from apps.accounts.models import (  # noqa: E402
 API_BUDGET_MS = 1_500.0
 BROWSER_BUDGET_MS = 100.0
 RUNS = 30
+BENCHMARK_ENVIRONMENT = (
+    "DJANGO_SETTINGS_MODULE=config.settings",
+    "POSTGRES_HOST=127.0.0.1",
+    "POSTGRES_PORT=5432",
+    "POSTGRES_DB=bikemapy",
+    "POSTGRES_USER=bikemapy",
+    "POSTGRES_PASSWORD=bikemapy-local-only",
+    "DJANGO_CACHE_URL=redis://127.0.0.1:6379/1",
+    "GAME_ENABLED=true",
+    "STRAVA_OAUTH_CLIENT_ID=benchmark-client",
+    "STRAVA_OAUTH_CLIENT_SECRET=benchmark-secret",
+    "STRAVA_TOKEN_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "STRAVA_IDENTITY_GUARD_KEY=benchmark-identity-guard-key-123456789",
+    "CORS_ALLOWED_ORIGINS=http://127.0.0.1:4173",
+)
 DEFAULT_MEMBERS = 80
 DEFAULT_ACTIVITIES_PER_MEMBER = 20
 DEFAULT_POINTS = 250
@@ -187,7 +202,19 @@ def main() -> None:
             "database_name": connection.settings_dict.get("NAME"),
             "runs": RUNS,
         },
-        "command": shlex.join(["uv", "run", "--locked", "--extra", "dev", "python", *sys.argv]),
+        "command": shlex.join(
+            [
+                "env",
+                *BENCHMARK_ENVIRONMENT,
+                "uv",
+                "run",
+                "--locked",
+                "--extra",
+                "dev",
+                "python",
+                *sys.argv,
+            ]
+        ),
         "fixture": {
             "members": args.members,
             "activities": activity_count,

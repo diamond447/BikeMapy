@@ -45,5 +45,12 @@ to the response limits, not thresholds changed to fit one run.
 
 The reproducible command and the latest local result are recorded in
 [game-map-benchmark-results.json](game-map-benchmark-results.json). The
+command explicitly targets the local PostGIS service at `127.0.0.1`; its
+password and Strava values are benchmark-only local placeholders, not
+credentials. Before running it, start PostGIS and Redis with `docker compose
+up -d db redis`, apply migrations with the same environment, and start the
+backend at `127.0.0.1:8000` using the command's explicit environment
+assignments (including `DJANGO_CACHE_URL=redis://127.0.0.1:6379/1`). Start the
+frontend at `127.0.0.1:4173` with `VITE_API_URL=http://127.0.0.1:8000`. The
 checked-in result was collected against local PostGIS with 30 API and browser
 samples.
