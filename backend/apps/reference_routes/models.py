@@ -984,7 +984,7 @@ class RouteCompletionMonthly(models.Model):
     )
     month = models.DateField()
     covered_length_meters = models.DecimalField(max_digits=14, decimal_places=3, default=0)
-    covered_geometry = RouteGeometryField(blank=True, null=True)
+    covered_geometry = RouteCoverageGeometryField(blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
