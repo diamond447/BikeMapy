@@ -8,7 +8,6 @@ from typing import cast
 
 import pytest
 from django.contrib.auth import get_user_model
-from django.contrib.gis.geos import GEOSGeometry
 from django.core.exceptions import ValidationError
 from django.db import close_old_connections, connection
 from django.db.models.deletion import ProtectedError
@@ -42,6 +41,17 @@ from apps.reference_routes.tasks import (
 )
 
 pytestmark = pytest.mark.django_db
+
+
+def _line_geometry(coordinates: list[list[float]]) -> object:
+    geometry = {"type": "LineString", "coordinates": coordinates}
+    if connection.vendor != "postgresql":
+        return json.dumps(geometry, separators=(",", ":"))
+
+    # The lightweight SQLite CI image intentionally does not install GDAL.
+    from django.contrib.gis.geos import GEOSGeometry
+
+    return GEOSGeometry(json.dumps(geometry), srid=4326)
 
 
 def _player(athlete_id: int) -> Player:
@@ -81,9 +91,7 @@ def _version() -> ReferenceRouteVersion:
         version_number=1,
         checksum="b" * 64,
         source_geometry={"type": "LineString", "coordinates": [[14, 50], [14.1, 50]]},
-        normalized_geometry=GEOSGeometry(
-            '{"type":"LineString","coordinates":[[14,50],[14.1,50]]}', srid=4326
-        ),
+        normalized_geometry=_line_geometry([[14, 50], [14.1, 50]]),
         attribution="Test source",
         attribution_metadata={
             "attribution_text": "Test",
@@ -110,9 +118,7 @@ def _activity(
         provider_activity_id=provider_id,
         calendar_date=day,
         started_at=timezone.now(),
-        geometry=GEOSGeometry(
-            json.dumps({"type": "LineString", "coordinates": coordinates}), srid=4326
-        ),
+        geometry=_line_geometry(coordinates),
         geometry_hash=provider_id,
     )
 
