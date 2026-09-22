@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+from uuid import uuid4
 
 from django.conf import settings
 from django.db import transaction
@@ -22,9 +23,11 @@ from .models import (
     RouteCompletionEvidence,
     RouteCompletionJob,
     RouteCompletionMonthly,
+    allow_completion_evidence_append,
 )
 
 DEFAULT_TOLERANCE_METERS = 50
+DEFAULT_MAX_ACTIVITIES = 10_000
 METRIC_SRID = 5514
 ALGORITHM_VERSION = "corridor-v1"
 DECIMAL_QUANTUM = Decimal("0.001")
@@ -32,6 +35,10 @@ DECIMAL_QUANTUM = Decimal("0.001")
 
 class CompletionCalculationError(RuntimeError):
     """A safe, retryable calculation error with no credential data."""
+
+
+class CompletionLeaseLost(CompletionCalculationError):
+    """The durable worker lease was replaced before projection commit."""
 
 
 def _geometry(value: Any) -> Any:
@@ -97,25 +104,28 @@ def _activity_date(activity: ImportedActivity) -> date:
 def _subject_activities(
     subject_type: str, *, player: Player | None, competition: Competition | None
 ) -> list[ImportedActivity]:
+    limit = int(getattr(settings, "ROUTE_COMPLETION_MAX_ACTIVITIES", DEFAULT_MAX_ACTIVITIES))
+    if limit <= 0:
+        raise CompletionCalculationError("Completion activity limit is invalid.")
     if subject_type == CompletionSubject.PLAYER:
         if player is None:
             raise CompletionCalculationError("Player completion subject is missing.")
-        return list(
-            ImportedActivity.objects.filter(player_id=player.pk, removed_at__isnull=True)
-            .exclude(geometry__isnull=True)
-            .order_by("calendar_date", "started_at", "pk")
-        )
-    if competition is None:
-        raise CompletionCalculationError("Competition completion subject is missing.")
-    member_ids = competition.memberships.values_list("player_id", flat=True)
-    return list(
-        ImportedActivity.objects.filter(
+        query = ImportedActivity.objects.filter(
+            player_id=player.pk, removed_at__isnull=True
+        ).exclude(geometry__isnull=True)
+    else:
+        if competition is None:
+            raise CompletionCalculationError("Competition completion subject is missing.")
+        member_ids = competition.memberships.values_list("player_id", flat=True)
+        query = ImportedActivity.objects.filter(
             player_id__in=member_ids,
             removed_at__isnull=True,
+        ).exclude(geometry__isnull=True)
+    if query.count() > limit:
+        raise CompletionCalculationError(
+            "Completion activity workload exceeds the configured limit."
         )
-        .exclude(geometry__isnull=True)
-        .order_by("calendar_date", "started_at", "pk")
-    )
+    return list(query.order_by("calendar_date", "started_at", "pk"))
 
 
 def _coverage_for_activity(route: Any, activity: Any, tolerance: float) -> Any:
@@ -188,8 +198,13 @@ def calculate_completion(
     player: Player | None = None,
     competition: Competition | None = None,
     tolerance_meters: float | None = None,
+    job_id: int | None = None,
+    lease_token: str | None = None,
 ) -> RouteCompletion:
-    """Rebuild one projection and all evidence atomically and idempotently."""
+    """Rebuild one projection atomically, optionally fenced by a worker lease."""
+
+    if (job_id is None) != (lease_token is None):
+        raise CompletionCalculationError("Completion lease arguments must be provided together.")
 
     if subject_type not in CompletionSubject.values:
         raise CompletionCalculationError("Unknown completion subject.")
@@ -208,8 +223,25 @@ def calculate_completion(
     union, evidence, monthly = _union_coverage(route, activities, tolerance)
     covered = min(total, max(0.0, float(union.length)))
     percent = 0.0 if total <= 0 else min(100.0, covered / total * 100)
-    completion = _completion_record(version, subject_type, player=player, competition=competition)
     with transaction.atomic():
+        job = None
+        if job_id is not None:
+            job = RouteCompletionJob.objects.select_for_update().get(pk=job_id)
+            if (
+                job.status != RouteCompletionJob.Status.RUNNING
+                or job.lease_token != lease_token
+                or not job.lease_until
+                or job.lease_until <= timezone.now()
+            ):
+                raise CompletionLeaseLost("Completion worker lease was replaced or expired.")
+            job.lease_until = timezone.now() + timedelta(
+                seconds=int(getattr(settings, "ROUTE_COMPLETION_LEASE_SECONDS", 600))
+            )
+            job.save(update_fields=("lease_until",))
+        completion = _completion_record(
+            version, subject_type, player=player, competition=competition
+        )
+        completion.evidence_generation = uuid4()
         completion.status = CompletionStatus.FRESH
         completion.tolerance_meters = _rounded(tolerance)
         completion.total_length_meters = _rounded(total)
@@ -233,27 +265,28 @@ def calculate_completion(
             json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         completion.save()
-        completion.evidence.all().delete()
         RouteCompletionMonthly.objects.filter(
             route_version=version,
             subject_type=subject_type,
             player=player if subject_type == CompletionSubject.PLAYER else None,
             competition=competition if subject_type == CompletionSubject.COMPETITION else None,
         ).delete()
-        for item in evidence:
-            activity = item["activity"]
-            geometry = item.get("coverage")
-            RouteCompletionEvidence.objects.create(
-                completion=completion,
-                activity=activity,
-                provider_activity_id=activity.provider_activity_id,
-                activity_player_id=activity.player_id,
-                covered_length_meters=_rounded(geometry.length if geometry else 0),
-                covered_geometry=_geographic(geometry) if geometry else None,
-                activity_geometry_hash=activity.geometry_hash,
-                membership_revision=competition.revision if competition else None,
-                evidence={"skipped": bool(item["skipped"]), "algorithm": ALGORITHM_VERSION},
-            )
+        with allow_completion_evidence_append():
+            for item in evidence:
+                activity = item["activity"]
+                geometry = item.get("coverage")
+                RouteCompletionEvidence.objects.create(
+                    completion=completion,
+                    evidence_generation=completion.evidence_generation,
+                    activity=activity,
+                    provider_activity_id=activity.provider_activity_id,
+                    activity_player_id=activity.player_id,
+                    covered_length_meters=_rounded(geometry.length if geometry else 0),
+                    covered_geometry=_geographic(geometry) if geometry else None,
+                    activity_geometry_hash=activity.geometry_hash,
+                    membership_revision=competition.revision if competition else None,
+                    evidence={"skipped": bool(item["skipped"]), "algorithm": ALGORITHM_VERSION},
+                )
         for month, geometry in monthly.items():
             RouteCompletionMonthly.objects.create(
                 route_version=version,
@@ -263,6 +296,15 @@ def calculate_completion(
                 month=month,
                 covered_length_meters=_rounded(geometry.length),
                 covered_geometry=_geographic(geometry),
+            )
+        if job is not None:
+            job.status = RouteCompletionJob.Status.COMPLETE
+            job.completed_at = timezone.now()
+            job.lease_token = ""
+            job.lease_until = None
+            job.error = ""
+            job.save(
+                update_fields=("status", "completed_at", "lease_token", "lease_until", "error")
             )
     return completion
 
@@ -320,6 +362,8 @@ def schedule_completion(
             job.lease_until = None
             job.next_attempt_at = timezone.now()
             job.completed_at = None
+            job.dispatch_token = ""
+            job.dispatch_lease_until = None
             job.save(
                 update_fields=(
                     "status",
@@ -327,6 +371,8 @@ def schedule_completion(
                     "lease_until",
                     "next_attempt_at",
                     "completed_at",
+                    "dispatch_token",
+                    "dispatch_lease_until",
                 )
             )
         elif job.status in {RouteCompletionJob.Status.COMPLETE, RouteCompletionJob.Status.FAILED}:
@@ -334,15 +380,26 @@ def schedule_completion(
             job.error = ""
             job.next_attempt_at = timezone.now()
             job.completed_at = None
-            job.save(update_fields=("status", "error", "next_attempt_at", "completed_at"))
+            job.dispatch_token = ""
+            job.dispatch_lease_until = None
+            job.save(
+                update_fields=(
+                    "status",
+                    "error",
+                    "next_attempt_at",
+                    "completed_at",
+                    "dispatch_token",
+                    "dispatch_lease_until",
+                )
+            )
     return job
 
 
 def schedule_version_completions(version: ReferenceRouteVersion, *, reason: str) -> int:
     count = 0
-    for player_id in Player.objects.filter(
-        lifecycle=Player.Lifecycle.CONNECTED
-    ).values_list("pk", flat=True):
+    for player_id in Player.objects.filter(lifecycle=Player.Lifecycle.CONNECTED).values_list(
+        "pk", flat=True
+    ):
         schedule_completion(
             version, CompletionSubject.PLAYER, player=Player(pk=player_id), reason=reason
         )

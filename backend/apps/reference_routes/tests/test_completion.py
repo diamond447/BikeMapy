@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
+from typing import cast
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import GEOSGeometry
+from django.core.exceptions import ValidationError
+from django.db import close_old_connections, connection
+from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
 from apps.accounts.competition_services import create_competition
 from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
-from apps.reference_routes.completion_services import calculate_completion, schedule_completion
+from apps.reference_routes.completion_services import (
+    CompletionLeaseLost,
+    calculate_completion,
+    schedule_completion,
+)
 from apps.reference_routes.models import (
     CompletionStatus,
     CompletionSubject,
@@ -21,10 +30,16 @@ from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
     ReferenceSourceKind,
+    RouteCompletionEvidence,
     RouteCompletionJob,
     RouteCompletionMonthly,
 )
-from apps.reference_routes.tasks import calculate_route_completion, dispatch_completion_jobs
+from apps.reference_routes.tasks import (
+    _claim_completion_dispatch,
+    _publish_completion_dispatch,
+    calculate_route_completion,
+    dispatch_completion_jobs,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -119,6 +134,33 @@ def test_player_completion_is_unique_and_monthly_distance_is_not_double_counted(
     )
 
 
+def test_disjoint_union_preserves_multiline_monthly_geometry_and_evidence_is_append_only() -> None:
+    version = _version()
+    player = _player(8)
+    _activity(player, "left", [[14, 50], [14.02, 50]], date(2026, 5, 1))
+    _activity(player, "right", [[14.08, 50], [14.1, 50]], date(2026, 5, 2))
+    calculate_completion(version, CompletionSubject.PLAYER, player=player)
+    monthly = RouteCompletionMonthly.objects.get(
+        route_version=version, player=player, month=date(2026, 5, 1)
+    )
+    # The monthly geometry for one month is allowed to retain disjoint line
+    # components; coercing this to a LineString would lose one contribution.
+    assert "MULTILINESTRING" in str(monthly.covered_geometry).upper()
+    evidence = RouteCompletionEvidence.objects.first()
+    assert evidence is not None
+    with pytest.raises(ValidationError):
+        evidence.save()
+    with pytest.raises(ProtectedError):
+        evidence.delete()
+    with pytest.raises(ValidationError):
+        RouteCompletionEvidence.objects.filter(pk=evidence.pk).update(
+            provider_activity_id="changed"
+        )
+    before = RouteCompletionEvidence.objects.count()
+    calculate_completion(version, CompletionSubject.PLAYER, player=player)
+    assert RouteCompletionEvidence.objects.count() == before * 2
+
+
 def test_competition_completion_is_union_and_reverses_after_activity_removal() -> None:
     version = _version()
     first = _player(2)
@@ -184,7 +226,94 @@ def test_dispatcher_requeues_expired_worker_leases(monkeypatch: pytest.MonkeyPat
     assert job.error == "Worker lease expired."
 
 
-@override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
+def test_worker_commit_is_fenced_when_subject_is_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    version = _version()
+    player = _player(9)
+    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="initial")
+
+    def replaced(*args: object, **kwargs: object) -> object:
+        schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="replacement")
+        raise CompletionLeaseLost("superseded")
+
+    monkeypatch.setattr("apps.reference_routes.tasks.calculate_completion", replaced)
+    result = calculate_route_completion.apply(args=[job.pk]).get()
+
+    assert result["status"] == "in_progress"
+    job.refresh_from_db()
+    assert job.status == RouteCompletionJob.Status.PENDING
+    assert job.lease_token == ""
+    assert not RouteCompletionEvidence.objects.filter(completion__route_version=version).exists()
+
+
+def test_dispatch_claim_is_single_use_and_releases_on_publish_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = _version()
+    player = _player(10)
+    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="dispatch")
+    claim = _claim_completion_dispatch()
+    assert claim is not None
+    assert _claim_completion_dispatch() is None
+
+    def fail_publish(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(calculate_route_completion, "delay", fail_publish)
+    assert not _publish_completion_dispatch(*claim)
+    job.refresh_from_db()
+    assert job.dispatch_token == ""
+    assert job.dispatch_lease_until is None
+    assert job.next_attempt_at <= timezone.now()
+
+
+def test_successful_dispatch_lease_blocks_an_immediate_second_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = _version()
+    player = _player(12)
+    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="dispatch")
+    claim = _claim_completion_dispatch()
+    assert claim is not None
+    published: list[int] = []
+    monkeypatch.setattr(calculate_route_completion, "delay", published.append)
+
+    assert _publish_completion_dispatch(*claim)
+    assert published == [job.pk]
+    assert _claim_completion_dispatch() is None
+    job.refresh_from_db()
+    assert job.dispatch_token
+    assert job.dispatch_lease_until is not None
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostGIS row locking")
+def test_concurrent_completion_workers_have_one_effective_claim() -> None:
+    version = _version()
+    player = _player(11)
+    _activity(player, "concurrent", [[14, 50], [14.02, 50]], date(2026, 6, 1))
+    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="race")
+
+    def run_worker() -> dict[str, object]:
+        close_old_connections()
+        try:
+            return cast(dict[str, object], calculate_route_completion.apply(args=[job.pk]).get())
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: run_worker(), range(2)))
+    assert sorted(str(result["status"]) for result in results) == ["complete", "in_progress"]
+    assert RouteCompletionEvidence.objects.filter(completion__route_version=version).count() == 1
+
+
+@override_settings(
+    GAME_ENABLED=True,
+    STRAVA_OAUTH_CLIENT_ID="client",
+    STRAVA_OAUTH_CLIENT_SECRET="secret",
+    STRAVA_TOKEN_ENCRYPTION_KEY="token-key",
+    STRAVA_IDENTITY_GUARD_KEY="identity-key",
+    REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True,
+)
 def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     version = _version()
     route = version.route
@@ -214,3 +343,12 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     assert body["route_id"] == str(route.pk)
     assert competition.is_active
     assert response["Cache-Control"] == "private, no-store"
+
+    with override_settings(GAME_ENABLED=False):
+        assert (
+            client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/").status_code == 404
+        )
+    collection = route.collection
+    collection.permission_granted = False
+    collection.save(update_fields=("permission_granted", "updated_at"))
+    assert client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/").status_code == 404

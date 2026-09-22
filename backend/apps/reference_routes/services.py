@@ -43,6 +43,9 @@ MAX_OVERPASS_FAILURE_LOG_BYTES = 512 * 1024
 MAX_RELATIONS = 5_000
 MAX_MEMBERS_PER_RELATION = 5_000
 MAX_COORDINATES = 1_000_000
+MAX_VIA_SNAPSHOT_BYTES = 10 * 1024 * 1024
+MAX_VIA_COORDINATES = 100_000
+MAX_VIA_STAGES = 500
 _REF_RE = re.compile(r"^[0-9]{1,4}$")
 _INTERNATIONAL_REF_RE = re.compile(r"^(?:ev|eurovelo)[ -]?[0-9]{1,2}$")
 _MARKERS = {"eurovelo", "international", "ecf"}
@@ -867,6 +870,51 @@ def _geometry_value(coordinates: list[list[float]] | None) -> Any:
     return {"type": "LineString", "coordinates": coordinates}
 
 
+def _validated_via_geometry(value: Any) -> tuple[dict[str, Any], list[list[float]]]:
+    """Validate one bounded Via Czechia LineString before persistence."""
+
+    if not isinstance(value, dict) or value.get("type") != "LineString":
+        raise ValueError("Via Czechia geometries must be LineStrings")
+    raw_coordinates = value.get("coordinates")
+    if not isinstance(raw_coordinates, list) or not (
+        2 <= len(raw_coordinates) <= MAX_VIA_COORDINATES
+    ):
+        raise ValueError("Via Czechia geometry has an invalid coordinate count")
+    coordinates: list[list[float]] = []
+    for coordinate in raw_coordinates:
+        if (
+            not isinstance(coordinate, (list, tuple))
+            or len(coordinate) != 2
+            or any(
+                isinstance(item, bool) or not isinstance(item, (int, float)) for item in coordinate
+            )
+        ):
+            raise ValueError("Via Czechia coordinates must contain finite longitude/latitude pairs")
+        lon, lat = float(coordinate[0]), float(coordinate[1])
+        if not math.isfinite(lon) or not math.isfinite(lat):
+            raise ValueError("Via Czechia coordinates must be finite")
+        if not (_CZ_BOUNDS[0] <= lon <= _CZ_BOUNDS[2] and _CZ_BOUNDS[1] <= lat <= _CZ_BOUNDS[3]):
+            raise ValueError("Via Czechia geometry is outside Czechia bounds")
+        coordinates.append([lon, lat])
+    points = [tuple(point) for point in coordinates]
+    if len(set(points)) < 2 or any(
+        left == right for left, right in zip(points, points[1:], strict=False)
+    ):
+        raise ValueError("Via Czechia geometry has zero length")
+    for first_index, first in enumerate(zip(points, points[1:], strict=False)):
+        for second_index, second in enumerate(zip(points, points[1:], strict=False)):
+            if second_index <= first_index + 1:
+                continue
+            if _segments_intersect(first[0], first[1], second[0], second[1]):
+                raise ValueError("Via Czechia geometry self-intersects")
+    if _GIS_AVAILABLE:
+        diagnostics = _geometry_diagnostics(coordinates)
+        if diagnostics:
+            raise ValueError(diagnostics[0].message)
+    normalized = {"type": "LineString", "coordinates": coordinates}
+    return normalized, coordinates
+
+
 def _geometry_diagnostics(coordinates: list[list[float]]) -> list[RouteDiagnostic]:
     if not _GIS_AVAILABLE:
         return []
@@ -1277,6 +1325,8 @@ def approve_reference_route(route: ReferenceRoute, *, reviewer: str) -> Referenc
     )
     route.current_version.active = True
     route.current_version.save(update_fields=["active"])
+    from .completion_services import schedule_version_completions
+
     if route.collection.source_kind == ReferenceSourceKind.VIA_CZECHIA:
         for stage in route.stages.select_related("current_version").order_by("pk"):
             if stage.current_version is None:
@@ -1296,8 +1346,9 @@ def approve_reference_route(route: ReferenceRoute, *, reviewer: str) -> Referenc
             )
             stage.current_version.active = True
             stage.current_version.save(update_fields=("active",))
-    from .completion_services import schedule_version_completions
-
+            schedule_version_completions(
+                stage.current_version, reason="reference-route-stage-approved"
+            )
     schedule_version_completions(route.current_version, reason="reference-route-version-approved")
     return route
 
@@ -1403,7 +1454,9 @@ def import_via_czechia_snapshot(
     stages_data = payload.get("stages", [])
     if not isinstance(route_data, dict) or not isinstance(stages_data, list):
         raise ValueError("Via Czechia snapshot must contain a route and a stage list")
-    records = [route_data, *[item for item in stages_data if isinstance(item, dict)]]
+    if len(stages_data) > MAX_VIA_STAGES or any(not isinstance(item, dict) for item in stages_data):
+        raise ValueError("Via Czechia snapshot contains too many or malformed stages")
+    records = [route_data, *stages_data]
     if not records or any(
         not isinstance(item.get("source_identifier"), str)
         or not isinstance(item.get("title"), str)
@@ -1411,7 +1464,12 @@ def import_via_czechia_snapshot(
         for item in records
     ):
         raise ValueError("Via Czechia records require identifiers, titles and geometry")
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    validated_records: list[tuple[dict[str, Any], list[list[float]]]] = []
+    for item in records:
+        validated_records.append(_validated_via_geometry(item["geometry"]))
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    if len(raw) > MAX_VIA_SNAPSHOT_BYTES:
+        raise ValueError("Via Czechia snapshot exceeds the byte limit")
     checksum = hashlib.sha256(raw).hexdigest()
     retrieved = retrieved_at or timezone.now()
     with transaction.atomic():
@@ -1447,28 +1505,67 @@ def import_via_czechia_snapshot(
             if all(attribution_metadata.values())
             else ReferenceValidationStatus.PENDING_REVIEW
         )
-        for index, item in enumerate(records):
-            geometry = item["geometry"]
-            coordinates = geometry.get("coordinates")
-            if geometry.get("type") != "LineString" or not isinstance(coordinates, list):
-                raise ValueError("Via Czechia geometries must be LineStrings")
-            route = ReferenceRoute.objects.create(
-                collection=collection,
-                source_identifier=item["source_identifier"],
-                route_number=str(item.get("route_number") or ""),
-                title=item["title"],
-                route_type=ReferenceRoute.RouteType.ROUTE
-                if index == 0
-                else ReferenceRoute.RouteType.STAGE,
-                parent=parent,
-                active=False,
-                publication_status=ReferencePublicationStatus.PENDING,
+        seen_identifiers: set[str] = set()
+        imported_routes: list[ReferenceRoute] = []
+        for index, (item, (geometry, coordinates)) in enumerate(
+            zip(records, validated_records, strict=True)
+        ):
+            source_identifier = item["source_identifier"]
+            if source_identifier in seen_identifiers:
+                raise ValueError("Via Czechia snapshot contains duplicate source identifiers")
+            seen_identifiers.add(source_identifier)
+            route = (
+                ReferenceRoute.objects.select_for_update()
+                .filter(collection=collection, source_identifier=source_identifier)
+                .first()
             )
+            if route is None:
+                route = ReferenceRoute.objects.create(
+                    collection=collection,
+                    source_identifier=source_identifier,
+                    route_number=str(item.get("route_number") or ""),
+                    title=item["title"],
+                    route_type=ReferenceRoute.RouteType.ROUTE
+                    if index == 0
+                    else ReferenceRoute.RouteType.STAGE,
+                    parent=parent,
+                    active=False,
+                    publication_status=ReferencePublicationStatus.PENDING,
+                )
+            else:
+                route.route_number = str(item.get("route_number") or "")
+                route.title = item["title"]
+                route.route_type = (
+                    ReferenceRoute.RouteType.ROUTE if index == 0 else ReferenceRoute.RouteType.STAGE
+                )
+                route.parent = parent
+                route.active = False
+                route.publication_status = ReferencePublicationStatus.PENDING
+                route.save(
+                    update_fields=(
+                        "route_number",
+                        "title",
+                        "route_type",
+                        "parent",
+                        "active",
+                        "publication_status",
+                        "updated_at",
+                    )
+                )
+            version_number = (
+                ReferenceRouteVersion.objects.filter(route=route)
+                .order_by("-version_number")
+                .values_list("version_number", flat=True)
+                .first()
+                or 0
+            ) + 1
             version = ReferenceRouteVersion.objects.create(
                 route=route,
                 source_import=source_import,
-                version_number=1,
-                checksum=hashlib.sha256(json.dumps(geometry, sort_keys=True).encode()).hexdigest(),
+                version_number=version_number,
+                checksum=hashlib.sha256(
+                    json.dumps(geometry, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
                 source_geometry=geometry,
                 normalized_geometry=_geometry_value(coordinates),
                 provenance={"source": "Via Czechia", "snapshot_checksum": checksum},
@@ -1477,9 +1574,23 @@ def import_via_czechia_snapshot(
                 validation_status=version_status,
                 active=False,
             )
+            for old_version in route.versions.select_for_update().exclude(pk=version.pk):
+                if old_version.active:
+                    old_version.active = False
+                    old_version.save(update_fields=("active",))
             route.current_version = version
             route.save(update_fields=("current_version", "updated_at"))
+            imported_routes.append(route)
             if index == 0:
                 parent = route
             imported += 1
+        imported_stage_ids = {route.pk for route in imported_routes[1:]}
+        if parent is not None:
+            for old_stage in parent.stages.select_for_update().exclude(pk__in=imported_stage_ids):
+                old_stage.active = False
+                old_stage.publication_status = ReferencePublicationStatus.REJECTED
+                old_stage.save(update_fields=("active", "publication_status", "updated_at"))
+                if old_stage.current_version_id:
+                    old_stage.current_version.active = False
+                    old_stage.current_version.save(update_fields=("active",))
         return {"status": "valid", "import_id": source_import.pk, "created": imported}

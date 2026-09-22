@@ -17,6 +17,7 @@ from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
+from apps.accounts.models import Player
 from apps.api.views_reference_routes import reference_queryset
 from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.reference_routes.models import (
@@ -259,10 +260,29 @@ def test_via_czechia_import_requires_source_availability_and_keeps_route_stages_
     parent = ReferenceRoute.objects.get(collection=item, parent__isnull=True)
     assert parent.stages.count() == 1
     assert parent.current_version is not None
+    changed = json.loads(json.dumps(payload))
+    changed["route"]["title"] = "Via Czechia updated"
+    changed["route"]["geometry"]["coordinates"] = [[14, 50], [14.12, 50]]
+    changed["stages"][0]["geometry"]["coordinates"] = [[14, 50], [14.06, 50]]
+    assert import_via_czechia_snapshot(collection=item, payload=changed)["created"] == 2
+    parent.refresh_from_db()
+    assert parent.versions.count() == 2
+    assert parent.current_version is not None
+    assert parent.current_version.version_number == 2
+    player = Player.objects.create(
+        user=get_user_model().objects.create_user(username="via-completion-player"),
+        strava_athlete_id=991,
+    )
     approve_reference_route(parent, reviewer="via-reviewer")
     parent.refresh_from_db()
     assert parent.active
-    assert parent.stages.get().active
+    stage = parent.stages.get()
+    assert stage.active
+    assert stage.current_version is not None
+    assert stage.current_version.version_number == 2
+    assert parent.current_version is not None
+    assert parent.current_version.completion_jobs.filter(player=player).exists()
+    assert stage.current_version.completion_jobs.filter(player=player).exists()
 
 
 def test_source_gate_blocks_import_and_activation() -> None:
@@ -276,6 +296,41 @@ def test_source_gate_blocks_import_and_activation() -> None:
     )
     with pytest.raises(ValidationError):
         route.save()
+
+
+@pytest.mark.parametrize(
+    "coordinates",
+    [
+        [[14.0, 50.0], [14.0, 50.0]],
+        [[11.9, 50.0], [14.0, 50.0]],
+        [[14.0, 50.0], [14.05, 50.05], [14.0, 50.05], [14.05, 50.0]],
+        [[14.0, 50.0], [float("nan"), 50.0]],
+    ],
+)
+@override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
+def test_via_czechia_rejects_unbounded_or_invalid_geometry(coordinates: list[list[float]]) -> None:
+    item = ReferenceCollection.objects.create(
+        slug=f"via-invalid-{abs(hash(repr(coordinates)))}",
+        name="Via Czechia invalid",
+        source_kind=ReferenceSourceKind.VIA_CZECHIA,
+        source_url="https://viaczechia.cz",
+        attribution="Via Czechia",
+        licence="CC BY-NC-SA 4.0",
+        permission_granted=True,
+        active=True,
+    )
+    with pytest.raises(ValueError):
+        import_via_czechia_snapshot(
+            collection=item,
+            payload={
+                "source_available": True,
+                "route": {
+                    "source_identifier": "invalid",
+                    "title": "Invalid",
+                    "geometry": {"type": "LineString", "coordinates": coordinates},
+                },
+            },
+        )
 
 
 @override_settings(REFERENCE_ROUTE_DERIVATIVE_OFFER_URL="")

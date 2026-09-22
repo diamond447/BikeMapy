@@ -12,7 +12,14 @@ from rest_framework import serializers
 from rest_framework.response import Response
 
 from apps.accounts.game_api import GameEndpoint, _private
-from apps.reference_routes.models import ReferenceRoute, RouteCompletion
+from apps.accounts.services import game_is_available
+from apps.reference_routes.models import (
+    ReferencePublicationStatus,
+    ReferenceRoute,
+    ReferenceValidationStatus,
+    RouteCompletion,
+    has_publishable_reference_source,
+)
 
 
 class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -62,6 +69,8 @@ def _projection(value: RouteCompletion | None) -> dict[str, Any]:
 )
 class ReferenceRouteCompletionView(GameEndpoint):
     def get(self, request: Any, route_id: UUID) -> Response:
+        if not game_is_available():
+            return _private(Response({"detail": "The private game is unavailable."}, status=404))
         player = self.player_or_401(request)
         if isinstance(player, Response):
             return player
@@ -69,14 +78,23 @@ class ReferenceRouteCompletionView(GameEndpoint):
             ReferenceRoute.objects.filter(
                 pk=route_id,
                 active=True,
+                publication_status=ReferencePublicationStatus.APPROVED,
                 current_version__isnull=False,
                 current_version__active=True,
+                current_version__validation_status=ReferenceValidationStatus.VALID,
+                collection__active=True,
+                collection__permission_granted=True,
             )
-            .select_related("current_version")
-            .prefetch_related("stages__current_version")
+            .select_related("collection", "current_version", "current_version__source_import")
             .first()
         )
-        if route is None or route.current_version is None:
+        if (
+            route is None
+            or route.current_version is None
+            or not has_publishable_reference_source(
+                route.collection, route.current_version.source_import
+            )
+        ):
             return _private(Response({"detail": "Reference route not found."}, status=404))
         competition = player.active_competition
         player_result = RouteCompletion.objects.filter(
@@ -90,11 +108,20 @@ class ReferenceRouteCompletionView(GameEndpoint):
             else None
         )
         stages = []
-        for stage in route.stages.filter(active=True, current_version__isnull=False).order_by(
-            "route_number", "pk"
-        ):
+        stages_query = route.stages.filter(
+            active=True,
+            publication_status=ReferencePublicationStatus.APPROVED,
+            current_version__isnull=False,
+            current_version__active=True,
+            current_version__validation_status=ReferenceValidationStatus.VALID,
+            collection__active=True,
+            collection__permission_granted=True,
+        ).select_related("collection", "current_version", "current_version__source_import")
+        for stage in stages_query.order_by("route_number", "pk"):
             version = stage.current_version
-            if version is None:
+            if version is None or not has_publishable_reference_source(
+                stage.collection, version.source_import
+            ):
                 continue
             stages.append(
                 {
