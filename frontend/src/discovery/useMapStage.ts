@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import { MAP_PROVIDER } from '../mapProvider'
+import { setMapLibreWorker } from '../maplibreWorker'
 import { geometryBounds } from './geometry'
 import type { ViewState, SpatialRoute, ViewportResponse } from './types'
 import type { Copy } from '../i18n/types'
@@ -81,10 +82,8 @@ export function useMapStage({
     import('maplibre-gl')
       .then(async (maplibregl) => {
         if (disposed || !mapNode.current) return
-        const { default: workerUrl } =
-          await import('maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url')
         if (disposed || !mapNode.current) return
-        maplibregl.setWorkerUrl(workerUrl)
+        setMapLibreWorker(maplibregl.setWorkerUrl)
         let mapInstance: MapLibreMap
         try {
           mapInstance = new maplibregl.Map({
