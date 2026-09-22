@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from django.utils import timezone
 
@@ -46,7 +47,7 @@ def _geometry(value: Any) -> Any:
         return None
     try:
         from django.contrib.gis.geos import GEOSGeometry
-    except ImportError:
+    except (ImportError, ImproperlyConfigured, OSError):
         return None
     if isinstance(value, GEOSGeometry):
         return value.clone()

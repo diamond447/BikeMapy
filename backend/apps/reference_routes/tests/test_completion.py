@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import close_old_connections, connection
 from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
@@ -41,6 +41,19 @@ from apps.reference_routes.tasks import (
 )
 
 pytestmark = pytest.mark.django_db
+
+
+def _gis_runtime_available() -> bool:
+    try:
+        from django.contrib.gis.geos import GEOSGeometry  # noqa: F401
+    except (ImportError, ImproperlyConfigured, OSError):
+        return False
+    return True
+
+
+requires_gis_runtime = pytest.mark.skipif(
+    not _gis_runtime_available(), reason="requires the GeoDjango GEOS/GDAL runtime"
+)
 
 
 def _line_geometry(coordinates: list[list[float]]) -> object:
@@ -123,6 +136,7 @@ def _activity(
     )
 
 
+@requires_gis_runtime
 def test_player_completion_is_unique_and_monthly_distance_is_not_double_counted() -> None:
     version = _version()
     player = _player(1)
@@ -140,6 +154,7 @@ def test_player_completion_is_unique_and_monthly_distance_is_not_double_counted(
     )
 
 
+@requires_gis_runtime
 def test_disjoint_union_preserves_multiline_monthly_geometry_and_evidence_is_append_only() -> None:
     version = _version()
     player = _player(8)
@@ -167,6 +182,7 @@ def test_disjoint_union_preserves_multiline_monthly_geometry_and_evidence_is_app
     assert RouteCompletionEvidence.objects.count() == before * 2
 
 
+@requires_gis_runtime
 def test_competition_completion_is_union_and_reverses_after_activity_removal() -> None:
     version = _version()
     first = _player(2)
@@ -185,6 +201,7 @@ def test_competition_completion_is_union_and_reverses_after_activity_removal() -
     assert reversed_result.covered_length_meters == individual.covered_length_meters
 
 
+@requires_gis_runtime
 def test_completion_job_is_idempotent_and_exposes_fresh_state() -> None:
     version = _version()
     player = _player(4)
@@ -320,6 +337,7 @@ def test_concurrent_completion_workers_have_one_effective_claim() -> None:
     STRAVA_IDENTITY_GUARD_KEY="identity-key",
     REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True,
 )
+@requires_gis_runtime
 def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     version = _version()
     route = version.route
