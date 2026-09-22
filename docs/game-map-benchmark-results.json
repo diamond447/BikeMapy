@@ -1,0 +1,11 @@
+{
+  "status": "blocked",
+  "recorded_at": "2026-09-22",
+  "reason": "The local sandbox has no reachable PostGIS service at db.",
+  "command": "DJANGO_SETTINGS_MODULE=config.settings python scripts/benchmark_game_map.py --fixture-size 15000 --browser-url http://127.0.0.1:4173/game",
+  "runs": 30,
+  "budgets_ms": {
+    "api_p95": 250,
+    "browser_p95": 100
+  }
+}

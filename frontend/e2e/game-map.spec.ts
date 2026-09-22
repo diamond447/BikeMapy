@@ -15,6 +15,18 @@ const competition = {
     { player_id: 7, display_name: 'Rider', nickname: null, color: '#F4B942', is_owner: true },
   ],
 }
+const activity = {
+  id: '22222222-2222-4222-8222-222222222222',
+  player_id: 7,
+  calendar_date: '2026-09-21',
+  geometry: {
+    type: 'LineString',
+    coordinates: [
+      [14, 49],
+      [14.2, 49.2],
+    ],
+  },
+}
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/styles/liberty*', (route) =>
@@ -22,7 +34,9 @@ test.beforeEach(async ({ page }) => {
       json: {
         version: 8,
         sources: {},
-        layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#E8F0EC' } }],
+        layers: [
+          { id: 'background', type: 'background', paint: { 'background-color': '#E8F0EC' } },
+        ],
       },
     }),
   )
@@ -41,7 +55,7 @@ test.beforeEach(async ({ page }) => {
         status: 'loaded',
         competition_id: competition.id,
         members: competition.members,
-        activities: [],
+        activities: [activity],
         truncated: false,
         limits: { max_features: 1200, max_coordinates: 120000 },
       }),
@@ -50,23 +64,45 @@ test.beforeEach(async ({ page }) => {
 })
 
 test('game map keeps competition controls outside the public catalogue URL', async ({ page }) => {
+  const workerFailures: string[] = []
+  page.on('requestfailed', (request) => {
+    if (request.url().includes('worker')) workerFailures.push(request.url())
+  })
   await page.goto('/game')
   await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
+  await expect(page.locator('[data-map-source-loaded="true"]')).toBeVisible()
+  await expect(page.locator('.maplibregl-canvas')).toBeVisible()
   await expect(page.getByLabel('Competition', { exact: true })).toHaveValue(competition.id)
+  const trace = page.getByRole('button', { name: activity.calendar_date })
+  await trace.focus()
+  await page.keyboard.press('Enter')
+  await expect(
+    page.getByRole('complementary', { name: 'Trace detail' }).getByText(activity.calendar_date),
+  ).toBeVisible()
+  await expect(page.getByRole('button', { name: /close trace detail/i })).toBeFocused()
   await expect(page).not.toHaveURL(/member|competition=/)
+  expect(workerFailures).toEqual([])
 })
 
 test('game map controls remain usable on a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/game')
   await expect(page.getByRole('group', { name: 'Member traces' })).toBeVisible()
-  await expect(page.getByRole('checkbox')).toBeChecked()
+  const member = page.getByRole('checkbox')
+  await expect(member).toBeChecked()
+  await member.uncheck()
+  await page.reload()
+  await expect(page.getByRole('checkbox')).not.toBeChecked()
 })
 
-test('game map has no automated accessibility violations and honors reduced motion', async ({ page }) => {
+test('game map has no automated accessibility violations and honors reduced motion', async ({
+  page,
+}) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/game')
   const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze()
   expect(result.violations, result.violations.map((item) => item.id).join(', ')).toEqual([])
-  expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(true)
+  expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(
+    true,
+  )
 })

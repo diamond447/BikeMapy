@@ -972,7 +972,9 @@ h1 {
   border-radius: 999px;
   color: #10232a;
   cursor: pointer;
-  font: 700 0.7rem 'DM Mono', monospace;
+  font:
+    700 0.7rem 'DM Mono',
+    monospace;
   padding: 7px 10px;
 }
 
@@ -1006,7 +1008,9 @@ h1 {
 .game-member-list legend {
   color: rgba(16, 35, 42, 0.65);
   display: block;
-  font: 700 0.7rem 'DM Mono', monospace;
+  font:
+    700 0.7rem 'DM Mono',
+    monospace;
   letter-spacing: 0.06em;
   margin: 26px 0 8px;
   text-transform: uppercase;
@@ -1028,16 +1032,56 @@ h1 {
   padding: 0;
 }
 
-.game-member-list legend { margin: 0 0 10px; }
+.game-member-list legend {
+  margin: 0 0 10px;
+}
 .game-member-list label {
   align-items: center;
   display: flex;
   gap: 9px;
   padding: 8px 0;
 }
-.game-member-list input { accent-color: #2b8c76; }
-.member-swatch { border-radius: 50%; height: 10px; width: 10px; }
-.game-map-status { font-size: 0.85rem; margin-top: 28px; }
+.game-member-list input {
+  accent-color: #2b8c76;
+}
+.member-swatch {
+  border-radius: 50%;
+  height: 10px;
+  width: 10px;
+}
+.game-map-status {
+  font-size: 0.85rem;
+  margin-top: 28px;
+}
+.game-trace-list {
+  margin-top: 26px;
+  max-height: 260px;
+  overflow: auto;
+}
+.game-trace-list h2 {
+  font:
+    700 0.7rem 'DM Mono',
+    monospace;
+  letter-spacing: 0.06em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+.game-trace-list button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(16, 35, 42, 0.1);
+  color: #10232a;
+  cursor: pointer;
+  display: flex;
+  gap: 9px;
+  padding: 9px 3px;
+  text-align: left;
+  width: 100%;
+}
+.game-trace-list button[aria-pressed='true'] {
+  background: rgba(244, 185, 66, 0.18);
+}
 .game-map-state button {
   background: #2b8c76;
   border: 0;
@@ -1048,8 +1092,15 @@ h1 {
   padding: 10px 13px;
 }
 
-.game-map-stage { min-height: 0; position: relative; }
-.game-map-canvas { height: 100%; min-height: 520px; width: 100%; }
+.game-map-stage {
+  min-height: 0;
+  position: relative;
+}
+.game-map-canvas {
+  height: 100%;
+  min-height: 520px;
+  width: 100%;
+}
 .game-map-loading {
   background: #f8fbf8;
   border-radius: 999px;
@@ -1073,7 +1124,11 @@ h1 {
   position: absolute;
   right: 24px;
 }
-.game-trace-detail time { font: 700 1.05rem 'DM Mono', monospace; }
+.game-trace-detail time {
+  font:
+    700 1.05rem 'DM Mono',
+    monospace;
+}
 .game-trace-close {
   background: transparent;
   border: 0;
@@ -1093,19 +1148,49 @@ h1 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .game-shell *, .game-shell *::before, .game-shell *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+  .game-shell *,
+  .game-shell *::before,
+  .game-shell *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 @media (max-width: 700px) {
-  .game-topbar { min-height: 62px; padding: 10px 16px; }
-  .game-topbar .wordmark { position: static; }
-  .game-topbar .game-account-dock { margin-left: 0; }
-  .game-map-layout { display: flex; flex-direction: column-reverse; min-height: calc(100dvh - 62px); }
-  .game-map-stage { min-height: 62dvh; }
-  .game-map-canvas { min-height: 62dvh; }
-  .game-map-controls { border-right: 0; border-top: 1px solid rgba(16, 35, 42, 0.12); padding: 24px 18px 32px; }
-  .game-map-controls h1 { font-size: 2rem; }
-  .game-trace-detail { bottom: 16px; left: 16px; right: 16px; }
+  .game-topbar {
+    min-height: 62px;
+    padding: 10px 16px;
+  }
+  .game-topbar .wordmark {
+    position: static;
+  }
+  .game-topbar .game-account-dock {
+    margin-left: 0;
+  }
+  .game-map-layout {
+    display: flex;
+    flex-direction: column-reverse;
+    min-height: calc(100dvh - 62px);
+  }
+  .game-map-stage {
+    min-height: 62dvh;
+  }
+  .game-map-canvas {
+    min-height: 62dvh;
+  }
+  .game-map-controls {
+    border-right: 0;
+    border-top: 1px solid rgba(16, 35, 42, 0.12);
+    padding: 24px 18px 32px;
+  }
+  .game-map-controls h1 {
+    font-size: 2rem;
+  }
+  .game-trace-detail {
+    bottom: 16px;
+    left: 16px;
+    right: 16px;
+  }
 }
 
 /* Player account dock: a quiet atlas control with a single clear state signal. */

@@ -35,4 +35,5 @@ deployment benchmark; they are not inferred from a single local timing.
 
 The current lightweight sandbox has no reachable PostGIS service (`db`), so a
 deployment benchmark result must be collected in the CI or staging database
-before release.
+before release. The reproducible command and the blocked local result are
+recorded in [game-map-benchmark-results.json](game-map-benchmark-results.json).

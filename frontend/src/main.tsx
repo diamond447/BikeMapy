@@ -15,13 +15,13 @@ setupCloudflareWebAnalytics()
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-    {window.location.pathname === '/game' ? (
-      <Suspense fallback={null}>
-        <GameApp />
-      </Suspense>
-    ) : (
-      <App />
-    )}
+      {window.location.pathname === '/game' ? (
+        <Suspense fallback={null}>
+          <GameApp />
+        </Suspense>
+      ) : (
+        <App />
+      )}
     </QueryClientProvider>
   </StrictMode>,
 )

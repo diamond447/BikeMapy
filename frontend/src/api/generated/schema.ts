@@ -546,6 +546,9 @@ export interface components {
       limits: {
         [key: string]: number
       }
+      bounds: {
+        [key: string]: number
+      }
     }
     CompetitionMember: {
       player_id: number

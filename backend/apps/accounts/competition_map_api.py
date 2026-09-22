@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 from uuid import UUID
 
 from django.core.exceptions import ValidationError
 from django.db import connection
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
@@ -24,8 +25,11 @@ from .models import Competition, CompetitionMembership, ImportedActivity, Player
 from .services import game_is_available
 
 MAX_FEATURES = 1_200
+MAX_FEATURES_PER_MEMBER = 240
 MAX_COORDINATES = 120_000
 MAX_CANDIDATES_SQLITE = MAX_FEATURES * 8
+MAX_SOURCE_COORDINATES = 4_000
+MAX_RESPONSE_BYTES = 4_000_000
 MIN_ZOOM = 0
 MAX_ZOOM = 22
 
@@ -52,6 +56,7 @@ class CompetitionMapResponseSerializer(serializers.Serializer[dict[str, Any]]):
     activities = CompetitionMapActivitySerializer(many=True)
     truncated = serializers.BooleanField()
     limits = serializers.DictField(child=serializers.IntegerField())
+    bounds = serializers.DictField(child=serializers.FloatField())
 
 
 MAP_PARAMETERS = [
@@ -94,11 +99,14 @@ def _parse_viewport(request: Any) -> tuple[float, float, float, float, int]:
     north = _number(request.query_params.get("north"), "north")
     zoom = _zoom(request.query_params.get("zoom"))
     if not (-180 <= west < east <= 180):
-        raise ParseError("viewport longitude bounds are invalid")
+        if not (-180 <= west <= 180 and -180 <= east <= 180 and west != east):
+            raise ParseError("viewport longitude bounds are invalid")
     if not (-90 <= south < north <= 90):
         raise ParseError("viewport latitude bounds are invalid")
     # A global request at once would defeat the purpose of viewport bounds.
-    if east - west > 120 or north - south > 90:
+    longitude_width = (east - west) % 360 or 360
+    is_world = west == -180 and east == 180
+    if (longitude_width > 120 and not is_world) or north - south > 90:
         raise ParseError("viewport is too large")
     return west, south, east, north, zoom
 
@@ -118,6 +126,20 @@ def _coordinates(geometry: dict[str, Any]) -> list[tuple[float, float]]:
         if math.isfinite(longitude) and math.isfinite(latitude):
             result.append((longitude, latitude))
     return result
+
+
+def _line_parts(geometry: dict[str, Any]) -> list[list[tuple[float, float]]]:
+    if geometry.get("type") == "LineString":
+        points = _coordinates(geometry)
+        return [points] if len(points) >= 2 else []
+    if geometry.get("type") == "MultiLineString":
+        result = []
+        for raw in geometry.get("coordinates", []):
+            points = _coordinates({"coordinates": raw})
+            if len(points) >= 2:
+                result.append(points)
+        return result
+    return []
 
 
 def _line_simplify(
@@ -164,32 +186,121 @@ def _line_simplify(
     return [point for index, point in enumerate(points) if keep[index]]
 
 
-def _simplify(geometry: Any, zoom: int) -> dict[str, Any] | None:
+def _viewport_parts(
+    west: float, east: float, south: float, north: float
+) -> list[tuple[float, float, float, float]]:
+    if west <= east:
+        return [(west, south, east, north)]
+    return [(west, south, 180.0, north), (-180.0, south, east, north)]
+
+
+def _clip_points(
+    points: list[tuple[float, float]], bounds: tuple[float, float, float, float]
+) -> list[list[tuple[float, float]]]:
+    """Clip line segments to a bbox for the GIS-less quality suite."""
+    west, south, east, north = bounds
+    segments: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    for index in range(len(points) - 1):
+        start, end = points[index], points[index + 1]
+        x0, y0 = start
+        x1, y1 = end
+        dx, dy = x1 - x0, y1 - y0
+        parameters = [0.0, 1.0]
+        for p, q in ((-dx, x0 - west), (dx, east - x0), (-dy, y0 - south), (dy, north - y0)):
+            if p == 0:
+                if q < 0:
+                    parameters = []
+                    break
+                continue
+            ratio = q / p
+            if p < 0:
+                if ratio > parameters[1]:
+                    parameters = []
+                    break
+                parameters[0] = max(parameters[0], ratio)
+            else:
+                if ratio < parameters[0]:
+                    parameters = []
+                    break
+                parameters[1] = min(parameters[1], ratio)
+        if not parameters:
+            if len(current) > 1:
+                segments.append(current)
+            current = []
+            continue
+        first = (x0 + parameters[0] * dx, y0 + parameters[0] * dy)
+        last = (x0 + parameters[1] * dx, y0 + parameters[1] * dy)
+        if not current or current[-1] != first:
+            current.append(first)
+        current.append(last)
+    if len(current) > 1:
+        segments.append(current)
+    return segments
+
+
+def _simplify(
+    geometry: Any, zoom: int, bounds: tuple[float, float, float, float] | None = None
+) -> dict[str, Any] | None:
     payload = geometry_payload(geometry)
-    if not payload or payload.get("type") != "LineString":
+    if not payload or payload.get("type") not in {"LineString", "MultiLineString"}:
         return None
-    points = _coordinates(payload)
-    if len(points) < 2:
+    line_parts = _line_parts(payload)
+    if not line_parts:
         return None
     tolerance = max(0.5, 156543.03392804097 / (2**zoom) * 0.5)
     if connection.vendor == "postgresql":
         try:
             from django.contrib.gis.geos import GEOSGeometry
 
-            line = GEOSGeometry(payload, srid=4326)
+            line = GEOSGeometry(json.dumps(payload), srid=4326)
+            if bounds is not None:
+                west, south, east, north = bounds
+                envelope = GEOSGeometry(
+                    json.dumps(
+                        {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [west, south],
+                                    [east, south],
+                                    [east, north],
+                                    [west, north],
+                                    [west, south],
+                                ]
+                            ],
+                        }
+                    ),
+                    srid=4326,
+                )
+                line = line.intersection(envelope)
             line.transform(3857)
             line = line.simplify(tolerance, preserve_topology=True)
             line.transform(4326)
             payload = geometry_payload(line)
             if payload:
-                points = _coordinates(payload)
+                line_parts = _line_parts(payload)
         except (TypeError, ValueError, ValidationError):
             pass
     else:
-        points = _line_simplify(points, tolerance)
-    if len(points) < 2:
+        clipped_parts: list[list[tuple[float, float]]] = []
+        for points in line_parts:
+            clipped_parts.extend(_clip_points(points, bounds) if bounds is not None else [points])
+        if not clipped_parts:
+            return None
+        line_parts = [_line_simplify(points, tolerance) for points in clipped_parts]
+    line_parts = [points for points in line_parts if len(points) >= 2]
+    if not line_parts:
         return None
-    return {"type": "LineString", "coordinates": [[round(x, 6), round(y, 6)] for x, y in points]}
+    if len(line_parts) == 1:
+        return {
+            "type": "LineString",
+            "coordinates": [[round(x, 6), round(y, 6)] for x, y in line_parts[0]],
+        }
+    return {
+        "type": "MultiLineString",
+        "coordinates": [[[round(x, 6), round(y, 6)] for x, y in points] for points in line_parts],
+    }
 
 
 def _member_ids(request: Any, memberships: QuerySet[CompetitionMembership]) -> set[int]:
@@ -247,6 +358,7 @@ class CompetitionMapView(GameEndpoint):
         if competition is None:
             return _private(Response({"detail": "Competition not found."}, status=404))
         west, south, east, north, zoom = _parse_viewport(request)
+        viewport_parts = _viewport_parts(west, east, south, north)
         memberships = CompetitionMembership.objects.filter(competition=competition).select_related(
             "player"
         )
@@ -262,28 +374,100 @@ class CompetitionMapView(GameEndpoint):
             geometry__isnull=False,
         ).order_by("calendar_date", "pk")
         if connection.vendor == "postgresql":
+            from django.contrib.gis.db.models.functions import Intersection, NumPoints
             from django.contrib.gis.geos import Polygon
 
-            viewport = Polygon.from_bbox((west, south, east, north))
-            queryset = queryset.filter(geometry__intersects=viewport)
-            candidates = list(queryset[: MAX_FEATURES + 1])
+            envelopes = [Polygon.from_bbox(part) for part in viewport_parts]
+            spatial_filter = Q()
+            for envelope in envelopes:
+                spatial_filter |= Q(geometry__intersects=envelope)
+            clipped_candidates = (
+                queryset.filter(spatial_filter)
+                .only("pk", "player_id", "calendar_date")
+                .annotate(source_points=NumPoints("geometry"))
+                .filter(source_points__lte=MAX_SOURCE_COORDINATES)
+            )
+            candidate_count = clipped_candidates.count()
+            candidates: list[ImportedActivity] = []
+            for envelope in envelopes:
+                candidates.extend(
+                    clipped_candidates.filter(geometry__intersects=envelope).annotate(
+                        private_geometry=Intersection("geometry", envelope)
+                    )[: MAX_FEATURES + 1]
+                )
         else:
             candidates = list(queryset[:MAX_CANDIDATES_SQLITE])
+            candidate_count = len(candidates)
+        candidate_geometries: dict[UUID, tuple[ImportedActivity, list[Any]]] = {}
+        for candidate in candidates:
+            source_geometry = getattr(candidate, "private_geometry", None)
+            if source_geometry is None:
+                source_geometry = candidate.geometry
+            entry = candidate_geometries.setdefault(candidate.pk, (candidate, []))
+            entry[1].append(source_geometry)
         activities: list[dict[str, Any]] = []
+        member_feature_counts: dict[int, int] = {}
         coordinate_count = 0
-        truncated = len(candidates) > MAX_FEATURES
-        for activity in candidates:
+        truncated = candidate_count > MAX_FEATURES or len(candidate_geometries) > MAX_FEATURES
+        for activity, geometries in candidate_geometries.values():
             if len(activities) >= MAX_FEATURES:
                 truncated = True
                 break
-            payload = geometry_payload(activity.geometry)
-            points = _coordinates(payload or {})
-            if not points or not any(west <= x <= east and south <= y <= north for x, y in points):
+            if member_feature_counts.get(activity.player_id, 0) >= MAX_FEATURES_PER_MEMBER:
+                truncated = True
                 continue
-            geometry = _simplify(activity.geometry, zoom)
+            payloads = [
+                value
+                for value in (geometry_payload(item) for item in geometries)
+                if value is not None
+            ]
+            if not payloads:
+                continue
+            payload: dict[str, Any] = payloads[0]
+            if len(payloads) > 1:
+                payload = {
+                    "type": "MultiLineString",
+                    "coordinates": [
+                        part.get("coordinates", [])
+                        for part in payloads
+                        if part.get("type") == "LineString"
+                    ],
+                }
+            if connection.vendor != "postgresql" and len(viewport_parts) > 1:
+                clipped_parts = []
+                for part in _line_parts(payload):
+                    for viewport_part in viewport_parts:
+                        clipped_parts.extend(_clip_points(part, viewport_part))
+                payload = {
+                    "type": "MultiLineString",
+                    "coordinates": [part for part in clipped_parts if len(part) >= 2],
+                }
+            points = [point for part in _line_parts(payload or {}) for point in part]
+            if connection.vendor != "postgresql":
+                clipped = [
+                    segment
+                    for line_part in _line_parts(payload or {})
+                    for part in viewport_parts
+                    for segment in _clip_points(line_part, part)
+                ]
+                if not points or not clipped:
+                    continue
+                if len(points) > MAX_SOURCE_COORDINATES:
+                    truncated = True
+                    continue
+            geometry = _simplify(
+                payload,
+                zoom,
+                viewport_parts[0] if len(viewport_parts) == 1 else None,
+            )
             if geometry is None:
                 continue
-            coordinate_count += len(geometry["coordinates"])
+            geometry_coordinates = geometry.get("coordinates", [])
+            coordinate_count += (
+                sum(len(part) for part in geometry_coordinates)
+                if geometry.get("type") == "MultiLineString"
+                else len(geometry_coordinates)
+            )
             if coordinate_count > MAX_COORDINATES:
                 truncated = True
                 break
@@ -294,6 +478,9 @@ class CompetitionMapView(GameEndpoint):
                     "calendar_date": activity.calendar_date,
                     "geometry": geometry,
                 }
+            )
+            member_feature_counts[activity.player_id] = (
+                member_feature_counts.get(activity.player_id, 0) + 1
             )
         sync_statuses = set(
             player_row.strava_sync_state.status
@@ -306,15 +493,27 @@ class CompetitionMapView(GameEndpoint):
             state = "syncing"
         else:
             state = "loaded" if activities else "empty"
-        return _private(
-            Response(
-                {
-                    "status": state,
-                    "competition_id": competition.pk,
-                    "members": members,
-                    "activities": activities,
-                    "truncated": truncated,
-                    "limits": {"max_features": MAX_FEATURES, "max_coordinates": MAX_COORDINATES},
-                }
-            )
-        )
+        limits = {
+            "max_features": MAX_FEATURES,
+            "max_features_per_member": MAX_FEATURES_PER_MEMBER,
+            "max_coordinates": MAX_COORDINATES,
+            "max_source_coordinates": MAX_SOURCE_COORDINATES,
+            "max_response_bytes": MAX_RESPONSE_BYTES,
+        }
+        response_payload = {
+            "status": state,
+            "competition_id": competition.pk,
+            "members": members,
+            "activities": activities,
+            "truncated": truncated,
+            "limits": limits,
+            "bounds": {"west": west, "south": south, "east": east, "north": north},
+        }
+        while (
+            len(json.dumps(response_payload, default=str, separators=(",", ":")).encode())
+            > MAX_RESPONSE_BYTES
+            and activities
+        ):
+            activities.pop()
+            response_payload["truncated"] = True
+        return _private(Response(response_payload))

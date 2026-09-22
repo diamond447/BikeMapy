@@ -1,12 +1,18 @@
 /* eslint-disable react-refresh/only-export-components -- map fixture helper is unit-tested. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AttributionControl, Map as MapLibreMap, NavigationControl } from 'maplibre-gl'
+import {
+  AttributionControl,
+  Map as MapLibreMap,
+  NavigationControl,
+  setWorkerUrl,
+} from 'maplibre-gl'
 import type { GeoJSONSource } from 'maplibre-gl'
 
 import { apiClient, rememberCsrfToken } from './api/client'
 import type { components } from './api/generated/schema'
 import { GameAccount } from './components/GameAccount'
 import { MAP_PROVIDER } from './mapProvider'
+import { setMapLibreWorker } from './maplibreWorker'
 import { translations } from './i18n/translations'
 import type { Copy, Language } from './i18n/types'
 
@@ -50,7 +56,11 @@ export function featureCollection(
     features: activities.map((activity) => ({
       type: 'Feature' as const,
       id: activity.id,
-      properties: { player_id: activity.player_id, calendar_date: activity.calendar_date, color: colors.get(activity.player_id) ?? '#2B8C76' },
+      properties: {
+        player_id: activity.player_id,
+        calendar_date: activity.calendar_date,
+        color: colors.get(activity.player_id) ?? '#2B8C76',
+      },
       geometry: activity.geometry,
     })),
   }
@@ -68,14 +78,20 @@ export default function GameApp() {
   )
   const copy = translations[language]
   const [competitions, setCompetitions] = useState<Competition[]>([])
-  const [competitionId, setCompetitionId] = useState<string | undefined>(() => readPrivateState().competitionId)
-  const [visibleMembers, setVisibleMembers] = useState<number[] | null>(() => readPrivateState().members ?? null)
+  const [competitionId, setCompetitionId] = useState<string | undefined>(
+    () => readPrivateState().competitionId,
+  )
+  const [visibleMembers, setVisibleMembers] = useState<number[] | null>(
+    () => readPrivateState().members ?? null,
+  )
   const [mapData, setMapData] = useState<MapResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [mapLoading, setMapLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [signedOut, setSignedOut] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const [mapReady, setMapReady] = useState(false)
+  const traceCloseRef = useRef<HTMLButtonElement>(null)
   const mapNode = useRef<HTMLDivElement>(null)
   const map = useRef<MapLibreMap | null>(null)
   const bounds = useRef({ west: 14, south: 48.5, east: 19, north: 51.2, zoom: 7.5 })
@@ -118,9 +134,10 @@ export default function GameApp() {
     const current = bounds.current
     const selectedCompetition = competitions.find((competition) => competition.id === competitionId)
     const availableMembers = selectedCompetition?.members.map((member) => member.player_id) ?? []
-    const selected = visibleMembers === null
-      ? availableMembers
-      : visibleMembers.filter((id) => availableMembers.includes(id))
+    const selected =
+      visibleMembers === null
+        ? availableMembers
+        : visibleMembers.filter((id) => availableMembers.includes(id))
     try {
       const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/map/', {
         params: {
@@ -145,9 +162,9 @@ export default function GameApp() {
       setMapData(result.data)
       const source = map.current?.getSource('private-traces') as GeoJSONSource | undefined
       const colors = new globalThis.Map(
-        competitions.find((competition) => competition.id === competitionId)?.members.map(
-          (member) => [member.player_id, member.color] as [number, string],
-        ),
+        competitions
+          .find((competition) => competition.id === competitionId)
+          ?.members.map((member) => [member.player_id, member.color] as [number, string]),
       )
       source?.setData(featureCollection(result.data.activities, colors))
     } catch {
@@ -163,6 +180,7 @@ export default function GameApp() {
 
   useEffect(() => {
     if (!mapNode.current || map.current) return
+    setMapLibreWorker(setWorkerUrl)
     const instance = new MapLibreMap({
       container: mapNode.current,
       style: MAP_PROVIDER.style,
@@ -197,6 +215,7 @@ export default function GameApp() {
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       })
+      setMapReady(true)
       instance.on('click', 'private-traces', (event) => {
         const id = event.features?.[0]?.id
         if (id !== undefined) setSelectedTraceId(String(id))
@@ -225,6 +244,10 @@ export default function GameApp() {
     writePrivateState(competitionId, visibleMembers ?? undefined)
   }, [competitionId, visibleMembers])
 
+  useEffect(() => {
+    if (selectedTraceId) traceCloseRef.current?.focus()
+  }, [selectedTraceId])
+
   const selectedCompetition = useMemo(
     () => competitions.find((competition) => competition.id === competitionId),
     [competitionId, competitions],
@@ -232,18 +255,29 @@ export default function GameApp() {
   const selectedTrace = mapData?.activities.find((activity) => activity.id === selectedTraceId)
   const toggleMember = (id: number) =>
     setVisibleMembers((current) => {
-      const members = current ?? selectedCompetition?.members.map((member) => member.player_id) ?? []
-      return members.includes(id)
-        ? members.filter((item) => item !== id)
-        : [...members, id]
+      const members =
+        current ?? selectedCompetition?.members.map((member) => member.player_id) ?? []
+      return members.includes(id) ? members.filter((item) => item !== id) : [...members, id]
     })
 
   return (
     <main className="game-shell">
       <header className="game-topbar">
-        <a className="wordmark" href="/" aria-label={copy.home}><span className="wordmark-mark" aria-hidden="true">↗</span><span>BikeMapy</span></a>
+        <a className="wordmark" href="/" aria-label={copy.home}>
+          <span className="wordmark-mark" aria-hidden="true">
+            ↗
+          </span>
+          <span>BikeMapy</span>
+        </a>
         <div className="game-topbar-actions">
-          <button type="button" className="language-toggle" onClick={() => setLanguage((current) => (current === 'en' ? 'cs' : 'en'))} aria-label={copy.changeLanguage}>{language.toUpperCase()}</button>
+          <button
+            type="button"
+            className="language-toggle"
+            onClick={() => setLanguage((current) => (current === 'en' ? 'cs' : 'en'))}
+            aria-label={copy.changeLanguage}
+          >
+            {language.toUpperCase()}
+          </button>
           <GameAccount copy={copy} />
         </div>
       </header>
@@ -252,24 +286,122 @@ export default function GameApp() {
           <span className="game-account-kicker">{copy.gameMapKicker}</span>
           <h1 id="game-map-title">{copy.gameMapTitle}</h1>
           <p>{copy.gameMapDescription}</p>
-          {signedOut ? <div className="game-map-state"><strong>{copy.gameMapSignedOut}</strong><p>{copy.gameMapSignedOutDescription}</p></div> : loading ? <p role="status">{copy.gameMapLoading}</p> : error ? <div className="game-map-state"><p role="alert">{error}</p><button type="button" onClick={() => void loadCompetitions()}>{copy.gameMapRetry}</button></div> : competitions.length === 0 ? <p>{copy.gameMapNoCompetitions}</p> : <>
-            <label className="game-map-label" htmlFor="game-competition">{copy.gameMapCompetition}</label>
-            <select id="game-competition" value={competitionId ?? ''} onChange={(event) => setCompetitionId(event.target.value)}>
-              {competitions.map((competition) => <option value={competition.id} key={competition.id}>{competition.name}</option>)}
-            </select>
-            <fieldset className="game-member-list"><legend>{copy.gameMapMembers}</legend>{selectedCompetition?.members.map((member) => <label key={member.player_id}><input type="checkbox" checked={visibleMembers === null || visibleMembers.includes(member.player_id)} onChange={() => toggleMember(member.player_id)} /><span className="member-swatch" style={{ backgroundColor: member.color }} aria-hidden="true" />{member.nickname || member.display_name}</label>)}</fieldset>
-            {mapData && <p className="game-map-status" role="status">{statusMessage(mapData.status, copy)}{mapData.truncated ? ` ${copy.gameMapTruncated}` : ''}</p>}
-          </>}
+          {signedOut ? (
+            <div className="game-map-state">
+              <strong>{copy.gameMapSignedOut}</strong>
+              <p>{copy.gameMapSignedOutDescription}</p>
+            </div>
+          ) : loading ? (
+            <p role="status">{copy.gameMapLoading}</p>
+          ) : error ? (
+            <div className="game-map-state">
+              <p role="alert">{error}</p>
+              <button type="button" onClick={() => void loadCompetitions()}>
+                {copy.gameMapRetry}
+              </button>
+            </div>
+          ) : competitions.length === 0 ? (
+            <p>{copy.gameMapNoCompetitions}</p>
+          ) : (
+            <>
+              <label className="game-map-label" htmlFor="game-competition">
+                {copy.gameMapCompetition}
+              </label>
+              <select
+                id="game-competition"
+                value={competitionId ?? ''}
+                onChange={(event) => setCompetitionId(event.target.value)}
+              >
+                {competitions.map((competition) => (
+                  <option value={competition.id} key={competition.id}>
+                    {competition.name}
+                  </option>
+                ))}
+              </select>
+              <fieldset className="game-member-list">
+                <legend>{copy.gameMapMembers}</legend>
+                {selectedCompetition?.members.map((member) => (
+                  <label key={member.player_id}>
+                    <input
+                      type="checkbox"
+                      checked={visibleMembers === null || visibleMembers.includes(member.player_id)}
+                      onChange={() => toggleMember(member.player_id)}
+                    />
+                    <span
+                      className="member-swatch"
+                      style={{ backgroundColor: member.color }}
+                      aria-hidden="true"
+                    />
+                    {member.nickname || member.display_name}
+                  </label>
+                ))}
+              </fieldset>
+              {mapData && (
+                <p className="game-map-status" role="status">
+                  {statusMessage(mapData.status, copy)}
+                  {mapData.truncated ? ` ${copy.gameMapTruncated}` : ''}
+                </p>
+              )}
+              {mapData && mapData.activities.length > 0 && (
+                <div className="game-trace-list" aria-label={copy.gameMapTraceList}>
+                  <h2>{copy.gameMapTraceList}</h2>
+                  {mapData.activities.map((activity) => (
+                    <button
+                      type="button"
+                      key={activity.id}
+                      aria-pressed={selectedTraceId === activity.id}
+                      onClick={() => setSelectedTraceId(activity.id)}
+                    >
+                      <span
+                        className="member-swatch"
+                        style={{
+                          backgroundColor:
+                            selectedCompetition?.members.find(
+                              (member) => member.player_id === activity.player_id,
+                            )?.color ?? '#2B8C76',
+                        }}
+                        aria-hidden="true"
+                      />
+                      <span>{activity.calendar_date ?? copy.gameMapDateUnknown}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </aside>
-        <section className="game-map-stage" aria-label={copy.gameMapInteractive}>
-          <div ref={mapNode} className="game-map-canvas" role="application" aria-label={copy.gameMapInteractive} />
-          {mapLoading && <span className="game-map-loading" role="status">{copy.gameMapLoading}</span>}
+        <section
+          className="game-map-stage"
+          aria-label={copy.gameMapInteractive}
+          data-map-source-loaded={mapReady ? 'true' : 'false'}
+        >
+          <div
+            ref={mapNode}
+            className="game-map-canvas"
+            role="application"
+            aria-label={copy.gameMapInteractive}
+          />
+          {mapLoading && (
+            <span className="game-map-loading" role="status">
+              {copy.gameMapLoading}
+            </span>
+          )}
           {selectedTrace && (
             <aside className="game-trace-detail" aria-label={copy.gameMapTraceDetail}>
-              <button type="button" className="game-trace-close" onClick={() => setSelectedTraceId(null)} aria-label={copy.gameMapCloseTrace}>×</button>
+              <button
+                ref={traceCloseRef}
+                type="button"
+                className="game-trace-close"
+                onClick={() => setSelectedTraceId(null)}
+                aria-label={copy.gameMapCloseTrace}
+              >
+                ×
+              </button>
               <span className="game-account-kicker">{copy.gameMapTraceDetail}</span>
               <strong>{copy.gameMapRideDate}</strong>
-              <time dateTime={selectedTrace.calendar_date ?? undefined}>{selectedTrace.calendar_date ?? copy.gameMapDateUnknown}</time>
+              <time dateTime={selectedTrace.calendar_date ?? undefined}>
+                {selectedTrace.calendar_date ?? copy.gameMapDateUnknown}
+              </time>
             </aside>
           )}
         </section>

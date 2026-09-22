@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import Client, override_settings
 from django.urls import reverse
 
@@ -48,6 +49,14 @@ def viewport(**overrides: str) -> dict[str, str]:
     }
 
 
+def line_geometry(coordinates: list[tuple[float, float]]) -> object:
+    if connection.vendor == "postgresql":
+        from django.contrib.gis.geos import LineString
+
+        return LineString(*coordinates, srid=4326)
+    return {"type": "LineString", "coordinates": coordinates}
+
+
 @override_settings(**SETTINGS)
 def test_map_requires_membership_and_does_not_enumerate_competitions() -> None:
     owner = make_player(101)
@@ -74,7 +83,7 @@ def test_map_is_bounded_and_exposes_only_date_geometry_and_member_color() -> Non
         title="Private title must not escape",
         started_at="2026-09-20T12:30:00Z",
         calendar_date="2026-09-20",
-        geometry={"type": "LineString", "coordinates": [[14.1, 49.1], [14.2, 49.2], [14.3, 49.3]]},
+        geometry=line_geometry([(13.5, 49.1), (15.5, 49.3)]),
     )
     ImportedActivity.objects.create(
         player=member,
@@ -96,6 +105,11 @@ def test_map_is_bounded_and_exposes_only_date_geometry_and_member_color() -> Non
     assert activity["calendar_date"] == "2026-09-20"
     assert "title" not in activity and "started_at" not in activity
     assert len(activity["geometry"]["coordinates"]) <= 3
+    assert payload["bounds"] == {"west": 14.0, "south": 49.0, "east": 15.0, "north": 50.0}
+    assert all(
+        14 <= point[0] <= 15 and 49 <= point[1] <= 50
+        for point in activity["geometry"]["coordinates"]
+    )
 
 
 @override_settings(**SETTINGS)
@@ -104,7 +118,7 @@ def test_map_rejects_unbounded_viewports_and_supports_member_filter() -> None:
     member = make_player(106)
     competition, _ = create_competition(owner, name="Filters")
     join_competition(member, invite_code=competition.invite_code)
-    owner_activity = {"type": "LineString", "coordinates": [[14.1, 49.1], [14.2, 49.2]]}
+    owner_activity = line_geometry([(14.1, 49.1), (14.2, 49.2)])
     ImportedActivity.objects.create(
         player=owner, provider_activity_id="owner", geometry=owner_activity
     )
@@ -118,6 +132,32 @@ def test_map_rejects_unbounded_viewports_and_supports_member_filter() -> None:
     assert response.status_code == 200
     assert {activity["player_id"] for activity in response.json()["activities"]} == {owner.pk}
     assert client.get(url, viewport(member="999999")).status_code == 400
+
+
+@override_settings(**SETTINGS)
+def test_map_supports_antimeridian_viewports_without_leaking_coordinates() -> None:
+    owner = make_player(108)
+    competition, _ = create_competition(owner, name="Dateline")
+    ImportedActivity.objects.create(
+        player=owner,
+        provider_activity_id="dateline",
+        geometry=line_geometry([(179.5, 0.0), (-179.5, 0.0)]),
+    )
+    response = session_client(owner).get(
+        reverse("game-competition-map", args=[competition.pk]),
+        {"west": "179", "south": "-1", "east": "-179", "north": "1", "zoom": "8"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["bounds"] == {"west": 179.0, "south": -1.0, "east": -179.0, "north": 1.0}
+    assert payload["activities"]
+    coordinates = payload["activities"][0]["geometry"]["coordinates"]
+    flattened = (
+        [point for part in coordinates for point in part]
+        if isinstance(coordinates[0][0], list)
+        else coordinates
+    )
+    assert all((179 <= point[0] <= 180) or (-180 <= point[0] <= -179) for point in flattened)
 
 
 @override_settings(**SETTINGS)

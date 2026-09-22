@@ -10,7 +10,13 @@ describe('private game map presentation', () => {
           id: 'activity-1',
           player_id: 7,
           calendar_date: '2026-09-21',
-          geometry: { type: 'LineString', coordinates: [[14, 49], [14.1, 49.1]] },
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [14, 49],
+              [14.1, 49.1],
+            ],
+          },
         },
       ],
       new Map([[7, '#F4B942']]),
