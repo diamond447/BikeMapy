@@ -16,7 +16,6 @@ from decimal import Decimal
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from django.contrib.gis.geos import GEOSException, LineString
 from django.db import DatabaseError, InterfaceError, OperationalError, connection, transaction
 from psycopg.errors import QueryCanceled
 
@@ -97,6 +96,11 @@ def _wkt(trace: CaptureTrace) -> str:
 
 
 def _validate_input(traces: tuple[CaptureTrace, ...]) -> int:
+    # Keep module importable for the lightweight SQLite suite, whose runners
+    # intentionally do not install the optional GDAL runtime. Geometry
+    # validation still uses Django's GEOS wrapper when this harness executes.
+    from django.contrib.gis.geos import GEOSException, LineString
+
     if len(traces) > MAX_TRACES:
         raise CaptureValidationError(f"trace limit exceeded: {len(traces)} > {MAX_TRACES}")
     if len({trace.trace_id for trace in traces}) != len(traces):
