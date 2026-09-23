@@ -1,7 +1,7 @@
 {
   "issue": 55,
   "kind": "capture-topology-validation-benchmark",
-  "recorded_at": "2026-09-23T00:00:00Z",
+  "recorded_at": "2026-09-24T00:00:00Z",
   "command": "POSTGRES_HOST=127.0.0.1 RUN_CAPTURE_VALIDATION_BENCHMARK=1 uv run pytest -q backend/apps/accounts/tests/test_capture_validation.py -m benchmark -s --no-cov",
   "database": {
     "postgresql": "17",
@@ -10,25 +10,26 @@
     "projection": "EPSG:6933"
   },
   "fixture": {
-    "traces": 400,
-    "faces": 100,
+    "traces": 240,
+    "faces": 60,
     "owners": 1,
     "delivery_order": "deterministically sorted",
     "near_trace_bound_ratio": 0.8
   },
   "result": {
-    "elapsed_seconds": [3.678, 4.641, 4.265],
+    "elapsed_seconds": [3.379, 2.887, 3.462],
     "budget_seconds": 5.0,
     "passed": true,
     "accuracy": {
-      "bounded_face_count": 100,
+      "bounded_face_count": 60,
       "geodesic_area": "ST_Area(geometry::geography)",
       "sliver_threshold_m2": 1.0,
       "joining_tolerance_m": 50.0,
       "joining_distance_method": "ST_DWithin(geography, geography, 50)",
       "boundary_coverage_tolerance_m": 0.01,
-      "max_traces": 500,
-      "max_faces": 500,
+      "max_traces": 300,
+      "max_coordinates": 30000,
+      "max_faces": 200,
       "statement_timeout_ms": 5000,
       "max_result_bytes": 8000000
     }

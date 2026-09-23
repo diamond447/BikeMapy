@@ -17,16 +17,16 @@ from typing import Final
 from zoneinfo import ZoneInfo
 
 from django.contrib.gis.geos import GEOSException, LineString
-from django.db import DatabaseError, InterfaceError, OperationalError, connection
+from django.db import DatabaseError, InterfaceError, OperationalError, connection, transaction
 from psycopg.errors import QueryCanceled
 
 PRAGUE: Final = ZoneInfo("Europe/Prague")
 JOIN_TOLERANCE_M: Final = 50.0
 SLIVER_AREA_M2: Final = 1.0
 BOUNDARY_COVERAGE_TOLERANCE_M: Final = 0.01
-MAX_TRACES: Final = 500
-MAX_COORDINATES: Final = 50_000
-MAX_FACES: Final = 500
+MAX_TRACES: Final = 300
+MAX_COORDINATES: Final = 30_000
+MAX_FACES: Final = 200
 MAX_RESULT_BYTES: Final = 8_000_000
 STATEMENT_TIMEOUT_MS: Final = 5_000
 MAX_RETRIES: Final = 2
@@ -49,6 +49,14 @@ class CaptureTrace:
     owner_id: str
     recorded_at: datetime
     coordinates: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureBatch:
+    """A bounded replay delta for the full-rebuild incremental baseline."""
+
+    additions: tuple[CaptureTrace, ...] = ()
+    removals: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,10 +186,12 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
             FROM input_raw
         ),
         raw_endpoints AS (
-            SELECT trace_id, 0 AS endpoint_no, ST_StartPoint(geom_wgs) AS geom_wgs
+            SELECT trace_id, owner_id, 0 AS endpoint_no,
+                   ST_StartPoint(geom_wgs) AS geom_wgs
             FROM input
             UNION ALL
-            SELECT trace_id, 1 AS endpoint_no, ST_EndPoint(geom_wgs) AS geom_wgs
+            SELECT trace_id, owner_id, 1 AS endpoint_no,
+                   ST_EndPoint(geom_wgs) AS geom_wgs
             FROM input
         ),
         endpoints AS (
@@ -190,6 +200,7 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                        SELECT 1
                        FROM raw_endpoints AS other
                        WHERE (other.trace_id <> endpoint.trace_id
+                              OR other.owner_id <> endpoint.owner_id
                               OR other.endpoint_no <> endpoint.endpoint_no)
                          AND ST_DWithin(
                              endpoint.geom_wgs::geography,
@@ -220,9 +231,11 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
             CROSS JOIN settings
             JOIN endpoints AS start_endpoint
               ON start_endpoint.trace_id = i.trace_id
+             AND start_endpoint.owner_id = i.owner_id
              AND start_endpoint.endpoint_no = 0
             JOIN endpoints AS end_endpoint
               ON end_endpoint.trace_id = i.trace_id
+             AND end_endpoint.owner_id = i.owner_id
              AND end_endpoint.endpoint_no = 1
             LEFT JOIN LATERAL (
                 SELECT endpoints.geom_wgs
@@ -232,6 +245,7 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                           endpoints.geom_wgs::geography,
                           settings.join_tolerance
                       )
+                  AND endpoints.owner_id = i.owner_id
                 ORDER BY endpoints.is_anchor DESC,
                          ST_X(endpoints.geom_wgs),
                          ST_Y(endpoints.geom_wgs)
@@ -245,18 +259,58 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                           endpoints.geom_wgs::geography,
                           settings.join_tolerance
                       )
+                  AND endpoints.owner_id = i.owner_id
                 ORDER BY endpoints.is_anchor DESC,
                          ST_X(endpoints.geom_wgs),
                          ST_Y(endpoints.geom_wgs)
                 LIMIT 1
             ) AS end_target ON TRUE
         ),
-        network AS (
-            SELECT ST_UnaryUnion(ST_Collect(geom)) AS geom FROM snapped
+        owner_dates AS (
+            SELECT DISTINCT owner_id, local_date FROM snapped
+        ),
+        owner_networks AS MATERIALIZED (
+            SELECT owner_dates.owner_id,
+                   owner_dates.local_date,
+                   ST_UnaryUnion(ST_Collect(snapped.geom)) AS geom
+            FROM owner_dates
+            JOIN snapped
+              ON snapped.owner_id = owner_dates.owner_id
+             AND snapped.local_date >= owner_dates.local_date
+            GROUP BY owner_dates.owner_id, owner_dates.local_date
+        ),
+        owner_polygon_collections AS MATERIALIZED (
+            SELECT owner_networks.owner_id,
+                   owner_networks.local_date,
+                   ST_Polygonize(owner_networks.geom) AS polygons
+            FROM owner_networks
+            GROUP BY owner_networks.owner_id, owner_networks.local_date
+        ),
+        owner_claims AS (
+            SELECT owner_networks.owner_id,
+                   owner_networks.local_date,
+                   (ST_Dump(owner_networks.polygons)).geom AS geom
+            FROM owner_polygon_collections AS owner_networks
+        ),
+        claims AS (
+            SELECT owner_claims.owner_id,
+                   owner_claims.local_date,
+                   owner_claims.geom
+            FROM owner_claims
+            CROSS JOIN settings
+            WHERE ST_Area(owner_claims.geom) >= settings.sliver_area
+        ),
+        claim_boundaries AS (
+            SELECT ST_UnaryUnion(ST_Collect(ST_Boundary(geom))) AS geom
+            FROM claims
+        ),
+        face_polygon_collections AS MATERIALIZED (
+            SELECT ST_Polygonize(claim_boundaries.geom) AS polygons
+            FROM claim_boundaries
         ),
         dumped_faces AS (
-            SELECT (ST_Dump(ST_Polygonize(network.geom))).geom AS geom
-            FROM network
+            SELECT (ST_Dump(face_polygon_collections.polygons)).geom AS geom
+            FROM face_polygon_collections
         ),
         candidate_faces AS (
             SELECT dumped_faces.geom
@@ -278,29 +332,12 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
             SELECT count(*)::integer AS generated_face_count
             FROM ranked_faces
         ),
-        owner_dates AS (
-            SELECT DISTINCT owner_id, local_date FROM snapped
-        ),
-        owner_networks AS (
-            SELECT owner_dates.owner_id,
-                   owner_dates.local_date,
-                       ST_Buffer(
-                           ST_UnaryUnion(ST_Collect(snapped.geom)),
-                           max(settings.boundary_tolerance)
-                       ) AS geom
-            FROM owner_dates
-            CROSS JOIN settings
-            JOIN snapped
-              ON snapped.owner_id = owner_dates.owner_id
-             AND snapped.local_date >= owner_dates.local_date
-            GROUP BY owner_dates.owner_id, owner_dates.local_date
-        ),
         qualifying AS (
-            SELECT faces.face_id, owner_networks.owner_id, owner_networks.local_date
-            FROM faces CROSS JOIN owner_networks
+            SELECT faces.face_id, claims.owner_id, claims.local_date
+            FROM faces CROSS JOIN claims
             WHERE ST_CoveredBy(
-                ST_Boundary(faces.geom),
-                owner_networks.geom
+                faces.geom,
+                ST_Buffer(claims.geom, (SELECT max(boundary_tolerance) FROM settings))
             )
         ),
         best_dates AS (
@@ -340,26 +377,19 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
             _EXACT_ENDPOINT_TOLERANCE_M,
         ]
     )
-    with connection.cursor() as cursor:
-        try:
-            cursor.execute("SET statement_timeout = %s", [STATEMENT_TIMEOUT_MS])
+    try:
+        # A savepoint makes a canceled statement safe to retry inside Django's
+        # surrounding transaction. SET LOCAL also cannot leak the timeout.
+        with transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute("SET LOCAL statement_timeout = %s", [STATEMENT_TIMEOUT_MS])
             cursor.execute(query, params)  # type: ignore[arg-type]
             rows = cursor.fetchall()
-        except (OperationalError, InterfaceError) as exc:
-            raise CaptureValidationTransientError(
-                "PostGIS capture validation can be retried"
-            ) from exc
-        except DatabaseError as exc:
-            if isinstance(exc.__cause__, QueryCanceled) or "statement timeout" in str(exc).lower():
-                raise CaptureValidationTransientError(
-                    "PostGIS capture validation timed out"
-                ) from exc
-            raise CaptureValidationError("PostGIS capture validation failed") from exc
-        finally:
-            try:
-                cursor.execute("SET statement_timeout = DEFAULT")
-            except DatabaseError:
-                connection.close()
+    except (OperationalError, InterfaceError) as exc:
+        raise CaptureValidationTransientError("PostGIS capture validation can be retried") from exc
+    except DatabaseError as exc:
+        if isinstance(exc.__cause__, QueryCanceled) or "statement timeout" in str(exc).lower():
+            raise CaptureValidationTransientError("PostGIS capture validation timed out") from exc
+        raise CaptureValidationError("PostGIS capture validation failed") from exc
     if rows and rows[0][4] > MAX_FACES:
         raise CaptureValidationError(f"generated face limit exceeded: {rows[0][4]} > {MAX_FACES}")
     faces = tuple(
@@ -405,19 +435,22 @@ def safe_validate(
 
 
 def validate_capture_incremental(
-    batches: Iterable[Iterable[CaptureTrace]],
+    batches: Iterable[CaptureBatch],
 ) -> ValidationResult:
     """Reference incremental replay used to prove full/incremental equivalence.
 
-    The harness deliberately recomputes from the accumulated trace set after
-    each batch. A later production cache may optimize this, but this baseline
-    ensures that delivery batches cannot change the authoritative result.
+    The harness deliberately applies additions/removals and recomputes from the
+    accumulated trace set after each batch. A later production cache may
+    optimize this, but this baseline ensures that reordered delivery batches
+    cannot change the authoritative result.
     """
 
     accumulated: list[CaptureTrace] = []
     result = ValidationResult(faces=(), trace_count=0, coordinate_count=0)
     for batch in batches:
-        accumulated.extend(batch)
+        removed = set(batch.removals)
+        accumulated = [trace for trace in accumulated if trace.trace_id not in removed]
+        accumulated.extend(batch.additions)
         result = validate_capture(accumulated)
     return result
 

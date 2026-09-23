@@ -17,21 +17,27 @@ Unbounded exterior geometry is not emitted; faces smaller than 1 m² are
 discarded. Face area is measured after transforming the face back to WGS84 with
 `ST_Area(geography)`, so the reported value is geodesic rather than degree-based.
 
-An owner/date candidate is complete only when its cumulative (that date and
-newer) network covers the entire face boundary. The greatest date that remains
-complete is the effective claim date. The latest date wins between owners, and
-owners on the same date are retained in sorted order. This models partial old
-boundaries, newer complete retakes, bitten-apple chronology, same-day shared
-ownership, nested loops, intersections, and disconnected traces without
-introducing a persistent territory model.
+Each owner/date candidate is polygonized independently from that owner's
+cumulative (that date and newer) network. Those claim polygons are then
+overlaid and noded into atomic faces. A claim covers a face only when the whole
+face is within that owner's claim polygon; the greatest complete candidate date
+is its effective date. The latest date wins between owners, and owners on the
+same date are retained in sorted order. This produces truthful A-only,
+overlap, and B-only areas, preserves an older owner's annulus around a newer
+inner claim, and requires a fully newer boundary for a retake.
 
 The harness rejects invalid coordinates, invalid lines, duplicate IDs, and
-inputs over 500 traces or 50,000 coordinates before issuing SQL. It bounds
-generated faces at 500, caps the serialized face response at 8 MB, and applies
+inputs over 300 traces or 30,000 coordinates before issuing SQL. It bounds
+generated faces at 200, caps the serialized face response at 8 MB, and applies
 a 5,000 ms PostgreSQL statement timeout. The `safe_validate` wrapper retries
 only transient database/timeout failures (at most twice); permanent validation
 errors return immediately. Both preserve the last valid result on failure.
 Sorting and stable face ordering make delivery order irrelevant.
+
+The incremental fixture intentionally models the production-safe fallback: each
+batch queues a bounded full rebuild from the accumulated trace set. It does not
+claim an independent mutable topology cache. Additions, removals, and reordered
+batches therefore compare directly with one-shot rebuild output.
 
 ## Alternatives rejected
 
@@ -59,9 +65,9 @@ POSTGRES_HOST=127.0.0.1 RUN_CAPTURE_VALIDATION_BENCHMARK=1 \
 ```
 
 The checked-in [benchmark evidence](evidence/issue-55-capture-validation-20260923.json)
-records repeated measured results and database versions. The benchmark uses 400
-traces (80% of the 500-trace bound) forming 100 disconnected faces and completed
-in 3.678, 4.641, and 4.265 seconds in the recorded runs, each under the 5
+records repeated measured results and database versions. The benchmark uses 240
+traces (80% of the 300-trace bound) forming 60 disconnected faces and completed
+in 3.379, 2.887, and 3.462 seconds in the recorded runs, each under the 5
 second harness budget. The fixture suite also checks
 50 m noise joining, Prague chronology, intersections, nested loops,
 disconnected traces, overlapping claims, same-day ties, bitten-apple and

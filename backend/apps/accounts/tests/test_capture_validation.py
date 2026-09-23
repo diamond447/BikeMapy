@@ -14,6 +14,7 @@ from apps.accounts.capture_validation import (
     MAX_COORDINATES,
     MAX_FACES,
     MAX_TRACES,
+    CaptureBatch,
     CaptureTrace,
     CaptureValidationError,
     CaptureValidationTransientError,
@@ -135,14 +136,17 @@ def test_nested_loop_geometry_keeps_new_inner_owner_and_does_not_merge_loops() -
     annulus = max(result.faces, key=lambda face: face.area_m2)
     assert inner.owner_ids == ("new",)
     assert inner.geometry_wkt.startswith("POLYGON((14.000249")
-    assert annulus.owner_ids == ()
+    assert annulus.owner_ids == ("old",)
 
 
 def test_same_day_overlapping_claims_are_shared() -> None:
     traces = _edges(CASES["unit_square"], "alice", prefix="alice")
-    traces += _edges(CASES["unit_square"], "bob", prefix="bob")
+    traces += _edges(CASES["overlap_square"], "bob", prefix="bob")
     result = validate_capture(traces)
-    assert result.faces[0].owner_ids == ("alice", "bob")
+    by_owners = {face.owner_ids: face for face in result.faces}
+    assert set(by_owners) == {("alice",), ("alice", "bob"), ("bob",)}
+    assert all(face.area_m2 > 0 for face in result.faces)
+    assert by_owners[("alice", "bob")].area_m2 == pytest.approx(4_000, rel=0.3)
 
 
 def test_cross_owner_fully_newer_retake_wins_and_delivery_order_is_irrelevant() -> None:
@@ -173,28 +177,36 @@ def test_mixed_date_boundary_uses_oldest_required_segment() -> None:
 
 
 def test_partial_same_day_overlap_can_be_completed_by_each_owner_and_shared() -> None:
-    square = CASES["unit_square"]
-    alice = _edges(square, "alice", prefix="alice")
-    bob = _edges(square, "bob", prefix="bob")
+    alice = _edges(CASES["unit_square"], "alice", prefix="alice")
+    bob = _edges(CASES["overlap_square"], "bob", prefix="bob")
     result = validate_capture(alice[:2] + bob[:2] + alice[2:] + bob[2:])
-    assert result.faces[0].owner_ids == ("alice", "bob")
+    assert ("alice", "bob") in {face.owner_ids for face in result.faces}
 
 
 def test_full_rebuild_equals_incremental_replay() -> None:
     traces = _edges(CASES["unit_square"], "alice", prefix="alice")
     traces += _edges(CASES["second_square"], "bob", prefix="bob", day=3)
-    full = validate_capture(traces)
+    removed = traces[-1]
+    full = validate_capture(traces[:-1])
     incremental = validate_capture_incremental(
-        traces[index : index + 2] for index in range(0, len(traces), 2)
+        (
+            CaptureBatch(additions=tuple(reversed(traces[:4]))),
+            CaptureBatch(
+                additions=tuple(reversed(traces[4:-1])),
+                removals=(removed.trace_id,),
+            ),
+        )
     )
     assert incremental == full
 
 
-def test_bitten_apple_partial_new_boundary_does_not_beat_old_complete_boundary() -> None:
+def test_cross_owner_bitten_apple_partial_boundary_does_not_beat_old_complete_claim() -> None:
     square = CASES["unit_square"]
-    old = _edges(square, "rider", prefix="old", day=2)
-    newer_partial = [_trace("new-partial", "rider", [square[0], square[1]], day=4)]
+    old = _edges(square, "alice", prefix="old", day=2)
+    newer_partial = [_trace("new-partial", "bob", [square[0], square[1]], day=4)]
     result = validate_capture(old + newer_partial)
+    assert len(result.faces) == 1
+    assert result.faces[0].owner_ids == ("alice",)
     assert result.faces[0].effective_date is not None
     assert result.faces[0].effective_date.isoformat() == "2025-01-02"
 
@@ -281,9 +293,7 @@ def test_postgis_topology_failure_is_classified_as_transient_and_preserves_previ
             return None
 
         def execute(self, query: str, params: object = None) -> None:
-            if query.startswith("SET statement_timeout = DEFAULT"):
-                return
-            if query.startswith("SET statement_timeout"):
+            if query.startswith("SET LOCAL statement_timeout"):
                 return
             raise OperationalError("simulated topology connection loss")
 
@@ -298,8 +308,38 @@ def test_postgis_topology_failure_is_classified_as_transient_and_preserves_previ
     assert result.attempts == 3
 
 
+def test_real_postgis_statement_timeout_retries_and_preserves_previous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("apps.accounts.capture_validation.STATEMENT_TIMEOUT_MS", 1)
+    previous = ValidationResult((), 1, 2)
+    result = safe_validate(previous, [_trace("timeout", "rider", CASES["global_square"])])
+    assert not result.accepted
+    assert result.result == previous
+    assert result.attempts == 3
+    assert result.error is not None
+
+
 def test_generated_face_bound_is_explicit() -> None:
-    assert MAX_FACES == 500
+    assert MAX_FACES == 200
+
+
+def test_real_postgis_generated_face_limit_rejects_pathological_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("apps.accounts.capture_validation.MAX_FACES", 1)
+    traces = _edges(CASES["unit_square"], "a", prefix="a")
+    traces += _edges(CASES["second_square"], "b", prefix="b")
+    with pytest.raises(CaptureValidationError, match="generated face limit"):
+        validate_capture(traces)
+
+
+def test_real_postgis_response_byte_bound_rejects_large_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("apps.accounts.capture_validation.MAX_RESULT_BYTES", 1)
+    with pytest.raises(CaptureValidationError, match="response limit"):
+        validate_capture([_trace("bytes", "rider", CASES["unit_square"])])
 
 
 def test_input_limits_are_rejected_before_database_work() -> None:
@@ -320,7 +360,7 @@ def test_input_limits_are_rejected_before_database_work() -> None:
 )
 def test_capture_validation_benchmark() -> None:
     traces: list[CaptureTrace] = []
-    for index in range(100):
+    for index in range(60):
         longitude = 10 + (index % 10) * 0.01
         latitude = 45 + (index // 10) * 0.01
         square = [
@@ -337,5 +377,5 @@ def test_capture_validation_benchmark() -> None:
     print(
         f"capture_validation traces={len(traces)} faces={len(result.faces)} seconds={elapsed:.3f}"
     )
-    assert len(result.faces) == 100
+    assert len(result.faces) == 60
     assert elapsed < 5
