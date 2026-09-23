@@ -8,12 +8,23 @@ from uuid import uuid4
 
 from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from .capture_services import (
+    CAPTURE_RETRY_SECONDS,
+    MAX_CAPTURE_ATTEMPTS,
+    calculate_capture,
+)
 from .competition_services import DISPATCH_RETRY_SECONDS, MAX_DISPATCH_ATTEMPTS
-from .models import Competition, CompetitionRecomputation, CompetitionResult, ImportedActivity
+from .models import (
+    CaptureCalculation,
+    Competition,
+    CompetitionRecomputation,
+    CompetitionResult,
+    ImportedActivity,
+)
 from .services import cleanup_identity_guards, purge_expired_players, retry_revocations
 
 
@@ -30,6 +41,87 @@ def purge_expired_players_task(limit: int = 100) -> dict[str, Any]:
 @shared_task(name="bikemapy.accounts.retry_revocations")  # type: ignore[untyped-decorator]
 def retry_revocations_task(limit: int = 100) -> dict[str, Any]:
     return retry_revocations(limit=max(1, limit))
+
+
+@shared_task(name="bikemapy.accounts.dispatch_capture_calculations")  # type: ignore[untyped-decorator]
+def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
+    """Claim and retry capture-only generations, such as a new membership."""
+
+    now = timezone.now()
+    stale = CaptureCalculation.objects.filter(
+        status=CaptureCalculation.Status.RUNNING,
+        lease_until__isnull=False,
+        lease_until__lte=now,
+    ).order_by("pk")[: max(1, limit)]
+    for stale_calculation in stale:
+        CaptureCalculation.objects.filter(
+            pk=stale_calculation.pk,
+            status=CaptureCalculation.Status.RUNNING,
+            lease_until__lte=now,
+        ).update(
+            status=CaptureCalculation.Status.FAILED,
+            error="Capture worker lease expired.",
+            next_attempt_at=now,
+            lease_token="",
+            lease_until=None,
+        )
+    processed = failed = 0
+    candidates = CaptureCalculation.objects.filter(
+        status__in=(CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED),
+        attempts__lt=MAX_CAPTURE_ATTEMPTS,
+        next_attempt_at__lte=now,
+    ).order_by("requested_at", "pk")[: max(1, limit)]
+    for candidate in candidates:
+        token = uuid4().hex
+        with transaction.atomic():
+            try:
+                calculation = CaptureCalculation.objects.select_for_update().get(pk=candidate.pk)
+            except CaptureCalculation.DoesNotExist:
+                continue
+            if (
+                calculation.status
+                not in (CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED)
+                or calculation.attempts >= MAX_CAPTURE_ATTEMPTS
+                or calculation.next_attempt_at > now
+            ):
+                continue
+            calculation.status = CaptureCalculation.Status.RUNNING
+            calculation.attempts += 1
+            calculation.lease_token = token
+            calculation.lease_until = now + timedelta(
+                seconds=settings.GAME_RECOMPUTATION_LEASE_SECONDS
+            )
+            calculation.save(update_fields=("status", "attempts", "lease_token", "lease_until"))
+        try:
+            calculate_capture(
+                calculation.competition,
+                generation=calculation.generation,
+            )
+        except Exception as exc:
+            failed += 1
+            with transaction.atomic():
+                current = CaptureCalculation.objects.select_for_update().get(pk=calculation.pk)
+                if current.lease_token == token:
+                    retry_index = min(current.attempts - 1, len(CAPTURE_RETRY_SECONDS) - 1)
+                    current.status = CaptureCalculation.Status.FAILED
+                    current.error = str(exc)[:240]
+                    current.next_attempt_at = timezone.now() + timedelta(
+                        seconds=CAPTURE_RETRY_SECONDS[retry_index]
+                    )
+                    current.lease_token = ""
+                    current.lease_until = None
+                    current.save(
+                        update_fields=(
+                            "status",
+                            "error",
+                            "next_attempt_at",
+                            "lease_token",
+                            "lease_until",
+                        )
+                    )
+            continue
+        processed += 1
+    return {"processed": processed, "failed": failed}
 
 
 @shared_task(name="bikemapy.accounts.recompute_competition_results")  # type: ignore[untyped-decorator]
@@ -90,8 +182,26 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
             )
             job.save(update_fields=("lease_until",))
             active_players = set(competition.memberships.values_list("player_id", flat=True))
+        # The spatial rebuild is deliberately outside the lease transaction:
+        # a timeout or topology error must commit its failed calculation marker
+        # while preserving the previous current snapshot.
+        if connection.vendor == "postgresql":
+            calculate_capture(competition, generation=job.generation)
+        with transaction.atomic():
+            competition = Competition.objects.select_for_update().get(pk=job_ref.competition_id)
+            job = CompetitionRecomputation.objects.select_for_update().get(pk=job_id)
+            if job.status == CompetitionRecomputation.Status.COMPLETED:
+                return {"status": "completed", "job_id": job_id, "updated": 0}
+            if (
+                job.status != CompetitionRecomputation.Status.RUNNING
+                or job.lease_token != lease_token
+            ):
+                return {"status": "in_progress", "job_id": job_id, "updated": 0}
+            active_players = set(competition.memberships.values_list("player_id", flat=True))
             activities = list(
-                ImportedActivity.objects.filter(player_id__in=active_players).order_by("pk")
+                ImportedActivity.objects.filter(
+                    player_id__in=active_players, removed_at__isnull=True
+                ).order_by("pk")
             )
             activity_ids = {activity.pk for activity in activities}
             CompetitionResult.objects.filter(competition=competition).exclude(

@@ -11,7 +11,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from apps.catalogue.fields import RouteGeometryField
+from apps.catalogue.fields import RouteGeometryField, RoutePolygonField
 
 from .fields import EncryptedSecretField
 
@@ -351,6 +351,118 @@ class CompetitionRecomputation(models.Model):
 
     def __str__(self) -> str:
         return f"Recompute {self.competition_id} generation {self.generation}"
+
+
+class CaptureCalculation(models.Model):
+    """Versioned, durable snapshot of one competition's capture projection."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        FRESH = "fresh", "Fresh"
+        FAILED = "failed", "Failed"
+
+    competition = models.ForeignKey(
+        Competition, on_delete=models.CASCADE, related_name="capture_calculations"
+    )
+    generation = models.PositiveBigIntegerField()
+    algorithm_version = models.CharField(max_length=64)
+    input_digest = models.CharField(max_length=64, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    trace_count = models.PositiveIntegerField(default=0)
+    coordinate_count = models.PositiveIntegerField(default=0)
+    face_count = models.PositiveIntegerField(default=0)
+    error = models.CharField(max_length=240, blank=True)
+    requested_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    is_current = models.BooleanField(default=False)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    lease_token = models.CharField(max_length=64, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("competition", "generation"),
+                name="accounts_capture_calculation_generation_unique",
+            ),
+            models.UniqueConstraint(
+                fields=("competition",),
+                condition=models.Q(is_current=True),
+                name="accounts_capture_calculation_one_current",
+            ),
+        ]
+        indexes = [models.Index(fields=("competition", "status"))]
+
+    def __str__(self) -> str:
+        return f"Capture {self.competition_id} generation {self.generation}"
+
+
+class CaptureFace(models.Model):
+    """A bounded atomic face in one immutable capture calculation."""
+
+    calculation = models.ForeignKey(
+        CaptureCalculation, on_delete=models.CASCADE, related_name="faces"
+    )
+    face_id = models.PositiveIntegerField()
+    geometry = RoutePolygonField(srid=4326, spatial_index=True)
+    area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
+    effective_date = models.DateField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("calculation", "face_id"), name="accounts_capture_face_unique"
+            )
+        ]
+        indexes = [models.Index(fields=("calculation", "effective_date"))]
+
+    def __str__(self) -> str:
+        return f"Capture face {self.calculation_id}/{self.face_id}"
+
+
+class CaptureFaceOwner(models.Model):
+    """One current owner of a face; shared faces have one row per owner."""
+
+    face = models.ForeignKey(CaptureFace, on_delete=models.CASCADE, related_name="owners")
+    player = models.ForeignKey(
+        Player, on_delete=models.CASCADE, related_name="capture_face_ownerships"
+    )
+    shared_area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("face", "player"), name="accounts_capture_face_owner_unique"
+            )
+        ]
+        indexes = [models.Index(fields=("player", "face"))]
+
+    def __str__(self) -> str:
+        return f"Capture owner {self.player_id} on {self.face_id}"
+
+
+class CapturePlayerArea(models.Model):
+    """Equal-share current area owned by one player in one calculation."""
+
+    calculation = models.ForeignKey(
+        CaptureCalculation, on_delete=models.CASCADE, related_name="player_areas"
+    )
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="capture_areas")
+    owned_area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("calculation", "player"), name="accounts_capture_player_area_unique"
+            )
+        ]
+        indexes = [models.Index(fields=("player", "calculation"))]
+
+    def __str__(self) -> str:
+        return f"Capture area {self.player_id}/{self.calculation_id}"
 
 
 class PlayerCredential(models.Model):
