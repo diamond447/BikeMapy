@@ -13,17 +13,24 @@
     "traces": 400,
     "faces": 100,
     "owners": 1,
-    "delivery_order": "deterministically sorted"
+    "delivery_order": "deterministically sorted",
+    "near_trace_bound_ratio": 0.8
   },
   "result": {
-    "elapsed_seconds": 2.085,
+    "elapsed_seconds": [3.678, 4.641, 4.265],
     "budget_seconds": 5.0,
     "passed": true,
     "accuracy": {
       "bounded_face_count": 100,
       "geodesic_area": "ST_Area(geometry::geography)",
       "sliver_threshold_m2": 1.0,
-      "joining_tolerance_m": 50.0
+      "joining_tolerance_m": 50.0,
+      "joining_distance_method": "ST_DWithin(geography, geography, 50)",
+      "boundary_coverage_tolerance_m": 0.01,
+      "max_traces": 500,
+      "max_faces": 500,
+      "statement_timeout_ms": 5000,
+      "max_result_bytes": 8000000
     }
   }
 }

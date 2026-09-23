@@ -5,18 +5,22 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from django.db import connection
+from django.db import OperationalError, connection
 
 from apps.accounts.capture_validation import (
     MAX_COORDINATES,
+    MAX_FACES,
     MAX_TRACES,
     CaptureTrace,
     CaptureValidationError,
+    CaptureValidationTransientError,
     ValidationResult,
     safe_validate,
     validate_capture,
+    validate_capture_incremental,
 )
 
 pytestmark = [
@@ -69,6 +73,32 @@ def test_noisy_gps_joins_edges_within_50_metres() -> None:
     assert result.faces[0].owner_ids == ("rider",)
 
 
+def _gapped_ring(latitude: float, gap_longitude: float) -> list[CaptureTrace]:
+    points = [
+        [14.0, latitude],
+        [14.01, latitude],
+        [14.01, latitude + 0.01],
+        [14.0, latitude + 0.01],
+        [14.0, latitude],
+    ]
+    points[0][0] += gap_longitude
+    return _edges(points, "threshold", prefix=f"ring-{latitude}")
+
+
+@pytest.mark.parametrize(
+    ("latitude", "under_50m_longitude", "over_50m_longitude"),
+    ((0.0, 0.00044, 0.00046), (80.0, 0.0024, 0.0027)),
+)
+def test_geodesic_join_threshold_is_accurate_at_equator_and_80n(
+    latitude: float, under_50m_longitude: float, over_50m_longitude: float
+) -> None:
+    joined = validate_capture(_gapped_ring(latitude, under_50m_longitude))
+    rejected = validate_capture(_gapped_ring(latitude, over_50m_longitude))
+    assert len(joined.faces) == 1
+    assert joined.faces[0].owner_ids == ("threshold",)
+    assert rejected.faces == ()
+
+
 def test_prague_chronology_is_used_at_midnight_and_delivery_order_is_irrelevant() -> None:
     traces = _edges(CASES["unit_square"], "rider")
     traces = [
@@ -95,11 +125,69 @@ def test_intersections_nested_loops_and_disconnected_traces_produce_bounded_face
     assert sum(face.area_m2 for face in result.faces) > 0
 
 
+def test_nested_loop_geometry_keeps_new_inner_owner_and_does_not_merge_loops() -> None:
+    result = validate_capture(
+        _edges(CASES["unit_square"], "old", prefix="outer")
+        + _edges(CASES["inner_square"], "new", prefix="inner", day=3)
+    )
+    assert len(result.faces) == 2
+    inner = min(result.faces, key=lambda face: face.area_m2)
+    annulus = max(result.faces, key=lambda face: face.area_m2)
+    assert inner.owner_ids == ("new",)
+    assert inner.geometry_wkt.startswith("POLYGON((14.000249")
+    assert annulus.owner_ids == ()
+
+
 def test_same_day_overlapping_claims_are_shared() -> None:
     traces = _edges(CASES["unit_square"], "alice", prefix="alice")
     traces += _edges(CASES["unit_square"], "bob", prefix="bob")
     result = validate_capture(traces)
     assert result.faces[0].owner_ids == ("alice", "bob")
+
+
+def test_cross_owner_fully_newer_retake_wins_and_delivery_order_is_irrelevant() -> None:
+    old = _edges(CASES["unit_square"], "alice", prefix="alice", day=2)
+    newer = _edges(CASES["unit_square"], "bob", prefix="bob", day=5)
+    result = validate_capture(old + newer)
+    shuffled = validate_capture(list(reversed(newer + old)))
+    assert result == shuffled
+    assert result.faces[0].owner_ids == ("bob",)
+    assert result.faces[0].effective_date is not None
+    assert result.faces[0].effective_date.isoformat() == "2025-01-05"
+
+
+def test_mixed_date_boundary_uses_oldest_required_segment() -> None:
+    traces = _edges(CASES["unit_square"], "mixed", prefix="mixed")
+    traces = [
+        CaptureTrace(
+            trace.trace_id,
+            trace.owner_id,
+            datetime(2025, 1, 2 + index, tzinfo=UTC),
+            trace.coordinates,
+        )
+        for index, trace in enumerate(traces)
+    ]
+    result = validate_capture(traces)
+    assert result.faces[0].effective_date is not None
+    assert result.faces[0].effective_date.isoformat() == "2025-01-02"
+
+
+def test_partial_same_day_overlap_can_be_completed_by_each_owner_and_shared() -> None:
+    square = CASES["unit_square"]
+    alice = _edges(square, "alice", prefix="alice")
+    bob = _edges(square, "bob", prefix="bob")
+    result = validate_capture(alice[:2] + bob[:2] + alice[2:] + bob[2:])
+    assert result.faces[0].owner_ids == ("alice", "bob")
+
+
+def test_full_rebuild_equals_incremental_replay() -> None:
+    traces = _edges(CASES["unit_square"], "alice", prefix="alice")
+    traces += _edges(CASES["second_square"], "bob", prefix="bob", day=3)
+    full = validate_capture(traces)
+    incremental = validate_capture_incremental(
+        traces[index : index + 2] for index in range(0, len(traces), 2)
+    )
+    assert incremental == full
 
 
 def test_bitten_apple_partial_new_boundary_does_not_beat_old_complete_boundary() -> None:
@@ -134,7 +222,7 @@ def test_self_intersection_is_noded_and_submetre_sliver_is_discarded() -> None:
     sliver = _trace(
         "sliver",
         "rider",
-        [[14.01, 50.0], [14.0100001, 50.0], [14.0100001, 50.0000001], [14.01, 50.0]],
+        [[14.01, 50.0], [14.010003, 50.0], [14.010003, 50.000003], [14.01, 50.0]],
     )
     result = validate_capture([bowtie, sliver])
     assert len(result.faces) == 2
@@ -152,8 +240,66 @@ def test_invalid_input_and_bounded_safe_failure_preserve_last_valid_result() -> 
     safe = safe_validate(previous, invalid)
     assert safe.result == previous
     assert not safe.accepted
-    assert safe.attempts == 3
+    assert safe.attempts == 1
     assert safe.error is not None
+
+
+def test_transient_postgis_failure_retries_but_permanent_validation_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = ValidationResult((), 1, 2)
+    calls = 0
+
+    def flaky(_: object) -> ValidationResult:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise CaptureValidationTransientError("temporary")
+        return previous
+
+    monkeypatch.setattr("apps.accounts.capture_validation.validate_capture", flaky)
+    recovered = safe_validate(previous, [])
+    assert recovered.accepted
+    assert recovered.attempts == 3
+    assert calls == 3
+
+    monkeypatch.setattr(
+        "apps.accounts.capture_validation.validate_capture",
+        lambda _: (_ for _ in ()).throw(CaptureValidationError("permanent")),
+    )
+    rejected = safe_validate(previous, [])
+    assert not rejected.accepted
+    assert rejected.attempts == 1
+
+
+def test_postgis_topology_failure_is_classified_as_transient_and_preserves_previous() -> None:
+    class FailingCursor:
+        def __enter__(self) -> FailingCursor:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def execute(self, query: str, params: object = None) -> None:
+            if query.startswith("SET statement_timeout = DEFAULT"):
+                return
+            if query.startswith("SET statement_timeout"):
+                return
+            raise OperationalError("simulated topology connection loss")
+
+        def fetchall(self) -> list[object]:
+            return []
+
+    previous = ValidationResult((), 1, 2)
+    with patch("apps.accounts.capture_validation.connection.cursor", return_value=FailingCursor()):
+        result = safe_validate(previous, [_trace("retry", "rider", CASES["unit_square"])])
+    assert not result.accepted
+    assert result.result == previous
+    assert result.attempts == 3
+
+
+def test_generated_face_bound_is_explicit() -> None:
+    assert MAX_FACES == 500
 
 
 def test_input_limits_are_rejected_before_database_work() -> None:
