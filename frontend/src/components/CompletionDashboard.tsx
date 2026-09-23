@@ -48,6 +48,8 @@ type RouteCompletion = {
 }
 
 const STATE_KEY = 'bikemapy:game-completion'
+const MAX_ROUTE_PAGES = 10
+const ROUTES_PAGE_SIZE = 100
 
 function readState(): { mode?: 'player' | 'competition'; routeId?: string; stageId?: string } {
   try {
@@ -83,6 +85,15 @@ function currentPragueMonth() {
   const year = parts.find((part) => part.type === 'year')?.value ?? ''
   const month = parts.find((part) => part.type === 'month')?.value ?? ''
   return `${year}-${month}`
+}
+
+function nextCursor(value: unknown) {
+  if (typeof value !== 'string' || !value) return undefined
+  try {
+    return new URL(value, window.location.origin).searchParams.get('cursor') ?? undefined
+  } catch {
+    return undefined
+  }
 }
 
 export function completionFeature(geometry: unknown, properties: Record<string, string> = {}) {
@@ -143,7 +154,8 @@ export function CompletionDashboard({
   const map = useRef<MapLibreMap | null>(null)
   const mapLoaded = useRef(false)
   const framedKey = useRef<string | null>(null)
-  const mapRequestSequence = useRef(0)
+  const routeRequestSequence = useRef(0)
+  const detailRequestSequence = useRef(0)
   const [mapReady, setMapReady] = useState(false)
   const currentMonth = useMemo(() => currentPragueMonth(), [])
 
@@ -153,29 +165,38 @@ export function CompletionDashboard({
       setLoading(false)
       return
     }
-    const requestSequence = ++mapRequestSequence.current
+    const requestSequence = ++routeRequestSequence.current
     setLoading(true)
     setError(null)
     setDetailError(null)
     try {
-      const result = await apiClient.GET('/api/v1/game/reference-routes/', {
-        params: { query: { page_size: 100, competition_id: competitionId } },
-        credentials: 'include',
-      })
-      rememberCsrfToken(result.response)
-      if (result.response?.status === 401) return
-      if (requestSequence !== mapRequestSequence.current) return
-      if (!result.data) throw new Error('routes')
-      const records = (result.data.results ?? []) as RouteSummary[]
+      const records: RouteSummary[] = []
+      let cursor: string | undefined
+      for (let page = 0; page < MAX_ROUTE_PAGES; page += 1) {
+        const result = await apiClient.GET('/api/v1/game/reference-routes/', {
+          params: {
+            query: { page_size: ROUTES_PAGE_SIZE, competition_id: competitionId, cursor },
+          },
+          credentials: 'include',
+        })
+        rememberCsrfToken(result.response)
+        if (result.response?.status === 401) return
+        if (requestSequence !== routeRequestSequence.current) return
+        if (!result.data) throw new Error('routes')
+        records.push(...((result.data.results ?? []) as RouteSummary[]))
+        cursor = nextCursor(result.data.next)
+        if (!cursor) break
+      }
+      if (requestSequence !== routeRequestSequence.current) return
       setRoutes(records)
       setRouteId((current) => {
         const candidate = records.find((route) => route.id === current) ?? records[0]
         return candidate?.id
       })
     } catch {
-      setError(copy.gameCompletionError)
+      if (requestSequence === routeRequestSequence.current) setError(copy.gameCompletionError)
     } finally {
-      setLoading(false)
+      if (requestSequence === routeRequestSequence.current) setLoading(false)
     }
   }, [competitionId, copy.gameCompletionError])
 
@@ -187,7 +208,7 @@ export function CompletionDashboard({
   const loadDetail = useCallback(
     async (id: string) => {
       if (!competitionId) return
-      const requestSequence = ++mapRequestSequence.current
+      const requestSequence = ++detailRequestSequence.current
       const key = detailKey(competitionId, id)
       setDetailLoading(true)
       setError(null)
@@ -197,15 +218,15 @@ export function CompletionDashboard({
           params: { path: { route_id: id }, query: { competition_id: competitionId } },
           credentials: 'include',
         })
-        if (requestSequence !== mapRequestSequence.current) return
+        if (requestSequence !== detailRequestSequence.current) return
         if (!result.data) throw new Error('completion')
         setDetails((current) => ({ ...current, [key]: result.data as unknown as RouteCompletion }))
       } catch {
-        if (requestSequence !== mapRequestSequence.current) return
+        if (requestSequence !== detailRequestSequence.current) return
         setDetailError(copy.gameCompletionError)
         setError(copy.gameCompletionError)
       } finally {
-        if (requestSequence === mapRequestSequence.current) setDetailLoading(false)
+        if (requestSequence === detailRequestSequence.current) setDetailLoading(false)
       }
     },
     [competitionId, copy.gameCompletionError],
@@ -496,10 +517,7 @@ export function CompletionDashboard({
               <span>{copy.gameCompletionCovered}</span>
             </div>
             {statusLabel(selectedProjection.status, copy) && (
-              <p className="completion-status">
-                {statusLabel(selectedProjection.status, copy)}
-                {selectedProjection.error ? ` — ${selectedProjection.error}` : ''}
-              </p>
+              <p className="completion-status">{statusLabel(selectedProjection.status, copy)}</p>
             )}
             {selectedProjection.partial && (
               <p className="completion-status completion-partial">{copy.gameCompletionPartial}</p>

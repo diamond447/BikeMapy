@@ -29,6 +29,7 @@ from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
     ReferenceSourceKind,
+    RouteCompletion,
     RouteCompletionEvidence,
     RouteCompletionJob,
     RouteCompletionMonthly,
@@ -53,6 +54,9 @@ def _gis_runtime_available() -> bool:
 
 requires_gis_runtime = pytest.mark.skipif(
     not _gis_runtime_available(), reason="requires the GeoDjango GEOS/GDAL runtime"
+)
+requires_postgis = pytest.mark.skipif(
+    connection.vendor != "postgresql", reason="requires the PostGIS completion geometry field"
 )
 
 
@@ -180,6 +184,116 @@ def test_disjoint_union_preserves_multiline_monthly_geometry_and_evidence_is_app
     before = RouteCompletionEvidence.objects.count()
     calculate_completion(version, CompletionSubject.PLAYER, player=player)
     assert RouteCompletionEvidence.objects.count() == before * 2
+
+
+@requires_gis_runtime
+@requires_postgis
+def test_dense_evidence_keeps_api_geometry_equal_to_full_completion_metric() -> None:
+    version = _version()
+    player = _player(801)
+    for index in range(1000):
+        _activity(
+            player,
+            f"dense-{index}",
+            [[15, 51], [15.05, 51]],
+            date(2026, 6, 1),
+        )
+    _activity(player, "dense-contributor", [[14, 50.0001], [14.05, 50.0001]], date(2026, 6, 1))
+    result = calculate_completion(version, CompletionSubject.PLAYER, player=player)
+    completion = RouteCompletion.objects.get(pk=result.pk)
+    assert (
+        RouteCompletionEvidence.objects.filter(
+            completion=completion, evidence_generation=completion.evidence_generation
+        ).count()
+        == 1001
+    )
+    assert completion.covered_geometry is not None
+    metric_geometry = completion.covered_geometry.clone()
+    metric_geometry.transform(5514)
+    assert (
+        Decimal(str(metric_geometry.length)).quantize(Decimal("0.001"))
+        == result.covered_length_meters
+    )
+
+
+@requires_gis_runtime
+@requires_postgis
+@override_settings(
+    GAME_ENABLED=True,
+    REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True,
+    STRAVA_OAUTH_CLIENT_ID="client",
+    STRAVA_OAUTH_CLIENT_SECRET="secret",
+    STRAVA_TOKEN_ENCRYPTION_KEY="token-key",
+    STRAVA_IDENTITY_GUARD_KEY="identity-key",
+)
+def test_via_czechia_parent_and_stage_share_completion_metrics_in_api() -> None:
+    parent_version = _version()
+    parent = parent_version.route
+    collection = parent.collection
+    source_import = parent_version.source_import
+    stage = ReferenceRoute.objects.create(
+        collection=collection,
+        parent=parent,
+        source_identifier="completion-stage",
+        title="Completion stage",
+        route_number="1A",
+    )
+    stage_version = ReferenceRouteVersion.objects.create(
+        route=stage,
+        source_import=source_import,
+        version_number=1,
+        checksum="c" * 64,
+        source_geometry={"type": "LineString", "coordinates": [[14, 50], [14.05, 50]]},
+        normalized_geometry=_line_geometry([[14, 50], [14.05, 50]]),
+        attribution="Test source",
+        attribution_metadata=parent_version.attribution_metadata,
+        validation_status="valid",
+    )
+    stage_version.active = True
+    stage_version.save(update_fields=("active",))
+    parent_version.active = True
+    parent_version.save(update_fields=("active",))
+    parent.active = True
+    parent.publication_status = "approved"
+    parent.save(update_fields=("active", "publication_status", "updated_at"))
+    stage.current_version = stage_version
+    stage.active = True
+    stage.publication_status = "approved"
+    stage.save(update_fields=("current_version", "active", "publication_status", "updated_at"))
+    player = _player(802)
+    competition, _ = create_competition(player, name="Via completion")
+    _activity(player, "via-parent-stage", [[14, 50.0001], [14.1, 50.0001]], date(2026, 7, 1))
+    parent_result = calculate_completion(parent_version, CompletionSubject.PLAYER, player=player)
+    stage_result = calculate_completion(stage_version, CompletionSubject.PLAYER, player=player)
+
+    client = Client()
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
+    session.save()
+    response = client.get(
+        f"/api/v1/game/reference-routes/{parent.pk}/completion/?competition_id={competition.pk}"
+    )
+    assert response.status_code == 200, response.json()
+    payload = response.json()
+    stage_payload = next(item for item in payload["stages"] if item["route_id"] == str(stage.pk))
+    assert payload["source_kind"] == ReferenceSourceKind.VIA_CZECHIA
+    assert (
+        Decimal(str(payload["player"]["covered_length_meters"])).quantize(Decimal("0.001"))
+        == parent_result.covered_length_meters
+    )
+    assert (
+        Decimal(str(stage_payload["player"]["covered_length_meters"])).quantize(Decimal("0.001"))
+        == stage_result.covered_length_meters
+    )
+    assert (
+        Decimal(str(payload["player"]["completion_percent"])).quantize(Decimal("0.001"))
+        == parent_result.completion_percent
+    )
+    assert (
+        Decimal(str(stage_payload["player"]["completion_percent"])).quantize(Decimal("0.001"))
+        == stage_result.completion_percent
+    )
 
 
 @requires_gis_runtime
@@ -375,6 +489,14 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     assert body["route_id"] == str(route.pk)
     assert competition.is_active
     assert response["Cache-Control"] == "private, no-store"
+
+    player_completion = RouteCompletion.objects.get(route_version=version, player=player)
+    player_completion.status = CompletionStatus.FAILED
+    player_completion.error = "database credentials leaked"
+    player_completion.save(update_fields=("status", "error", "updated_at"))
+    safe_error = client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/").json()
+    assert safe_error["player"]["error"] == "completion_unavailable"
+    assert "credentials" not in json.dumps(safe_error)
 
     activity.delete()
     calculate_completion(version, CompletionSubject.PLAYER, player=player)

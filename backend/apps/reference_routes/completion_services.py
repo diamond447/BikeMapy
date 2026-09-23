@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from django.conf import settings
@@ -253,6 +253,7 @@ def calculate_completion(
         completion.algorithm_version = ALGORITHM_VERSION
         completion.route_checksum = version.checksum
         completion.membership_revision = competition.revision if competition else None
+        cast(Any, completion).covered_geometry = _geographic(union) if not union.empty else None
         completion.error = ""
         digest_payload = [
             {

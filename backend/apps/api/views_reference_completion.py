@@ -20,7 +20,6 @@ from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceValidationStatus,
     RouteCompletion,
-    RouteCompletionEvidence,
     RouteCompletionMonthly,
     has_publishable_reference_source,
 )
@@ -28,8 +27,8 @@ from apps.reference_routes.models import (
 from .serializers_reference_routes import ReferenceAttributionSerializer, geometry_json
 from .views_reference_routes import reference_competition_id
 
-MAX_COVERAGE_EVIDENCE = 1000
 PARTIAL_SYNC_STATUSES = ("queued", "running", "failed")
+PUBLIC_COMPLETION_ERROR = "completion_unavailable"
 
 
 class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -95,25 +94,14 @@ def _projection(
         monthly_query = monthly_query.filter(player=player)
     elif value.competition_id:
         monthly_query = monthly_query.filter(competition=competition)
-    covered_features = []
-    evidence = RouteCompletionEvidence.objects.filter(
-        completion=value, evidence_generation=value.evidence_generation
-    ).order_by("pk")[:MAX_COVERAGE_EVIDENCE]
-    for item in evidence:
-        geometry = geometry_json(item.covered_geometry)
-        if geometry is None:
-            continue
-        covered_features.append({"type": "Feature", "properties": {}, "geometry": geometry})
-    covered_geometry = (
-        {"type": "FeatureCollection", "features": covered_features} if covered_features else None
-    )
+    covered_geometry = geometry_json(value.covered_geometry)
     return {
         "status": status,
         "total_length_meters": value.total_length_meters,
         "covered_length_meters": value.covered_length_meters,
         "completion_percent": value.completion_percent,
         "calculated_at": value.calculated_at,
-        "error": value.error,
+        "error": PUBLIC_COMPLETION_ERROR if status == "failed" else "",
         "covered_geometry": covered_geometry,
         "monthly": [
             {

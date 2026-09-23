@@ -186,7 +186,7 @@ describe('official route completion presentation', () => {
     await waitFor(() =>
       expect(document.querySelector('.completion-status')).toHaveTextContent('Calculation failed'),
     )
-    expect(document.querySelector('.completion-status')).toHaveTextContent('worker unavailable')
+    expect(screen.queryByText('worker unavailable')).not.toBeInTheDocument()
     expect(screen.getByText(copy.gameCompletionPartial)).toBeInTheDocument()
     expect(screen.getByText('Via Czechia · ODbL')).toBeInTheDocument()
     expect(sessionStorage.getItem('bikemapy:game-completion')).toContain(stageId)
@@ -216,5 +216,96 @@ describe('official route completion presentation', () => {
     get.mockResolvedValueOnce(apiResult({ next: null, previous: null, results: [] }))
     fireEvent.click(screen.getByRole('button', { name: copy.gameCompletionRetry }))
     expect(await screen.findByText(copy.gameCompletionEmpty)).toBeInTheDocument()
+  })
+
+  it('loads the complete bounded route catalogue through cursor pages', async () => {
+    const routes = [
+      route,
+      ...Array.from({ length: 100 }, (_, index) => ({
+        ...route,
+        id: `route-${index + 2}`,
+        route_number: String(index + 2),
+        title: `Via Czechia ${index + 2}`,
+      })),
+    ]
+    get.mockImplementation(
+      (path: string, options?: { params?: { query?: { cursor?: string } } }) => {
+        if (path.includes('/completion/')) return Promise.resolve(apiResult(detail))
+        const cursor = options?.params?.query?.cursor
+        return Promise.resolve(
+          apiResult({
+            next: cursor ? null : 'http://localhost/api/v1/game/reference-routes/?cursor=page-2',
+            previous: null,
+            results: cursor ? routes.slice(100) : routes.slice(0, 100),
+          }),
+        )
+      },
+    )
+    render(
+      <CompletionDashboard
+        copy={copy}
+        competitions={[{ id: 'competition-1', name: 'Weekend crew', members: [] } as never]}
+        competitionId="competition-1"
+        setCompetitionId={vi.fn()}
+        signedOut={false}
+      />,
+    )
+    expect(await screen.findByRole('button', { name: /101 Via Czechia 101/ })).toBeInTheDocument()
+    expect(
+      get.mock.calls.filter(([path]) => path === '/api/v1/game/reference-routes/'),
+    ).toHaveLength(2)
+  })
+
+  it('keeps the latest route list and detail after delayed competition remounts', async () => {
+    const routeA = { ...route, id: 'route-a', title: 'Route A' }
+    const routeB = { ...route, id: 'route-b', title: 'Route B' }
+    const pendingLists = new Map<
+      string,
+      Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }>
+    >()
+    get.mockImplementation(
+      (path: string, options?: { params?: { query?: { competition_id?: string } } }) => {
+        if (path.includes('/completion/')) {
+          const selected =
+            options?.params?.query?.competition_id === 'competition-b' ? routeB : routeA
+          return Promise.resolve(
+            apiResult({ ...detail, route_id: selected.id, title: selected.title }),
+          )
+        }
+        const competitionId = options?.params?.query?.competition_id ?? ''
+        return new Promise((resolve, reject) => {
+          const pending = pendingLists.get(competitionId) ?? []
+          pending.push({ resolve, reject })
+          pendingLists.set(competitionId, pending)
+        })
+      },
+    )
+    const props = {
+      copy,
+      competitions: [
+        { id: 'competition-a', name: 'A', members: [] },
+        { id: 'competition-b', name: 'B', members: [] },
+      ] as never,
+      setCompetitionId: vi.fn(),
+      signedOut: false,
+    }
+    const { rerender } = render(<CompletionDashboard {...props} competitionId="competition-a" />)
+    await waitFor(() => expect(pendingLists.get('competition-a')).toHaveLength(1))
+    rerender(<CompletionDashboard {...props} competitionId="competition-b" />)
+    await waitFor(() => expect(pendingLists.get('competition-b')).toHaveLength(1))
+    pendingLists
+      .get('competition-b')?.[0]
+      .resolve(apiResult({ next: null, previous: null, results: [routeB] }))
+    expect(await screen.findByRole('button', { name: /1 Route B/ })).toBeInTheDocument()
+    pendingLists.get('competition-a')?.[0].reject(new Error('stale list'))
+    expect(await screen.findByText('Route B')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    rerender(<CompletionDashboard {...props} competitionId="competition-a" />)
+    await waitFor(() => expect(pendingLists.get('competition-a')).toHaveLength(2))
+    pendingLists
+      .get('competition-a')?.[1]
+      .resolve(apiResult({ next: null, previous: null, results: [routeA] }))
+    expect(await screen.findByRole('button', { name: /1 Route A/ })).toBeInTheDocument()
+    expect((await screen.findAllByText('37.0%')).length).toBeGreaterThan(0)
   })
 })
