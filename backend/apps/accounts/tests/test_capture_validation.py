@@ -188,27 +188,54 @@ def test_full_rebuild_equals_incremental_replay() -> None:
     traces += _edges(CASES["second_square"], "bob", prefix="bob", day=3)
     removed = traces[-1]
     full = validate_capture(traces[:-1])
-    incremental = validate_capture_incremental(
+    for batches in (
         (
-            CaptureBatch(additions=tuple(reversed(traces[:4]))),
-            CaptureBatch(
-                additions=tuple(reversed(traces[4:-1])),
-                removals=(removed.trace_id,),
-            ),
+            CaptureBatch(additions=tuple(reversed(traces))),
+            CaptureBatch(removals=(removed.trace_id,)),
+        ),
+        (
+            CaptureBatch(removals=(removed.trace_id,)),
+            CaptureBatch(additions=tuple(reversed(traces))),
+        ),
+    ):
+        assert validate_capture_incremental(batches) == full
+
+
+def test_incremental_remove_before_add_dominates_a_delayed_boundary_trace() -> None:
+    boundary = _edges(CASES["unit_square"], "alice", prefix="boundary")
+    assert len(validate_capture(boundary).faces) == 1
+
+    added_then_removed = validate_capture_incremental(
+        (
+            CaptureBatch(additions=tuple(boundary)),
+            CaptureBatch(removals=(boundary[-1].trace_id,)),
         )
     )
-    assert incremental == full
+    removed_then_added = validate_capture_incremental(
+        (
+            CaptureBatch(removals=(boundary[-1].trace_id,)),
+            CaptureBatch(additions=tuple(boundary)),
+        )
+    )
+    assert added_then_removed == removed_then_added
+    assert added_then_removed.faces == ()
 
 
 def test_cross_owner_bitten_apple_partial_boundary_does_not_beat_old_complete_claim() -> None:
     square = CASES["unit_square"]
-    old = _edges(square, "alice", prefix="old", day=2)
-    newer_partial = [_trace("new-partial", "bob", [square[0], square[1]], day=4)]
-    result = validate_capture(old + newer_partial)
-    assert len(result.faces) == 1
-    assert result.faces[0].owner_ids == ("alice",)
-    assert result.faces[0].effective_date is not None
-    assert result.faces[0].effective_date.isoformat() == "2025-01-02"
+    old_partial = _edges(square, "alice", prefix="old", day=2)
+    alice = old_partial[:-1] + [_trace("old-final", "alice", [square[-2], square[-1]], day=6)]
+    bob = _edges(CASES["inner_square"], "bob", prefix="new-inner", day=4)
+    result = validate_capture(alice + bob)
+    assert {face.owner_ids for face in result.faces} == {("alice",), ("bob",)}
+    outer = max(result.faces, key=lambda face: face.area_m2)
+    inner = min(result.faces, key=lambda face: face.area_m2)
+    assert outer.owner_ids == ("alice",)
+    assert inner.owner_ids == ("bob",)
+    assert outer.effective_date is not None
+    assert outer.effective_date.isoformat() == "2025-01-02"
+    assert inner.effective_date is not None
+    assert inner.effective_date.isoformat() == "2025-01-04"
 
 
 def test_fully_newer_retake_wins_over_old_network() -> None:
