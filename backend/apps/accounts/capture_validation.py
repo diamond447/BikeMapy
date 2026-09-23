@@ -445,13 +445,34 @@ def validate_capture_incremental(
     cannot change the authoritative result.
     """
 
-    accumulated: list[CaptureTrace] = []
+    # Removal delivery is an authoritative tombstone.  Keeping it separate
+    # from the current additions makes replay commutative: a delete received
+    # before a delayed create still wins, and duplicate deliveries cannot
+    # resurrect a trace.  For the impossible-but-defensive case of two
+    # different payloads sharing an ID, choose one canonical payload rather
+    # than letting delivery order decide the result.
+    accumulated: dict[str, CaptureTrace] = {}
+    removed: set[str] = set()
     result = ValidationResult(faces=(), trace_count=0, coordinate_count=0)
     for batch in batches:
-        removed = set(batch.removals)
-        accumulated = [trace for trace in accumulated if trace.trace_id not in removed]
-        accumulated.extend(batch.additions)
-        result = validate_capture(accumulated)
+        for trace_id in batch.removals:
+            removed.add(trace_id)
+            accumulated.pop(trace_id, None)
+        for trace in batch.additions:
+            if trace.trace_id in removed:
+                continue
+            previous = accumulated.get(trace.trace_id)
+            if previous is None or (
+                trace.owner_id,
+                trace.recorded_at,
+                trace.coordinates,
+            ) < (
+                previous.owner_id,
+                previous.recorded_at,
+                previous.coordinates,
+            ):
+                accumulated[trace.trace_id] = trace
+        result = validate_capture(tuple(accumulated.values()))
     return result
 
 

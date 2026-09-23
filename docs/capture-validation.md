@@ -35,9 +35,11 @@ errors return immediately. Both preserve the last valid result on failure.
 Sorting and stable face ordering make delivery order irrelevant.
 
 The incremental fixture intentionally models the production-safe fallback: each
-batch queues a bounded full rebuild from the accumulated trace set. It does not
-claim an independent mutable topology cache. Additions, removals, and reordered
-batches therefore compare directly with one-shot rebuild output.
+batch queues a bounded full rebuild from the accumulated trace set. Removals
+are authoritative tombstones keyed by immutable trace ID, so a remove-before-
+add delivery and an add-before-remove delivery converge to the same result.
+It does not claim an independent mutable topology cache; additions, removals,
+duplicates, and reordered batches compare directly with one-shot rebuild output.
 
 ## Alternatives rejected
 
@@ -71,6 +73,7 @@ in 3.379, 2.887, and 3.462 seconds in the recorded runs, each under the 5
 second harness budget. The fixture suite also checks
 50 m noise joining, Prague chronology, intersections, nested loops,
 disconnected traces, overlapping claims, same-day ties, bitten-apple and
-newer-retake chronology, self-intersections, 0.1 m² sliver filtering, geodesic
+newer-retake chronology, the bitten-apple late-closing boundary,
+self-intersections, 0.1 m² sliver filtering, geodesic
 area and threshold accuracy at the equator/80°N, delivery-order determinism,
 full/incremental equivalence, bounded input, transient retry, and safe failure.
