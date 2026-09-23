@@ -257,7 +257,7 @@ describe('official route completion presentation', () => {
   })
 
   it('announces when the safe route page bound leaves the catalogue incomplete', async () => {
-    const routes = Array.from({ length: 1000 }, (_, index) => ({
+    const routes = Array.from({ length: 10 }, (_, index) => ({
       ...route,
       id: `bounded-route-${index + 1}`,
       route_number: String(index + 1),
@@ -272,7 +272,7 @@ describe('official route completion presentation', () => {
           apiResult({
             next: `http://localhost/api/v1/game/reference-routes/?cursor=page-${page + 1}`,
             previous: null,
-            results: routes.slice((page - 1) * 100, page * 100),
+            results: routes.slice(page - 1, page),
           }),
         )
       },
@@ -286,9 +286,7 @@ describe('official route completion presentation', () => {
         signedOut={false}
       />,
     )
-    expect(
-      await screen.findByRole('button', { name: /1000 Bounded route 1000/ }),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /10 Bounded route 10/ })).toBeInTheDocument()
     expect(await screen.findByRole('alert')).toHaveTextContent(
       copy.gameCompletionCatalogueIncomplete,
     )
