@@ -256,6 +256,47 @@ describe('official route completion presentation', () => {
     ).toHaveLength(2)
   })
 
+  it('announces when the safe route page bound leaves the catalogue incomplete', async () => {
+    const routes = Array.from({ length: 1000 }, (_, index) => ({
+      ...route,
+      id: `bounded-route-${index + 1}`,
+      route_number: String(index + 1),
+      title: `Bounded route ${index + 1}`,
+    }))
+    get.mockImplementation(
+      (path: string, options?: { params?: { query?: { cursor?: string } } }) => {
+        if (path.includes('/completion/')) return Promise.resolve(apiResult(detail))
+        const cursor = options?.params?.query?.cursor
+        const page = cursor ? Number(cursor.replace('page-', '')) : 1
+        return Promise.resolve(
+          apiResult({
+            next: `http://localhost/api/v1/game/reference-routes/?cursor=page-${page + 1}`,
+            previous: null,
+            results: routes.slice((page - 1) * 100, page * 100),
+          }),
+        )
+      },
+    )
+    render(
+      <CompletionDashboard
+        copy={copy}
+        competitions={[{ id: 'competition-1', name: 'Weekend crew', members: [] } as never]}
+        competitionId="competition-1"
+        setCompetitionId={vi.fn()}
+        signedOut={false}
+      />,
+    )
+    expect(
+      await screen.findByRole('button', { name: /1000 Bounded route 1000/ }),
+    ).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      copy.gameCompletionCatalogueIncomplete,
+    )
+    expect(
+      get.mock.calls.filter(([path]) => path === '/api/v1/game/reference-routes/'),
+    ).toHaveLength(10)
+  })
+
   it('keeps the latest route list and detail after delayed competition remounts', async () => {
     const routeA = { ...route, id: 'route-a', title: 'Route A' }
     const routeB = { ...route, id: 'route-b', title: 'Route B' }

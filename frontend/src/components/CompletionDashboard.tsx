@@ -147,6 +147,7 @@ export function CompletionDashboard({
   const [routeId, setRouteId] = useState<string | undefined>(initial.routeId)
   const [stageId, setStageId] = useState<string | undefined>(initial.stageId)
   const [loading, setLoading] = useState(true)
+  const [catalogueIncomplete, setCatalogueIncomplete] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -162,6 +163,7 @@ export function CompletionDashboard({
   const loadRoutes = useCallback(async () => {
     if (!competitionId) {
       setRoutes([])
+      setCatalogueIncomplete(false)
       setLoading(false)
       return
     }
@@ -169,9 +171,11 @@ export function CompletionDashboard({
     setLoading(true)
     setError(null)
     setDetailError(null)
+    setCatalogueIncomplete(false)
     try {
       const records: RouteSummary[] = []
       let cursor: string | undefined
+      let incomplete = false
       for (let page = 0; page < MAX_ROUTE_PAGES; page += 1) {
         const result = await apiClient.GET('/api/v1/game/reference-routes/', {
           params: {
@@ -186,9 +190,11 @@ export function CompletionDashboard({
         records.push(...((result.data.results ?? []) as RouteSummary[]))
         cursor = nextCursor(result.data.next)
         if (!cursor) break
+        if (page === MAX_ROUTE_PAGES - 1) incomplete = true
       }
       if (requestSequence !== routeRequestSequence.current) return
       setRoutes(records)
+      setCatalogueIncomplete(incomplete)
       setRouteId((current) => {
         const candidate = records.find((route) => route.id === current) ?? records[0]
         return candidate?.id
@@ -431,59 +437,66 @@ export function CompletionDashboard({
           ) : routes.length === 0 ? (
             <p>{copy.gameCompletionEmpty}</p>
           ) : (
-            groups.map((group) => {
-              const items = routes.filter(
-                (route) => (route.source_kind ?? 'osm_numbered') === group.key,
-              )
-              if (!items.length) return null
-              return (
-                <div key={group.key} className="completion-group">
-                  <h2>{group.label}</h2>
-                  {items.map((route) => {
-                    const detail = competitionId
-                      ? details[detailKey(competitionId, route.id)]
-                      : undefined
-                    const projection = detail?.[mode]
-                    const routeIndex = routes.indexOf(route)
-                    return (
-                      <div key={route.id} className="completion-route-wrap">
-                        <button
-                          type="button"
-                          className={`completion-route ${route.id === routeId && !stageId ? 'is-selected' : ''}`}
-                          aria-pressed={route.id === routeId && !stageId}
-                          onClick={() => selectRoute(route.id)}
-                          onKeyDown={(event) => selectByKeyboard(routeIndex, event)}
-                        >
-                          <span>
-                            <b>{route.route_number || '—'}</b> {route.title}
-                          </span>
-                          <strong>{completionPercent(projection)}</strong>
-                        </button>
-                        {route.id === routeId && detail?.stages.length ? (
-                          <div className="completion-stages">
-                            <span>{copy.gameCompletionStages}</span>
-                            {detail.stages.map((stage) => (
-                              <button
-                                type="button"
-                                key={stage.route_id}
-                                className={stage.route_id === stageId ? 'is-selected' : ''}
-                                aria-pressed={stage.route_id === stageId}
-                                onClick={() => setStageId(stage.route_id)}
-                              >
-                                <span>
-                                  {stage.route_number || '—'} {stage.title}
-                                </span>
-                                <strong>{completionPercent(stage[mode])}</strong>
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    )
-                  })}
-                </div>
-              )
-            })
+            <>
+              {catalogueIncomplete && (
+                <p className="completion-state" role="alert">
+                  {copy.gameCompletionCatalogueIncomplete}
+                </p>
+              )}
+              {groups.map((group) => {
+                const items = routes.filter(
+                  (route) => (route.source_kind ?? 'osm_numbered') === group.key,
+                )
+                if (!items.length) return null
+                return (
+                  <div key={group.key} className="completion-group">
+                    <h2>{group.label}</h2>
+                    {items.map((route) => {
+                      const detail = competitionId
+                        ? details[detailKey(competitionId, route.id)]
+                        : undefined
+                      const projection = detail?.[mode]
+                      const routeIndex = routes.indexOf(route)
+                      return (
+                        <div key={route.id} className="completion-route-wrap">
+                          <button
+                            type="button"
+                            className={`completion-route ${route.id === routeId && !stageId ? 'is-selected' : ''}`}
+                            aria-pressed={route.id === routeId && !stageId}
+                            onClick={() => selectRoute(route.id)}
+                            onKeyDown={(event) => selectByKeyboard(routeIndex, event)}
+                          >
+                            <span>
+                              <b>{route.route_number || '—'}</b> {route.title}
+                            </span>
+                            <strong>{completionPercent(projection)}</strong>
+                          </button>
+                          {route.id === routeId && detail?.stages.length ? (
+                            <div className="completion-stages">
+                              <span>{copy.gameCompletionStages}</span>
+                              {detail.stages.map((stage) => (
+                                <button
+                                  type="button"
+                                  key={stage.route_id}
+                                  className={stage.route_id === stageId ? 'is-selected' : ''}
+                                  aria-pressed={stage.route_id === stageId}
+                                  onClick={() => setStageId(stage.route_id)}
+                                >
+                                  <span>
+                                    {stage.route_number || '—'} {stage.title}
+                                  </span>
+                                  <strong>{completionPercent(stage[mode])}</strong>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+            </>
           )}
           <small>{copy.gameCompletionKeyboardHint}</small>
         </div>

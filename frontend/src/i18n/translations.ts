@@ -248,6 +248,8 @@ export const translations = {
     gameCompletionSelect: 'Select a route',
     gameCompletionLoading: 'Loading route completion…',
     gameCompletionError: 'Route completion could not be loaded.',
+    gameCompletionCatalogueIncomplete:
+      'The route catalogue is too large to load completely. Some routes are not shown.',
     gameCompletionRetry: 'Retry completion',
     gameCompletionPending: 'Calculation pending',
     gameCompletionStale: 'Needs recalculation',
@@ -515,6 +517,8 @@ export const translations = {
     gameCompletionSelect: 'Vyberte trasu',
     gameCompletionLoading: 'Načítám dokončení trasy…',
     gameCompletionError: 'Dokončení trasy se nepodařilo načíst.',
+    gameCompletionCatalogueIncomplete:
+      'Katalog tras je příliš velký pro úplné načtení. Některé trasy nejsou zobrazené.',
     gameCompletionRetry: 'Načíst dokončení znovu',
     gameCompletionPending: 'Výpočet čeká',
     gameCompletionStale: 'Vyžaduje přepočet',
