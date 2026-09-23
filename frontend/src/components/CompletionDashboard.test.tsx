@@ -73,7 +73,7 @@ const geometry = {
   ],
 }
 
-const projection = (status = 'fresh') => ({
+const projection = (status = 'fresh', partial = false) => ({
   status,
   total_length_meters: '20000.000',
   covered_length_meters: status === 'fresh' ? '7400.000' : '0.000',
@@ -81,7 +81,14 @@ const projection = (status = 'fresh') => ({
   calculated_at: status === 'fresh' ? '2026-09-21T00:00:00Z' : null,
   error: status === 'failed' ? 'worker unavailable' : '',
   covered_geometry: status === 'fresh' ? geometry : null,
-  monthly: status === 'fresh' ? [{ month: '2026-09-01', covered_length_meters: '7400.000' }] : [],
+  monthly:
+    status === 'fresh'
+      ? [
+          { month: '2026-08-01', covered_length_meters: '9999.000' },
+          { month: '2026-09-01', covered_length_meters: '7400.000' },
+        ]
+      : [],
+  partial,
 })
 
 const route = {
@@ -114,7 +121,7 @@ const detail = {
       route_number: '1A',
       geometry,
       player: projection(),
-      competition: projection('failed'),
+      competition: projection('failed', true),
     },
   ],
 }
@@ -180,6 +187,7 @@ describe('official route completion presentation', () => {
       expect(document.querySelector('.completion-status')).toHaveTextContent('Calculation failed'),
     )
     expect(document.querySelector('.completion-status')).toHaveTextContent('worker unavailable')
+    expect(screen.getByText(copy.gameCompletionPartial)).toBeInTheDocument()
     expect(screen.getByText('Via Czechia · ODbL')).toBeInTheDocument()
     expect(sessionStorage.getItem('bikemapy:game-completion')).toContain(stageId)
     expect(MockMap.last?.fitBounds).toHaveBeenCalled()
@@ -198,7 +206,8 @@ describe('official route completion presentation', () => {
     render(
       <CompletionDashboard
         copy={copy}
-        competitions={[]}
+        competitions={[{ id: 'competition-1', name: 'Weekend crew', members: [] } as never]}
+        competitionId="competition-1"
         setCompetitionId={vi.fn()}
         signedOut={false}
       />,

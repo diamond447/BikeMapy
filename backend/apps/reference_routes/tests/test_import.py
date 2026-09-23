@@ -17,6 +17,7 @@ from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
+from apps.accounts.competition_services import create_competition
 from apps.accounts.models import Player
 from apps.api.views_reference_routes import reference_queryset
 from apps.catalogue.fields import _GIS_AVAILABLE
@@ -115,6 +116,17 @@ def collection(*, slug: str = "osm-cz") -> ReferenceCollection:
 def import_osm_snapshot(*args: Any, **kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("response_metadata", {"import_mode": "test"})
     return _import_osm_snapshot(*args, **kwargs)
+
+
+def game_client(player: Player, *, competition_id: str | None = None) -> Client:
+    client = Client()
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
+    if competition_id is not None:
+        session["selected_competition_id"] = competition_id
+    session.save()
+    return client
 
 
 def import_production_snapshot(
@@ -1282,27 +1294,21 @@ def test_postgis_geometry_is_linestring_with_srid() -> None:
     assert version.normalized_geometry.srid == 4326
 
 
-@override_settings(
-    GAME_ENABLED=True,
-    REFERENCE_ROUTE_AUTHORIZER="apps.api.reference_authorization.allow_session_claim_for_tests",
-)
-def test_reference_endpoints_require_game_session_claim() -> None:
+@override_settings(GAME_ENABLED=True)
+def test_reference_endpoints_require_current_player_membership_without_enumeration() -> None:
     item = collection()
     import_production_snapshot(item)
     publish_offer(item)
     approve_reference_route(ReferenceRoute.objects.get(collection=item), reviewer="reviewer")
     client = Client()
     assert client.get("/api/v1/game/reference-routes/").status_code == 403
-    user = get_user_model().objects.create_user(username="player")
-    client.force_login(user)
-    session = client.session
-    session["game_session"] = {
-        "competition_id": "competition-1",
-        "reference_route_read": True,
-        "test_authorized_competition": "competition-1",
-    }
-    session.save()
-    response = client.get("/api/v1/game/reference-routes/")
+    player = Player.objects.create(
+        user=get_user_model().objects.create_user(username="player"),
+        strava_athlete_id=2001,
+    )
+    competition, _ = create_competition(player, name="Reference access")
+    client = game_client(player)
+    response = client.get(f"/api/v1/game/reference-routes/?competition_id={competition.pk}")
     assert response.status_code == 200
     body = response.json()
     assert len(body["results"]) == 1
@@ -1310,15 +1316,19 @@ def test_reference_endpoints_require_game_session_claim() -> None:
     assert "geometry" not in body["results"][0]
     assert response["Cache-Control"] == "private, no-store"
     assert response["X-Robots-Tag"] == "noindex, nofollow, noarchive"
-    session["game_session"]["test_authorized_competition"] = "revoked"
-    session.save()
-    assert client.get("/api/v1/game/reference-routes/").status_code == 403
+    outsider = Player.objects.create(
+        user=get_user_model().objects.create_user(username="outsider"),
+        strava_athlete_id=2002,
+    )
+    assert (
+        game_client(outsider)
+        .get(f"/api/v1/game/reference-routes/?competition_id={competition.pk}")
+        .status_code
+        == 403
+    )
 
 
-@override_settings(
-    GAME_ENABLED=True,
-    REFERENCE_ROUTE_AUTHORIZER="apps.api.reference_authorization.allow_session_claim_for_tests",
-)
+@override_settings(GAME_ENABLED=True)
 def test_reference_api_paginates_and_filters_active_stages() -> None:
     item = collection()
     import_production_snapshot(item)
@@ -1366,17 +1376,15 @@ def test_reference_api_paginates_and_filters_active_stages() -> None:
     )
     stage.current_version = stage_version
     stage.save(update_fields=["current_version"])
-    client = Client()
-    user = get_user_model().objects.create_user(username="paged-player")
-    client.force_login(user)
-    session = client.session
-    session["game_session"] = {
-        "competition_id": "competition-1",
-        "reference_route_read": True,
-        "test_authorized_competition": "competition-1",
-    }
-    session.save()
-    response = client.get("/api/v1/game/reference-routes/?page_size=1")
+    player = Player.objects.create(
+        user=get_user_model().objects.create_user(username="paged-player"),
+        strava_athlete_id=2003,
+    )
+    competition, _ = create_competition(player, name="Paged reference access")
+    client = game_client(player)
+    response = client.get(
+        f"/api/v1/game/reference-routes/?page_size=1&competition_id={competition.pk}"
+    )
     assert response.status_code == 200
     assert len(response.json()["results"]) == 1
     assert "stages" not in response.json()["results"][0]

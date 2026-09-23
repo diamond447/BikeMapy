@@ -15,7 +15,7 @@ from django.test import Client, override_settings
 from django.utils import timezone
 
 from apps.accounts.competition_services import create_competition
-from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
+from apps.accounts.models import CompetitionMembership, ImportedActivity, Player, StravaSyncState
 from apps.reference_routes.completion_services import (
     CompletionLeaseLost,
     calculate_completion,
@@ -348,7 +348,8 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     route.save(update_fields=("active", "publication_status", "updated_at"))
     player = _player(5)
     competition, _ = create_competition(player, name="API competition")
-    _activity(player, "api", [[14, 50], [14.02, 50]], date(2026, 4, 1))
+    StravaSyncState.objects.create(player=player, status="running")
+    activity = _activity(player, "api", [[14, 50], [14.02, 50]], date(2026, 4, 1))
     calculate_completion(version, CompletionSubject.PLAYER, player=player)
 
     client = Client()
@@ -369,9 +370,38 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     assert body["geometry"]["type"] == "LineString"
     assert body["attribution"]["attribution_text"] == "Test"
     assert body["competition"]["status"] == "pending"
+    assert body["player"]["partial"] is True
+    assert body["competition"]["partial"] is True
     assert body["route_id"] == str(route.pk)
     assert competition.is_active
     assert response["Cache-Control"] == "private, no-store"
+
+    activity.delete()
+    calculate_completion(version, CompletionSubject.PLAYER, player=player)
+    recalculated = client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/")
+    assert recalculated.status_code == 200
+    if connection.vendor == "postgresql":
+        assert recalculated.json()["player"]["covered_geometry"] is None
+
+    second, _ = create_competition(player, name="Second API competition")
+    calculate_completion(version, CompletionSubject.COMPETITION, competition=second)
+    selected = client.get(
+        f"/api/v1/game/reference-routes/{route.pk}/completion/?competition_id={second.pk}"
+    )
+    assert selected.status_code == 200
+    assert selected.json()["competition"]["status"] == "fresh"
+    outsider = _player(15)
+    game_client = Client()
+    game_session = game_client.session
+    game_session["player_id"] = outsider.pk
+    game_session["player_session_epoch"] = outsider.session_epoch
+    game_session.save()
+    assert (
+        game_client.get(
+            f"/api/v1/game/reference-routes/{route.pk}/completion/?competition_id={second.pk}"
+        ).status_code
+        == 404
+    )
 
     with override_settings(GAME_ENABLED=False):
         assert (

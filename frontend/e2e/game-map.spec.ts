@@ -125,11 +125,54 @@ test('completion mode keeps route selection and player/group progress keyboard a
       [14.2, 49.2],
     ],
   }
-  await page.route('**/api/v1/game/reference-routes**', async (route) => {
+  let completionCalls = 0
+  await page.route('**/api/v1/game/reference-routes/**', async (route) => {
     if (new URL(route.request().url()).pathname.endsWith('/completion/')) {
-      await route.fallback()
+      completionCalls += 1
+      expect(new URL(route.request().url()).searchParams.get('competition_id')).toBe(competition.id)
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          route_id: routeId,
+          version: 1,
+          title: 'Via Czechia north',
+          route_number: '1',
+          source_kind: 'via_czechia',
+          geometry,
+          attribution: { attribution_text: 'Via Czechia', licence: 'ODbL' },
+          player: {
+            status: 'fresh',
+            total_length_meters: '20000.000',
+            covered_length_meters: '7400.000',
+            completion_percent: '37.000',
+            calculated_at: '2026-09-21T00:00:00Z',
+            error: '',
+            covered_geometry: {
+              type: 'LineString',
+              coordinates: [
+                [14, 49],
+                [14.07, 49.07],
+              ],
+            },
+            monthly: [{ month: '2026-09-01', covered_length_meters: '7400.000' }],
+          },
+          competition: {
+            status: 'pending',
+            total_length_meters: '20000.000',
+            covered_length_meters: '0.000',
+            completion_percent: '0.000',
+            calculated_at: null,
+            error: '',
+            covered_geometry: null,
+            monthly: [],
+          },
+          stages: [],
+        }),
+      })
       return
     }
+    expect(new URL(route.request().url()).searchParams.get('competition_id')).toBe(competition.id)
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -153,48 +196,6 @@ test('completion mode keeps route selection and player/group progress keyboard a
       }),
     })
   })
-  await page.route('**/api/v1/game/reference-routes/*/completion/', async (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        route_id: routeId,
-        version: 1,
-        title: 'Via Czechia north',
-        route_number: '1',
-        source_kind: 'via_czechia',
-        geometry,
-        attribution: { attribution_text: 'Via Czechia', licence: 'ODbL' },
-        player: {
-          status: 'fresh',
-          total_length_meters: '20000.000',
-          covered_length_meters: '7400.000',
-          completion_percent: '37.000',
-          calculated_at: '2026-09-21T00:00:00Z',
-          error: '',
-          covered_geometry: {
-            type: 'LineString',
-            coordinates: [
-              [14, 49],
-              [14.07, 49.07],
-            ],
-          },
-          monthly: [{ month: '2026-09-01', covered_length_meters: '7400.000' }],
-        },
-        competition: {
-          status: 'pending',
-          total_length_meters: '20000.000',
-          covered_length_meters: '0.000',
-          completion_percent: '0.000',
-          calculated_at: null,
-          error: '',
-          covered_geometry: null,
-          monthly: [],
-        },
-        stages: [],
-      }),
-    }),
-  )
 
   await page.goto('/game')
   await page.getByRole('tab', { name: 'Completion' }).click()
@@ -205,6 +206,12 @@ test('completion mode keeps route selection and player/group progress keyboard a
   await expect(page.locator('.completion-detail').getByText('37.0%')).toBeVisible()
   await page.getByRole('tab', { name: 'Competition' }).click()
   await expect(page.getByText('Calculation pending')).toBeVisible()
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
+  await expect(page.locator('[data-map-source-loaded="true"]')).toBeVisible()
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+  await expect.poll(() => completionCalls).toBeGreaterThan(1)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
 })

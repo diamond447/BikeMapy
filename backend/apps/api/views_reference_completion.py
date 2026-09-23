@@ -4,15 +4,16 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from uuid import UUID
 
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 
 from apps.accounts.game_api import GameEndpoint, _private
+from apps.accounts.models import CompetitionMembership, StravaSyncState
 from apps.accounts.services import game_is_available
 from apps.reference_routes.models import (
     ReferencePublicationStatus,
@@ -25,6 +26,10 @@ from apps.reference_routes.models import (
 )
 
 from .serializers_reference_routes import ReferenceAttributionSerializer, geometry_json
+from .views_reference_routes import reference_competition_id
+
+MAX_COVERAGE_EVIDENCE = 1000
+PARTIAL_SYNC_STATUSES = ("queued", "running", "failed")
 
 
 class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -36,6 +41,7 @@ class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
     error = serializers.CharField()
     covered_geometry = serializers.JSONField(allow_null=True)
     monthly = serializers.ListField(child=serializers.DictField())
+    partial = serializers.BooleanField()
 
 
 class ReferenceCompletionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -57,6 +63,7 @@ def _projection(
     version: Any,
     player: Any,
     competition: Any,
+    partial: bool,
 ) -> dict[str, Any]:
     if value is None:
         return {
@@ -68,6 +75,7 @@ def _projection(
             "error": "",
             "covered_geometry": None,
             "monthly": [],
+            "partial": partial,
         }
     status = value.status
     if status == "fresh" and value.route_checksum != version.checksum:
@@ -87,28 +95,18 @@ def _projection(
         monthly_query = monthly_query.filter(player=player)
     elif value.competition_id:
         monthly_query = monthly_query.filter(competition=competition)
-    covered_geometry = None
-    evidence = RouteCompletionEvidence.objects.filter(completion=value).order_by("pk")
+    covered_features = []
+    evidence = RouteCompletionEvidence.objects.filter(
+        completion=value, evidence_generation=value.evidence_generation
+    ).order_by("pk")[:MAX_COVERAGE_EVIDENCE]
     for item in evidence:
         geometry = geometry_json(item.covered_geometry)
         if geometry is None:
             continue
-        if covered_geometry is None:
-            covered_geometry = geometry
-            continue
-        try:
-            from django.contrib.gis.geos import GEOSGeometry
-
-            first = GEOSGeometry(json.dumps(covered_geometry), srid=4326)
-            second = GEOSGeometry(json.dumps(geometry), srid=4326)
-            first.transform(5514)
-            second.transform(5514)
-            union = first.union(second)
-            union.transform(4326)
-            covered_geometry = geometry_json(union)
-        except (ImportError, OSError, TypeError, ValueError, RuntimeError):
-            # SQLite/GDAL-less deployments can still serve the projection.
-            pass
+        covered_features.append({"type": "Feature", "properties": {}, "geometry": geometry})
+    covered_geometry = (
+        {"type": "FeatureCollection", "features": covered_features} if covered_features else None
+    )
     return {
         "status": status,
         "total_length_meters": value.total_length_meters,
@@ -124,10 +122,14 @@ def _projection(
             }
             for item in monthly_query.order_by("month")
         ],
+        "partial": partial,
     }
 
 
 @extend_schema(
+    parameters=[
+        OpenApiParameter("competition_id", OpenApiTypes.UUID, OpenApiParameter.QUERY),
+    ],
     responses={
         200: ReferenceCompletionSerializer,
         401: OpenApiResponse(description="Authentication required."),
@@ -164,7 +166,28 @@ class ReferenceRouteCompletionView(GameEndpoint):
             )
         ):
             return _private(Response({"detail": "Reference route not found."}, status=404))
-        competition = player.active_competition
+        competition_id = reference_competition_id(request, player)
+        membership = (
+            CompetitionMembership.objects.select_related("competition")
+            .filter(
+                competition_id=competition_id,
+                player=player,
+                competition__is_active=True,
+            )
+            .first()
+            if competition_id is not None
+            else None
+        )
+        competition = membership.competition if membership is not None else None
+        if competition is None:
+            return _private(Response({"detail": "Reference route not found."}, status=404))
+        player_partial = StravaSyncState.objects.filter(
+            player=player, status__in=PARTIAL_SYNC_STATUSES
+        ).exists()
+        competition_partial = CompetitionMembership.objects.filter(
+            competition=competition,
+            player__strava_sync_state__status__in=PARTIAL_SYNC_STATUSES,
+        ).exists()
         player_result = RouteCompletion.objects.filter(
             route_version=route.current_version, player=player
         ).first()
@@ -218,6 +241,7 @@ class ReferenceRouteCompletionView(GameEndpoint):
                         version=version,
                         player=player,
                         competition=competition,
+                        partial=player_partial,
                     ),
                     "competition": _projection(
                         RouteCompletion.objects.filter(
@@ -228,6 +252,7 @@ class ReferenceRouteCompletionView(GameEndpoint):
                         version=version,
                         player=player,
                         competition=competition,
+                        partial=competition_partial,
                     ),
                 }
             )
@@ -242,12 +267,14 @@ class ReferenceRouteCompletionView(GameEndpoint):
                         version=route.current_version,
                         player=player,
                         competition=competition,
+                        partial=player_partial,
                     ),
                     "competition": _projection(
                         competition_result,
                         version=route.current_version,
                         player=player,
                         competition=competition,
+                        partial=competition_partial,
                     ),
                     "stages": stages,
                 }

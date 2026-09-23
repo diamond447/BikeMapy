@@ -26,6 +26,7 @@ type Projection = {
   error?: string
   covered_geometry?: unknown
   monthly?: Array<{ month: string; covered_length_meters: string }>
+  partial?: boolean
 }
 type RouteCompletion = {
   route_id: string
@@ -69,6 +70,21 @@ function saveState(state: { mode: 'player' | 'competition'; routeId?: string; st
   }
 }
 
+function detailKey(competitionId: string | undefined, routeId: string) {
+  return `${competitionId ?? ''}:${routeId}`
+}
+
+function currentPragueMonth() {
+  const parts = new Intl.DateTimeFormat('en', {
+    timeZone: 'Europe/Prague',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts()
+  const year = parts.find((part) => part.type === 'year')?.value ?? ''
+  const month = parts.find((part) => part.type === 'month')?.value ?? ''
+  return `${year}-${month}`
+}
+
 export function completionFeature(geometry: unknown, properties: Record<string, string> = {}) {
   return { type: 'Feature' as const, properties, geometry: geometry as never }
 }
@@ -89,7 +105,7 @@ function coordinates(geometry: unknown, result: Array<[number, number]> = []) {
   return result
 }
 
-export function completionPercent(projection: Projection | null) {
+export function completionPercent(projection: Projection | null | undefined) {
   return projection ? `${Number(projection.completion_percent).toFixed(1)}%` : '—'
 }
 
@@ -122,21 +138,33 @@ export function CompletionDashboard({
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
   const mapNode = useRef<HTMLDivElement>(null)
   const map = useRef<MapLibreMap | null>(null)
   const mapLoaded = useRef(false)
   const framedKey = useRef<string | null>(null)
+  const mapRequestSequence = useRef(0)
+  const [mapReady, setMapReady] = useState(false)
+  const currentMonth = useMemo(() => currentPragueMonth(), [])
 
   const loadRoutes = useCallback(async () => {
+    if (!competitionId) {
+      setRoutes([])
+      setLoading(false)
+      return
+    }
+    const requestSequence = ++mapRequestSequence.current
     setLoading(true)
     setError(null)
+    setDetailError(null)
     try {
       const result = await apiClient.GET('/api/v1/game/reference-routes/', {
-        params: { query: { page_size: 100 } },
+        params: { query: { page_size: 100, competition_id: competitionId } },
         credentials: 'include',
       })
       rememberCsrfToken(result.response)
       if (result.response?.status === 401) return
+      if (requestSequence !== mapRequestSequence.current) return
       if (!result.data) throw new Error('routes')
       const records = (result.data.results ?? []) as RouteSummary[]
       setRoutes(records)
@@ -149,38 +177,49 @@ export function CompletionDashboard({
     } finally {
       setLoading(false)
     }
-  }, [copy.gameCompletionError])
+  }, [competitionId, copy.gameCompletionError])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadRoutes(), 0)
     return () => window.clearTimeout(timer)
-  }, [loadRoutes])
+  }, [competitionId, loadRoutes])
 
   const loadDetail = useCallback(
     async (id: string) => {
+      if (!competitionId) return
+      const requestSequence = ++mapRequestSequence.current
+      const key = detailKey(competitionId, id)
       setDetailLoading(true)
       setError(null)
+      setDetailError(null)
       try {
         const result = await apiClient.GET('/api/v1/game/reference-routes/{route_id}/completion/', {
-          params: { path: { route_id: id } },
+          params: { path: { route_id: id }, query: { competition_id: competitionId } },
           credentials: 'include',
         })
+        if (requestSequence !== mapRequestSequence.current) return
         if (!result.data) throw new Error('completion')
-        setDetails((current) => ({ ...current, [id]: result.data as unknown as RouteCompletion }))
+        setDetails((current) => ({ ...current, [key]: result.data as unknown as RouteCompletion }))
       } catch {
+        if (requestSequence !== mapRequestSequence.current) return
+        setDetailError(copy.gameCompletionError)
         setError(copy.gameCompletionError)
       } finally {
-        setDetailLoading(false)
+        if (requestSequence === mapRequestSequence.current) setDetailLoading(false)
       }
     },
-    [copy.gameCompletionError],
+    [competitionId, copy.gameCompletionError],
   )
 
   useEffect(() => {
-    if (!routeId || details[routeId]) return
+    if (!routeId || !competitionId || details[detailKey(competitionId, routeId)]) return
     const timer = window.setTimeout(() => void loadDetail(routeId), 0)
     return () => window.clearTimeout(timer)
-  }, [details, loadDetail, routeId])
+  }, [competitionId, details, loadDetail, routeId])
+
+  useEffect(() => {
+    framedKey.current = null
+  }, [competitionId])
 
   useEffect(() => {
     saveState({ mode, routeId, stageId })
@@ -224,15 +263,19 @@ export function CompletionDashboard({
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       })
       mapLoaded.current = true
+      setMapReady(true)
     })
     return () => {
       mapLoaded.current = false
+      setMapReady(false)
+      framedKey.current = null
       instance.remove()
       map.current = null
     }
   }, [])
 
-  const selectedDetail = routeId ? details[routeId] : undefined
+  const selectedDetail =
+    routeId && competitionId ? details[detailKey(competitionId, routeId)] : undefined
   const selectedStage = selectedDetail?.stages.find((stage) => stage.route_id === stageId)
   const selectedGeometry = selectedStage?.geometry ?? selectedDetail?.geometry
   const selectedProjection = selectedStage?.[mode] ?? selectedDetail?.[mode]
@@ -246,20 +289,26 @@ export function CompletionDashboard({
   )
 
   useEffect(() => {
-    if (!mapLoaded.current || !selectedGeometry) return
+    if (!mapReady || !mapLoaded.current || !selectedGeometry) return
     const routeSource = map.current?.getSource('reference-route') as GeoJSONSource | undefined
     const coveredSource = map.current?.getSource('reference-covered') as GeoJSONSource | undefined
     routeSource?.setData({
       type: 'FeatureCollection',
       features: [completionFeature(selectedGeometry)],
     })
-    coveredSource?.setData({
-      type: 'FeatureCollection',
-      features: selectedProjection?.covered_geometry
-        ? [completionFeature(selectedProjection.covered_geometry)]
-        : [],
-    })
-    const key = `${routeId}:${stageId ?? ''}`
+    const coveredGeometry = selectedProjection?.covered_geometry
+    const coveredData =
+      coveredGeometry &&
+      typeof coveredGeometry === 'object' &&
+      'type' in coveredGeometry &&
+      coveredGeometry.type === 'FeatureCollection'
+        ? coveredGeometry
+        : {
+            type: 'FeatureCollection',
+            features: coveredGeometry ? [completionFeature(coveredGeometry)] : [],
+          }
+    coveredSource?.setData(coveredData as never)
+    const key = `${competitionId ?? ''}:${routeId}:${stageId ?? ''}`
     if (framedKey.current === key) return
     const points = coordinates(selectedGeometry)
     if (points.length > 1) {
@@ -274,12 +323,11 @@ export function CompletionDashboard({
       )
     }
     framedKey.current = key
-  }, [routeId, selectedGeometry, selectedProjection, stageId])
+  }, [competitionId, mapReady, routeId, selectedGeometry, selectedProjection, stageId])
 
   const selectRoute = (id: string) => {
     setRouteId(id)
     setStageId(undefined)
-    if (!details[id]) void loadDetail(id)
   }
   const selectByKeyboard = (index: number, event: React.KeyboardEvent) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -293,7 +341,9 @@ export function CompletionDashboard({
   const attributionText =
     typeof attribution.attribution_text === 'string' ? attribution.attribution_text : ''
   const attributionLicence = typeof attribution.licence === 'string' ? attribution.licence : ''
-  const latestMonth = selectedProjection?.monthly?.at(-1)
+  const currentMonthDistance = selectedProjection?.monthly?.find(
+    (item) => item.month.slice(0, 7) === currentMonth,
+  )
 
   if (signedOut)
     return (
@@ -369,7 +419,9 @@ export function CompletionDashboard({
                 <div key={group.key} className="completion-group">
                   <h2>{group.label}</h2>
                   {items.map((route) => {
-                    const detail = details[route.id]
+                    const detail = competitionId
+                      ? details[detailKey(competitionId, route.id)]
+                      : undefined
                     const projection = detail?.[mode]
                     const routeIndex = routes.indexOf(route)
                     return (
@@ -427,7 +479,15 @@ export function CompletionDashboard({
             {copy.gameCompletionLoading}
           </span>
         )}
-        {selectedSummary && selectedProjection && (
+        {selectedSummary && detailError && (
+          <aside className="completion-detail completion-detail-error">
+            <p role="alert">{detailError}</p>
+            <button type="button" onClick={() => routeId && void loadDetail(routeId)}>
+              {copy.gameCompletionRetry}
+            </button>
+          </aside>
+        )}
+        {selectedSummary && selectedProjection && !detailError && (
           <aside className="completion-detail">
             <span className="game-account-kicker">{copy.gameCompletionReference}</span>
             <h2>{selectedStage?.title ?? selectedDetail?.title ?? selectedSummary.title}</h2>
@@ -441,6 +501,9 @@ export function CompletionDashboard({
                 {selectedProjection.error ? ` — ${selectedProjection.error}` : ''}
               </p>
             )}
+            {selectedProjection.partial && (
+              <p className="completion-status completion-partial">{copy.gameCompletionPartial}</p>
+            )}
             <dl className="completion-stats">
               <div>
                 <dt>{copy.distance}</dt>
@@ -449,7 +512,9 @@ export function CompletionDashboard({
               <div>
                 <dt>{copy.gameCompletionNewDistance}</dt>
                 <dd>
-                  {latestMonth ? `${Number(latestMonth.covered_length_meters).toFixed(1)} m` : '—'}
+                  {currentMonthDistance
+                    ? `${Number(currentMonthDistance.covered_length_meters).toFixed(1)} m`
+                    : '—'}
                 </dd>
               </div>
             </dl>

@@ -631,6 +631,7 @@ export interface components {
       monthly: {
         [key: string]: unknown
       }[]
+      partial: boolean
     }
     ElevationProfilePoint: {
       /** Format: double */
@@ -2086,6 +2087,7 @@ export interface operations {
   v1_game_reference_routes_list: {
     parameters: {
       query?: {
+        competition_id?: string
         cursor?: string
         page_size?: number
         route_number?: string
@@ -2130,7 +2132,9 @@ export interface operations {
   }
   v1_game_reference_routes_completion_retrieve: {
     parameters: {
-      query?: never
+      query?: {
+        competition_id?: string
+      }
       header?: never
       path: {
         route_id: string

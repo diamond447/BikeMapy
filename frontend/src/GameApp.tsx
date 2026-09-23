@@ -247,6 +247,7 @@ export default function GameApp() {
   }, [loadMap])
 
   useEffect(() => {
+    if (viewMode !== 'activity') return
     if (!mapNode.current || map.current) return
     setMapLibreWorker(setWorkerUrl)
     const instance = new MapLibreMap({
@@ -325,7 +326,7 @@ export default function GameApp() {
       instance.remove()
       map.current = null
     }
-  }, [scheduleMapLoad])
+  }, [scheduleMapLoad, viewMode])
 
   useEffect(() => {
     if (!competitionId) return

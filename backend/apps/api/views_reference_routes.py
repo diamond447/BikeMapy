@@ -9,7 +9,6 @@ from uuid import UUID
 
 from django.conf import settings
 from django.db.models import Prefetch, QuerySet
-from django.utils.module_loading import import_string
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.exceptions import NotFound
@@ -20,6 +19,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.accounts.game_api import _current_player
+from apps.accounts.models import CompetitionMembership
 from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
@@ -32,27 +33,38 @@ from apps.reference_routes.models import (
 from .serializers_reference_routes import ReferenceRouteListSerializer, ReferenceRouteSerializer
 
 
-def reference_route_authorizer() -> Any:
-    """Resolve the authoritative competition-membership checker per request."""
-    return import_string(settings.REFERENCE_ROUTE_AUTHORIZER)
+def reference_competition_id(request: Request, player: Any) -> str | None:
+    """Return the requested or active competition visible to the player."""
+    raw = str(request.query_params.get("competition_id") or player.active_competition_id or "")
+    if not raw:
+        return None
+    try:
+        return str(UUID(raw))
+    except ValueError:
+        return None
+
+
+def reference_player_has_competition(request: Request, player: Any) -> bool:
+    competition_id = reference_competition_id(request, player)
+    if competition_id is None:
+        return False
+    return CompetitionMembership.objects.filter(
+        competition_id=competition_id,
+        player=player,
+        competition__is_active=True,
+    ).exists()
 
 
 class GameReferencePermission(BasePermission):
-    """Require the future game session contract, not any arbitrary Django user."""
+    """Require a current Strava player session and active membership."""
 
     def has_permission(self, request: Request, view: object) -> bool:
-        if not getattr(settings, "GAME_ENABLED", False) or not request.user.is_authenticated:
+        if not getattr(settings, "GAME_ENABLED", False):
             return False
-        claims = request.session.get("game_session")
-        if not bool(
-            isinstance(claims, dict)
-            and claims.get("competition_id")
-            and claims.get("reference_route_read") is True
-        ):
+        player = _current_player(request)
+        if player is None:
             return False
-        return bool(
-            reference_route_authorizer()(request.user, str(claims["competition_id"]), request)
-        )
+        return reference_player_has_competition(request, player)
 
 
 class ReferenceRoutePagination(CursorPagination):
@@ -151,6 +163,7 @@ def _private_headers(response: Response) -> Response:
 
 
 REFERENCE_PARAMETERS = [
+    OpenApiParameter("competition_id", OpenApiTypes.UUID, OpenApiParameter.QUERY),
     OpenApiParameter("source", OpenApiTypes.STR, OpenApiParameter.QUERY),
     OpenApiParameter("route_number", OpenApiTypes.STR, OpenApiParameter.QUERY),
     OpenApiParameter("cursor", OpenApiTypes.STR, OpenApiParameter.QUERY),
