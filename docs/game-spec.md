@@ -69,6 +69,19 @@ awards: they are deterministic derived views with documented evidence.
 
 ## Pre-implementation Strava agreement and display gate
 
+See the dated [Strava API and cross-member display review](strava-api-review.md)
+for the current decision. As of 2026-09-19, cross-member geometry, profile
+fields, and derived competition results are rejected or blocked by the current
+Strava API Agreement and API Policy. This specification remains a product
+design baseline, not permission to implement or enable those features.
+
+Completing the #65 review records the current rejection/blocker; it does not
+unblock #47, #49, or any downstream cross-member or derived-result issue. The
+affected issues remain blocked until Strava gives written approval for the
+proposed uses and the conflicting issue scopes receive approved revisions.
+Only a separately approved and reviewed personal-only issue may proceed while
+that cross-member gate remains blocked.
+
 Before implementing #47 or #49, the operator must complete a dedicated,
 approved review of the current Strava API Agreement, developer terms,
 documentation, and display policies. The review must be recorded in a
@@ -98,14 +111,16 @@ import policy, not permission to redistribute activity data to other people or
 to publish derived results. This specification does not grant that permission.
 The review must record any limitations, required wording, retention/deletion
 conditions, and attribution obligations. If rights are unresolved or denied,
-keep the cross-member game slice disabled (`GAME_ENABLED=false`). A safe
-personal-only fallback may allow a connected player to view their own imported
-geometry and own derived completion/capture results, but it must not display
-traces, profile data, leaderboards, or derived aggregates across members or
-competitions. This fallback is a separately reviewed and separately flagged
-mode (for example, `PERSONAL_ONLY_MODE=false`), not an activation of `/game`;
-it requires its own privacy and retention decision. Personal-only behavior is
-not approval to activate the cross-member game.
+keep the cross-member game slice disabled (`GAME_ENABLED=false`). The current
+personal-only fallback is deliberately narrow: a connected player may view
+their own source geometry and date in an owner-scoped view, but not capture
+territory, profile data for other people, leaderboards, or any group/monthly/
+other derived aggregate. A user-specific completion or capture result remains
+blocked until Strava confirms that the derived use is permitted. This fallback
+is a separately reviewed and separately flagged mode (for example,
+`PERSONAL_ONLY_MODE=false`), not an activation of `/game`; it requires its own
+privacy and retention decision. Personal-only behavior is not approval to
+activate the cross-member game.
 
 The gate is a release blocker for cross-user display and derived processing.
 Any changed Strava policy or product sharing scope requires a new approved
@@ -142,24 +157,23 @@ forgery and replay.
 
 - Explicit disconnect or provider deauthorization stops synchronization
   immediately. Revoke the provider authorization where Strava supports it,
-  delete local access and refresh credentials promptly, and invalidate active
-  player sessions and pending OAuth state. The player may reconnect through a
-  fresh OAuth flow.
-- During the 30-day reconnection window, retain only the imported activity
-  data and derived competition projections needed to support a fresh OAuth
-  reconnection and deterministic recomputation, plus a minimum non-content
-  player record: an internal account key, the immutable Strava athlete-ID
-  linkage, lifecycle state, and the deletion deadline. Provider access and
-  refresh credentials are already absent and must never be retained during
-  this window. Do not retain active sessions, profile image/name/nickname
-  fields, or new source metadata as part of this window.
-- A successful reconnection cancels pending deletion and resumes synchronization
-  safely; it must not duplicate the player or activities.
-- After 30 days disconnected, erase the minimum player record and immutable
-  athlete-ID linkage together with imported activities, memberships, and
-  derived competition results, then deterministically recompute affected
-  competitions. The bounded, non-content deletion tombstone and backup/replica
-  treatment described below are the only possible remaining records.
+  delete local access and refresh credentials promptly, invalidate active
+  player sessions and pending OAuth state, and begin deleting all applicable
+  imported Strava Data and derived competition data immediately. Complete the
+  deletion expeditiously and no later than 30 days; this deadline is an outer
+  limit, not a reconnection or retention window. Transient caches are purged
+  promptly and never exceed the seven-day maximum. The player may reconnect
+  only through a fresh OAuth flow after the deletion path has started.
+- A successful reconnection does not cancel deletion or restore deleted data;
+  it starts a fresh owner record/import after fresh authorization and must not
+  duplicate the player or activities. No imported activity, derived result,
+  profile field, or immutable athlete-ID linkage may be retained to support a
+  hypothetical reconnection.
+- When the deletion completes, deterministically recompute affected
+  competitions. The bounded, non-content deletion tombstone and
+  backup/replica treatment described below are the only possible remaining
+  records; they must not contain Strava Data, derived Personal Data, or an
+  athlete identifier.
 - A BikeMapy account deletion removes tokens, activities, memberships, and
   derived results immediately and triggers the same recomputation path.
 - Deleting a competition removes that competition and its derived data, but
@@ -528,7 +542,7 @@ The following boundaries are product requirements, not optional UI behavior.
 | Over-sharing Strava metadata | Expose only owner/color, geometry, and calendar date to members. Never return exact time, title, speed, or unrelated Strava fields. |
 | Hidden-track reconstruction | Accept only Strava-returned privacy-filtered geometry; never infer or reconstruct hidden portions. |
 | Webhook ordering and retry changing scores | Use idempotent event handling, versioned deterministic recomputation, and the chronology rules above. Delivery order must not affect final results. |
-| Deletion leaving private data or scores | Stop synchronization on disconnect/deauthorization, revoke where possible, delete credentials and invalidate sessions promptly, run the 30-day deletion job, support immediate account deletion, remove derived records, and recompute affected competitions. |
+| Deletion leaving private data or scores | Stop synchronization on disconnect/deauthorization, revoke where possible, delete credentials and invalidate sessions promptly, start deletion immediately, complete it expeditiously and no later than 30 days (never using that limit as a retention window), purge transient caches within seven days, remove derived records, and recompute affected competitions. |
 | Owner-admin overreach | Keep GitHub owner-admin login separate from Strava player identity and enforce the documented administration boundary. |
 
 The public catalogue’s privacy behavior remains documented in the
@@ -568,17 +582,20 @@ until its dependent behavior, privacy controls, and rollout evidence are ready.
 The issue titles below are copied exactly so that this specification remains
 cross-referenceable:
 
-`S` below is a required Strava API agreement/display-policy gate, not a
-feature issue. It must be tracked by a dedicated approved issue or an
-explicitly approved specification update before either #47 or #49 starts.
+`S` below is a required positive Strava API agreement/display-policy gate, not a
+feature issue. The #65 review records a rejection/blocker and therefore does
+not satisfy this gate. A dedicated written Strava approval and an approved
+revision to any conflicting issue scope are required before #47 or #49, or any
+affected cross-member/derived issue, starts. Only a separately approved and
+reviewed personal-only issue may proceed while this gate remains blocked.
 
 | Order | Issue | Depends on |
 | ---: | --- | --- |
 | 1 | [#48 docs: specify the private Strava completion game](https://github.com/diamond447/BikeMapy/issues/48) | — |
-| S | Strava API agreement/display-policy review (dedicated approved issue or approved specification update) | #48; current legal/provider review |
-| 2 | [#47 feature: add Strava sign-in and player accounts](https://github.com/diamond447/BikeMapy/issues/47) | #48, S; authentication foundations in [#12 feature: secure owner administration and moderation](https://github.com/diamond447/BikeMapy/issues/12) |
+| S | Strava API agreement/display-policy approval (dedicated written Strava approval and approved specification/issue-scope revision) | #48; current legal/provider review; #65 records a rejection/blocker and does not satisfy S |
+| 2 | [#47 feature: add Strava sign-in and player accounts](https://github.com/diamond447/BikeMapy/issues/47) | #48, S-positive approval; authentication foundations in [#12 feature: secure owner administration and moderation](https://github.com/diamond447/BikeMapy/issues/12); otherwise blocked (a personal-only replacement requires separate approval) |
 | 3 | [#46 feature: add invite-only game competitions](https://github.com/diamond447/BikeMapy/issues/46) | #47 |
-| 4 | [#49 feature: synchronize eligible Strava cycling activities](https://github.com/diamond447/BikeMapy/issues/49) | #47, #46, S |
+| 4 | [#49 feature: synchronize eligible Strava cycling activities](https://github.com/diamond447/BikeMapy/issues/49) | #47, #46, S-positive approval and approved scope revision; otherwise blocked |
 | 5 | [#51 docs: evaluate official route sources for game completion](https://github.com/diamond447/BikeMapy/issues/51) | #48; coordinate with [#17 docs: complete legal, attribution, privacy, and removal launch gates](https://github.com/diamond447/BikeMapy/issues/17) |
 | 6 | [#53 feature: import and version official completion routes](https://github.com/diamond447/BikeMapy/issues/53) | #51 |
 | 7a | [#50 feature: calculate individual and group route completion](https://github.com/diamond447/BikeMapy/issues/50) | #49, #53 |
@@ -605,11 +622,14 @@ The diagram also includes the required `#49 ──> #55` dependency: topology an
 chronology fixtures cannot be validated until the eligible activity pipeline
 exists. The table is authoritative for all dependency edges.
 
-The graph permits #51, #50, #52, and #55 to proceed when their own
-dependencies are complete. It does not authorize a long-lived `strava`
-integration branch or a large end-of-project merge. Every merged increment
-must keep the public catalogue independently usable and the game safely
-disabled when its flag is off.
+The current S outcome is rejected/blocked, so completing #65 does not unblock
+#47, #49, or the cross-member/derived issues #46, #50, #52, #54, #55, #56, or
+#57. They remain blocked pending written Strava approval and approved
+revisions to conflicting issue scope. This document does not edit those issue
+descriptions or grant implementation permission. A separately approved and
+reviewed personal-only issue is the only permitted path to proceed before
+that approval. Every merged increment must keep the public catalogue
+independently usable and the game safely disabled when its flag is off.
 
 ## Verification and rollout gates
 
@@ -617,9 +637,10 @@ Before enabling any game slice, tests must cover its focused behavior and the
 public catalogue must still pass its documented quality checks. In particular,
 the implementation sequence must verify:
 
-- the approved Strava API agreement/display-policy gate, participant consent,
-  required branding/attribution, retention/deletion terms, and the personal-
-  only fallback when cross-member rights are unresolved;
+- the positively approved Strava API agreement/display-policy gate (the #65
+  review alone is a rejection/blocker), participant consent, required
+  branding/attribution, retention/deletion terms, and the personal-only
+  fallback when cross-member rights are unresolved;
 - OAuth lifecycle, token redaction, callback replay, and revocation;
 - competition membership, invite rotation, ownership transfer, colors, and
   deletion/recomputation;
