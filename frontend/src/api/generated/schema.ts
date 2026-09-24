@@ -332,6 +332,54 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/reference-routes/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_list']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/{route_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/{route_id}/completion/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_completion_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/webhooks/strava/': {
     parameters: {
       query?: never
@@ -568,6 +616,23 @@ export interface components {
       /** Format: uuid */
       active_competition_id: string | null
     }
+    CompletionProjection: {
+      status: string
+      /** Format: decimal */
+      total_length_meters: string
+      /** Format: decimal */
+      covered_length_meters: string
+      /** Format: decimal */
+      completion_percent: string
+      /** Format: date-time */
+      calculated_at: string | null
+      error: string
+      covered_geometry: unknown
+      monthly: {
+        [key: string]: unknown
+      }[]
+      partial: boolean
+    }
     ElevationProfilePoint: {
       /** Format: double */
       distance_m: number
@@ -603,6 +668,19 @@ export interface components {
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
+    PaginatedReferenceRouteListList: {
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cD00ODY%3D"
+       */
+      next?: string | null
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+       */
+      previous?: string | null
+      results: components['schemas']['ReferenceRouteList'][]
+    }
     PaginatedRouteList: {
       /** @example 123 */
       count: number
@@ -642,6 +720,13 @@ export interface components {
       player: components['schemas']['Player']
     }
     /**
+     * @description * `pending` - Pending publication review
+     *     * `approved` - Approved
+     *     * `rejected` - Rejected
+     * @enum {string}
+     */
+    PublicationStatusEnum: 'pending' | 'approved' | 'rejected'
+    /**
      * @description * `incorrect_route` - Incorrect route
      *     * `source_attribution` - Source or attribution
      *     * `author_removal` - Author removal
@@ -651,6 +736,68 @@ export interface components {
      */
     ReasonEnum:
       'incorrect_route' | 'source_attribution' | 'author_removal' | 'rights_holder' | 'other'
+    ReferenceCompletion: {
+      /** Format: uuid */
+      route_id: string
+      version: number
+      player: components['schemas']['CompletionProjection'] | null
+      competition: components['schemas']['CompletionProjection'] | null
+      stages: {
+        [key: string]: unknown
+      }[]
+      title: string
+      route_number: string
+      source_kind: string
+      geometry: unknown
+      attribution: {
+        [key: string]: unknown
+      }
+    }
+    ReferenceRoute: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+      readonly source_kind: string
+      readonly version: number
+      readonly version_attribution_metadata: {
+        [key: string]: unknown
+      }
+      readonly geometry: unknown
+      readonly stages: components['schemas']['ReferenceStage'][]
+    }
+    ReferenceRouteList: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+      readonly source_kind: string
+    }
+    ReferenceStage: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      readonly geometry: unknown
+      readonly attribution: {
+        [key: string]: unknown
+      }
+    }
     ReportSubmission: {
       reason: components['schemas']['ReasonEnum']
       message: string
@@ -1934,6 +2081,89 @@ export interface operations {
         content: {
           'application/json': components['schemas']['CompetitionErrorResponse']
         }
+      }
+    }
+  }
+  v1_game_reference_routes_list: {
+    parameters: {
+      query?: {
+        competition_id?: string
+        cursor?: string
+        page_size?: number
+        route_number?: string
+        source?: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PaginatedReferenceRouteListList']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceRoute']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_completion_retrieve: {
+    parameters: {
+      query?: {
+        competition_id?: string
+      }
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceCompletion']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Reference route not found. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }

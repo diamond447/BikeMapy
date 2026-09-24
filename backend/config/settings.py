@@ -60,6 +60,18 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
         "DJANGO_DEBUG must be explicitly set to false in production deployments"
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
+GAME_ENABLED = env_bool("GAME_ENABLED", False)
+REFERENCE_ROUTE_AUTHORIZER = os.getenv(
+    "REFERENCE_ROUTE_AUTHORIZER",
+    "apps.api.reference_authorization.default_reference_route_authorizer",
+)
+REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = os.getenv(
+    "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL",
+    "",
+)
+# Synthetic source snapshots are useful in local tests, but must be explicitly
+# enabled and can never satisfy the production publication gate.
+REFERENCE_ROUTE_ALLOW_TEST_IMPORTS = env_bool("REFERENCE_ROUTE_ALLOW_TEST_IMPORTS", False)
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")
@@ -91,6 +103,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.api",
     "apps.analytics",
+    "apps.reference_routes",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
     # Host-side smoke checks can run without native GeoDjango libraries. The
@@ -154,6 +167,13 @@ STRAVA_SYNC_PAGES_PER_RUN = int(os.getenv("STRAVA_SYNC_PAGES_PER_RUN", "5"))
 STRAVA_SYNC_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_LEASE_SECONDS", "600"))
 STRAVA_SYNC_DISPATCH_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_DISPATCH_LEASE_SECONDS", "60"))
 STRAVA_SYNC_MAX_RETRY_AFTER = int(os.getenv("STRAVA_SYNC_MAX_RETRY_AFTER", "3600"))
+ROUTE_COMPLETION_TOLERANCE_METERS = float(os.getenv("ROUTE_COMPLETION_TOLERANCE_METERS", "50"))
+ROUTE_COMPLETION_LEASE_SECONDS = int(os.getenv("ROUTE_COMPLETION_LEASE_SECONDS", "600"))
+ROUTE_COMPLETION_DISPATCH_LEASE_SECONDS = int(
+    os.getenv("ROUTE_COMPLETION_DISPATCH_LEASE_SECONDS", "60")
+)
+ROUTE_COMPLETION_MAX_ACTIVITIES = int(os.getenv("ROUTE_COMPLETION_MAX_ACTIVITIES", "10000"))
+REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = env_bool("REFERENCE_ROUTE_VIA_CZECHIA_ENABLED", False)
 STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "STRAVA_OAUTH_REDIRECT_URI",
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
@@ -435,6 +455,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "dispatch-strava-sync": {
         "task": "bikemapy.accounts.dispatch_strava_sync",
+        "schedule": 60,
+    },
+    "dispatch-route-completions": {
+        "task": "bikemapy.reference_routes.dispatch_completion_jobs",
         "schedule": 60,
     },
 }

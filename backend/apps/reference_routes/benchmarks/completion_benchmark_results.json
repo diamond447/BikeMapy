@@ -1,0 +1,18 @@
+{
+  "recorded_at": "2026-09-21",
+  "environment": "Docker sandbox, Python 3.13, GEOS metric transform",
+  "fixture": "dense-noisy-50m-corridor",
+  "activity_count": 12,
+  "total_length_meters": 7211.433,
+  "covered_length_meters": 7211.433,
+  "coverage_percent": 100.0,
+  "accuracy_error_percent": 0.0,
+  "accuracy_threshold_percent": 0.5,
+  "accuracy_pass": true,
+  "runs": 15,
+  "median_ms": 595.55,
+  "p95_ms": 828.281,
+  "median_threshold_ms": 1000.0,
+  "performance_pass": true,
+  "notes": "SQLite/GEOS baseline; rerun on the production PostGIS service before changing policy."
+}

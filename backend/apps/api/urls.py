@@ -30,6 +30,8 @@ from apps.analytics.api import AnalyticsEventView
 from apps.reports.api import RouteReportView
 
 from .views import api_root
+from .views_reference_completion import ReferenceRouteCompletionView
+from .views_reference_routes import ReferenceRouteDetailView, ReferenceRouteListView
 from .views_routes import (
     RouteDetailView,
     RouteGpxDownloadView,
@@ -114,6 +116,19 @@ urlpatterns = [
     path("routes/<uuid:route_id>/", RouteDetailView.as_view(), name="public-route-detail"),
     path("routes/<uuid:route_id>/gpx/", RouteGpxDownloadView.as_view(), name="public-route-gpx"),
     path("routes/<uuid:route_id>/reports/", RouteReportView.as_view(), name="public-route-report"),
+    path(
+        "game/reference-routes/", ReferenceRouteListView.as_view(), name="game-reference-route-list"
+    ),
+    path(
+        "game/reference-routes/<uuid:route_id>/",
+        ReferenceRouteDetailView.as_view(),
+        name="game-reference-route-detail",
+    ),
+    path(
+        "game/reference-routes/<uuid:route_id>/completion/",
+        ReferenceRouteCompletionView.as_view(),
+        name="game-reference-route-completion",
+    ),
     path("routes/by-slug/<slug:slug>/", RouteDetailView.as_view(), name="public-route-by-slug"),
     # This explicit name documents that geometry is only returned for a
     # selected route, never as a bulk payload.

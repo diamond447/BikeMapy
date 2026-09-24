@@ -262,6 +262,11 @@ def schedule_recomputation(
         from .capture_services import schedule_capture_calculation
 
         schedule_capture_calculation(locked_competition, reason="recomputation")
+        from apps.reference_routes.completion_services import schedule_competition_completions
+
+        schedule_competition_completions(
+            locked_competition, reason="competition-membership-or-activity-change"
+        )
     # Keep the caller's model instance coherent with the committed revision;
     # callers such as join_competition return this instance to their API layer.
     competition.revision = locked_competition.revision
