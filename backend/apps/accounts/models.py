@@ -1,0 +1,191 @@
+"""Private player identity and Strava credential lifecycle models."""
+
+from __future__ import annotations
+
+import hashlib
+import secrets
+from datetime import timedelta
+from uuid import uuid4
+
+from django.conf import settings
+from django.db import models
+from django.utils import timezone
+
+from .fields import EncryptedSecretField
+
+OAUTH_STATE_TTL = timedelta(minutes=10)
+
+
+class Player(models.Model):
+    class Lifecycle(models.TextChoices):
+        CONNECTED = "connected", "Connected"
+        DISCONNECTED = "disconnected", "Disconnected"
+        PENDING_DELETION = "pending-deletion", "Pending deletion"
+        DELETED = "deleted", "Deleted"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="player"
+    )
+    strava_athlete_id = models.PositiveBigIntegerField(unique=True)
+    strava_display_name = models.CharField(max_length=240, blank=True)
+    strava_profile_image_url = models.URLField(max_length=500, blank=True)
+    nickname = models.CharField(max_length=80, blank=True)
+    lifecycle = models.CharField(
+        max_length=24, choices=Lifecycle.choices, default=Lifecycle.CONNECTED
+    )
+    deletion_deadline = models.DateTimeField(null=True, blank=True)
+    session_epoch = models.PositiveBigIntegerField(default=0)
+    connected_at = models.DateTimeField(default=timezone.now)
+    disconnected_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("pk",)
+
+    def __str__(self) -> str:
+        return f"Player {self.strava_athlete_id}"
+
+    def invalidate_sessions(self) -> None:
+        self.session_epoch += 1
+        self.save(update_fields=("session_epoch", "updated_at"))
+
+    def mark_disconnected(self, *, pending_deletion: bool = True) -> None:
+        now = timezone.now()
+        self.lifecycle = (
+            self.Lifecycle.PENDING_DELETION if pending_deletion else self.Lifecycle.DISCONNECTED
+        )
+        self.disconnected_at = now
+        self.deletion_deadline = now + timedelta(days=30) if pending_deletion else None
+        self.strava_display_name = ""
+        self.strava_profile_image_url = ""
+        self.nickname = ""
+        self.invalidate_sessions()
+        self.save(
+            update_fields=(
+                "lifecycle",
+                "disconnected_at",
+                "deletion_deadline",
+                "strava_display_name",
+                "strava_profile_image_url",
+                "nickname",
+                "updated_at",
+            )
+        )
+
+    def restore_connection(self) -> None:
+        self.lifecycle = self.Lifecycle.CONNECTED
+        self.deletion_deadline = None
+        self.disconnected_at = None
+        self.connected_at = timezone.now()
+        self.save(
+            update_fields=(
+                "lifecycle",
+                "deletion_deadline",
+                "disconnected_at",
+                "connected_at",
+                "updated_at",
+            )
+        )
+
+
+class PlayerCredential(models.Model):
+    player = models.OneToOneField(Player, on_delete=models.CASCADE, related_name="credential")
+    access_token = EncryptedSecretField()
+    refresh_token = EncryptedSecretField()
+    expires_at = models.DateTimeField()
+    scopes = models.JSONField(default=list)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Credentials for player {self.player_id}"
+
+
+class PlayerIdentityGuard(models.Model):
+    """Non-content synchronization state keyed by a one-way athlete digest."""
+
+    identity_digest = models.CharField(max_length=64, unique=True)
+    invalidated_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=("invalidated_at",))]
+
+    def __str__(self) -> str:
+        return f"Player identity guard {self.pk}"
+
+
+class RevocationJob(models.Model):
+    """Bounded, encrypted retry state for provider deauthorization."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        FAILED = "failed", "Failed"
+
+    access_token = EncryptedSecretField(null=True, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    last_error = models.CharField(max_length=80, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    def __str__(self) -> str:
+        return f"Provider revocation job {self.pk}"
+
+
+class PlayerDeletionTombstone(models.Model):
+    """Bounded non-content proof that a player deletion completed."""
+
+    class Status(models.TextChoices):
+        COMPLETED = "completed", "Completed"
+
+    event_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.COMPLETED, editable=False
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [models.Index(fields=("expires_at",))]
+
+    def __str__(self) -> str:
+        return f"Player deletion {self.event_id}"
+
+
+class OAuthState(models.Model):
+    """Single-use, session-bound state; only a digest is persisted."""
+
+    state_digest = models.CharField(max_length=64, unique=True)
+    session_key = models.CharField(max_length=40)
+    player = models.ForeignKey(
+        Player, on_delete=models.CASCADE, null=True, blank=True, related_name="oauth_states"
+    )
+    player_session_epoch = models.PositiveBigIntegerField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"OAuth state {self.pk}"
+
+    @classmethod
+    def issue(
+        cls,
+        session_key: str,
+        *,
+        player: Player | None = None,
+    ) -> tuple[OAuthState, str]:
+        raw = secrets.token_urlsafe(32)
+        state = cls.objects.create(
+            state_digest=hashlib.sha256(raw.encode()).hexdigest(),
+            session_key=session_key,
+            player=player,
+            player_session_epoch=player.session_epoch if player else None,
+            expires_at=timezone.now() + OAUTH_STATE_TTL,
+        )
+        return state, raw
+
+    @staticmethod
+    def digest(raw: str) -> str:
+        return hashlib.sha256(raw.encode()).hexdigest()

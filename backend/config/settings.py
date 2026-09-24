@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -99,6 +100,7 @@ if DATABASE_ENGINE == "django.db.backends.sqlite3":
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "config.middleware.TrustedProxyClientIdentityMiddleware",
+    "config.middleware.CredentialedCorsOriginMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "config.middleware.PreviewReadOnlyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -122,6 +124,8 @@ AUTHENTICATION_BACKENDS = [
 ]
 LOGIN_REDIRECT_URL = "/admin/"
 SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
+SOCIALACCOUNT_STORE_TOKENS = False
+SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 ACCOUNT_EMAIL_VERIFICATION = "none"
 SOCIALACCOUNT_PROVIDERS: dict[str, dict[str, Any]] = {
     "github": {
@@ -135,6 +139,64 @@ if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
         "client_id": GITHUB_OAUTH_CLIENT_ID,
         "secret": GITHUB_OAUTH_CLIENT_SECRET,
     }
+
+GAME_ENABLED = env_bool("GAME_ENABLED", False)
+STRAVA_OAUTH_CLIENT_ID = os.getenv("STRAVA_OAUTH_CLIENT_ID", "")
+STRAVA_OAUTH_CLIENT_SECRET = os.getenv("STRAVA_OAUTH_CLIENT_SECRET", "")
+STRAVA_TOKEN_ENCRYPTION_KEY = os.getenv("STRAVA_TOKEN_ENCRYPTION_KEY", "")
+STRAVA_IDENTITY_GUARD_KEY = os.getenv("STRAVA_IDENTITY_GUARD_KEY", "")
+STRAVA_OAUTH_REDIRECT_URI = os.getenv(
+    "STRAVA_OAUTH_REDIRECT_URI",
+    "http://localhost:8000/api/v1/game/auth/strava/callback/",
+)
+GAME_FRONTEND_URL = os.getenv("GAME_FRONTEND_URL", "http://localhost:5173/game")
+
+
+def validate_game_frontend_url(value: str) -> None:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != "/game"
+    ):
+        raise ImproperlyConfigured(
+            "GAME_FRONTEND_URL must be an absolute /game URL without credentials or fragments"
+        )
+    if GAME_ENABLED and DEPLOYMENT_MODE == "production" and parsed.scheme != "https":
+        raise ImproperlyConfigured("GAME_FRONTEND_URL must use HTTPS in production")
+
+
+validate_game_frontend_url(GAME_FRONTEND_URL)
+if GAME_ENABLED:
+    missing_game_settings = [
+        name
+        for name, value in (
+            ("STRAVA_OAUTH_CLIENT_ID", STRAVA_OAUTH_CLIENT_ID),
+            ("STRAVA_OAUTH_CLIENT_SECRET", STRAVA_OAUTH_CLIENT_SECRET),
+            ("STRAVA_TOKEN_ENCRYPTION_KEY", STRAVA_TOKEN_ENCRYPTION_KEY),
+            ("STRAVA_IDENTITY_GUARD_KEY", STRAVA_IDENTITY_GUARD_KEY),
+        )
+        if not value
+    ]
+    if missing_game_settings:
+        raise ImproperlyConfigured("GAME_ENABLED requires: " + ", ".join(missing_game_settings))
+    try:
+        from cryptography.fernet import Fernet
+
+        Fernet(STRAVA_TOKEN_ENCRYPTION_KEY.encode())
+    except (ImportError, TypeError, ValueError) as exc:
+        raise ImproperlyConfigured(
+            "STRAVA_TOKEN_ENCRYPTION_KEY must be a valid Fernet key when GAME_ENABLED=true"
+        ) from exc
+    if len(STRAVA_IDENTITY_GUARD_KEY) < 32 or len(set(STRAVA_IDENTITY_GUARD_KEY)) < 12:
+        raise ImproperlyConfigured(
+            "STRAVA_IDENTITY_GUARD_KEY must be at least 32 characters and "
+            "contain sufficient variation"
+        )
 
 # Authorization uses GitHub's immutable numeric account ID.  Keep this empty
 # by default so a deployment must explicitly opt in to owner administration.
@@ -200,6 +262,16 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
     if origin
 ]
+if any(
+    origin == "*" or urlsplit(origin).scheme not in {"http", "https"} or not urlsplit(origin).netloc
+    for origin in CORS_ALLOWED_ORIGINS
+):
+    raise ImproperlyConfigured("CORS_ALLOWED_ORIGINS must contain explicit HTTP(S) origins")
+# Credentialed browser requests are enabled only for the explicit origin list;
+# preview regex origins remain read-only and cannot receive player cookies.
+CORS_ALLOW_CREDENTIALS = bool(CORS_ALLOWED_ORIGINS)
+CORS_EXPOSE_HEADERS = ["X-CSRFToken"]
+CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
 READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
     "READ_ONLY_PREVIEW_ORIGIN_REGEX",
     r"\Ahttps://([a-z0-9-]+\.)+bikemapy\.pages\.dev\Z",
@@ -327,6 +399,18 @@ CELERY_BEAT_SCHEDULE = {
     "cleanup-crawler-response-cache": {
         "task": "bikemapy.ingestion.cleanup_crawl_response_cache",
         "schedule": 3600,
+    },
+    "purge-expired-player-accounts": {
+        "task": "bikemapy.accounts.purge_expired_players",
+        "schedule": 3600,
+    },
+    "cleanup-strava-identity-guards": {
+        "task": "bikemapy.accounts.cleanup_identity_guards",
+        "schedule": 900,
+    },
+    "retry-player-revocations": {
+        "task": "bikemapy.accounts.retry_revocations",
+        "schedule": 900,
     },
 }
 
