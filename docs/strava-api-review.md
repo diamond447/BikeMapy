@@ -1,6 +1,6 @@
 # Strava API and cross-member display review
 
-**Review date:** 2026-09-19
+**Review date:** 2026-09-19  
 **Status:** cross-member game blocked; personal-only fallback only; not legal advice
 
 This is an engineering and product record of the primary Strava sources checked
