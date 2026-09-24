@@ -100,6 +100,7 @@ export default function GameApp() {
     }
   })
   const [mapReady, setMapReady] = useState(false)
+  const [mapSourceLoaded, setMapSourceLoaded] = useState(false)
   const traceCloseRef = useRef<HTMLButtonElement>(null)
   const traceButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const originatingTraceRef = useRef<string | null>(null)
@@ -181,6 +182,7 @@ export default function GameApp() {
     if (lastMapRequestKey.current === requestKey) return
     lastMapRequestKey.current = requestKey
     mapRequestInFlight.current = true
+    setMapSourceLoaded(false)
     setMapLoading(true)
     try {
       const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/map/', {
@@ -218,6 +220,8 @@ export default function GameApp() {
         const onSourceData = (event: MapSourceDataEvent) => {
           if (event.sourceId !== 'private-traces' || !event.isSourceLoaded) return
           map.current?.off('sourcedata', onSourceData)
+          if (latestMapRequestKey.current !== requestKey) return
+          setMapSourceLoaded(true)
           window.requestAnimationFrame(() => {
             performance.measure('game-map-response-to-render', startMark)
             performance.clearMarks(startMark)
@@ -545,6 +549,8 @@ export default function GameApp() {
             aria-label={copy.gameMapInteractive}
             data-map-source-loaded={mapReady ? 'true' : 'false'}
             data-map-response-loaded={mapData ? 'true' : 'false'}
+            data-map-source-data-loaded={mapSourceLoaded ? 'true' : 'false'}
+            data-map-feature-count={mapData?.activities.length ?? 0}
           >
             <div
               ref={mapNode}

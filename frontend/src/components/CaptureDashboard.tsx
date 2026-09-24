@@ -102,6 +102,7 @@ export function CaptureDashboard({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [errorCompetitionId, setErrorCompetitionId] = useState<string | undefined>()
+  const [captureSourceLoaded, setCaptureSourceLoaded] = useState(false)
   const [visibility, setVisibility] = useState<{
     competitionId?: string
     members: Set<number> | null
@@ -117,6 +118,7 @@ export function CaptureDashboard({
   const loadCapture = useCallback(async () => {
     if (!competitionId || !mapLoaded.current || !map.current) return
     const sequence = ++requestSequence.current
+    setCaptureSourceLoaded(false)
     setLoading(true)
     setError(null)
     const current = bounds.current
@@ -234,7 +236,8 @@ export function CaptureDashboard({
     const onSourceData = (event: MapSourceDataEvent) => {
       if (event.sourceId !== 'capture-territory' || !event.isSourceLoaded) return
       activeMap.off('sourcedata', onSourceData)
-      performance.measure('capture-response-to-render', mark)
+      setCaptureSourceLoaded(true)
+      performance.measure('capture-response-to-source', mark)
       performance.clearMarks(mark)
     }
     activeMap.on('sourcedata', onSourceData)
@@ -367,6 +370,8 @@ export function CaptureDashboard({
           className="game-map-canvas"
           role="application"
           aria-label={copy.gameMapInteractive}
+          data-capture-source-data-loaded={captureSourceLoaded ? 'true' : 'false'}
+          data-capture-feature-count={activeCapture?.faces.length ?? 0}
         />
         {activeCapture?.is_final && (
           <span className="capture-map-status">{copy.gameCaptureFinal}</span>

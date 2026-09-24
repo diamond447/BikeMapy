@@ -25,10 +25,14 @@ equal-share area, so a face with multiple owners contributes the same face area
 divided equally to each owner. Leaderboard ranks are global and stable for the
 response, including when a member visibility filter hides faces. Each
 `monthly_net_change_m2` row is the signed difference between consecutive fresh
-player-area snapshots, bucketed by the Prague-local completion month. The first
+player-area snapshots, bucketed by the Prague-local publication month. The first
 fresh snapshot is compared with zero; removals and reassignments therefore
 appear as negative values. This history is independent of the requested map
 viewport.
+
+The browser acceptance journey measures `capture-response-to-source` completion
+and requires it to stay at or below 1,000 ms for the bounded fixture. This is a
+non-trivial UI performance guard, not an API latency service-level objective.
 
 Pending and running generations return `pending` while retaining the last
 fresh snapshot when one exists. A failed generation returns `failed` with that

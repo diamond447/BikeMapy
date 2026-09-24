@@ -28,6 +28,7 @@ const activity = {
     ],
   },
 }
+const CAPTURE_SOURCE_COMPLETION_BUDGET_MS = 1000
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/styles/liberty*', (route) =>
@@ -295,11 +296,19 @@ test('capture mode keeps global ranks while member visibility changes', async ({
   await page.getByRole('tab', { name: 'Capture' }).click()
   await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
   await expect(page.locator('[data-capture-response-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-source-data-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-feature-count="1"]')).toBeVisible()
   await expect
     .poll(() =>
-      page.evaluate(() => performance.getEntriesByName('capture-response-to-render').length),
+      page.evaluate(() => performance.getEntriesByName('capture-response-to-source').length),
     )
     .toBeGreaterThan(0)
+  const captureSourceDuration = await page.evaluate(() =>
+    Math.max(
+      ...performance.getEntriesByName('capture-response-to-source').map((entry) => entry.duration),
+    ),
+  )
+  expect(captureSourceDuration).toBeLessThanOrEqual(CAPTURE_SOURCE_COMPLETION_BUDGET_MS)
   await expect(page.getByText('Area leaderboard')).toBeVisible()
   await expect(page.getByText('+12.3')).toBeVisible()
   await expect(page.getByText('-4.5')).toBeVisible()
@@ -325,7 +334,7 @@ test('capture mode keeps global ranks while member visibility changes', async ({
   await expect(page.locator('.capture-ledger')).toBeVisible()
 })
 
-test('private game journey joins by invite, syncs activity, removes a member, and switches maps', async ({
+test('private game journey joins by invite, syncs activity, switches maps, and removes a member', async ({
   page,
 }) => {
   let activeMembers = [...competition.members]
@@ -413,26 +422,105 @@ test('private game journey joins by invite, syncs activity, removes a member, an
     await route.fulfill({ status: 204 })
   })
 
+  const routeId = '33333333-3333-4333-8333-333333333333'
+  const routeGeometry = {
+    type: 'LineString',
+    coordinates: [
+      [14, 49],
+      [14.2, 49.2],
+    ],
+  }
+  await page.route('**/api/v1/game/reference-routes/**', async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith('/completion/')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          route_id: routeId,
+          version: 1,
+          title: 'Via Czechia north',
+          route_number: '1',
+          source_kind: 'via_czechia',
+          geometry: routeGeometry,
+          attribution: { attribution_text: 'Via Czechia', licence: 'ODbL' },
+          player: {
+            status: 'fresh',
+            total_length_meters: '20000.000',
+            covered_length_meters: '7400.000',
+            completion_percent: '37.000',
+            calculated_at: '2026-09-21T00:00:00Z',
+            error: '',
+            covered_geometry: routeGeometry,
+            monthly: [],
+          },
+          competition: {
+            status: 'pending',
+            total_length_meters: '20000.000',
+            covered_length_meters: '0.000',
+            completion_percent: '0.000',
+            calculated_at: null,
+            error: '',
+            covered_geometry: null,
+            monthly: [],
+          },
+          stages: [],
+        }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        next: null,
+        previous: null,
+        results: [
+          {
+            id: routeId,
+            source_identifier: 'vc-1',
+            route_number: '1',
+            title: 'Via Czechia north',
+            operator: 'Via Czechia',
+            network: 'via-czechia',
+            publication_status: 'approved',
+            source_kind: 'via_czechia',
+            attribution: { attribution_text: 'Via Czechia' },
+            stages: [],
+          },
+        ],
+      }),
+    })
+  })
+
   await page.goto('/game')
   await page.getByRole('button', { name: 'Player account' }).click()
   await expect(page.getByRole('heading', { name: 'Your rides, kept private' })).toBeVisible()
+  await page.getByPlaceholder('Enter invite code').fill('JOIN-9')
+  await page.getByRole('button', { name: 'Join competition' }).click()
+  await expect(page.getByText('New rider')).toBeVisible()
+
   await expect(page.getByText('Up to date')).toBeVisible()
   await page.getByRole('button', { name: 'Import my full Strava history' }).click()
   await expect(page.getByText(/Full history is queued/)).toBeVisible()
 
-  await page.getByPlaceholder('Enter invite code').fill('JOIN-9')
-  await page.getByRole('button', { name: 'Join competition' }).click()
-  await expect(page.getByText('New rider')).toBeVisible()
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-map-source-data-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-map-feature-count="1"]')).toBeVisible()
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+  await page.getByRole('button', { name: /1 Via Czechia north/ }).click()
+  await expect(page.locator('.completion-detail').getByText('37.0%')).toBeVisible()
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
+  await expect(page.locator('[data-capture-response-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-source-data-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-feature-count="1"]')).toBeVisible()
+
   const memberRow = page.locator('.game-competition-member').filter({ hasText: 'Rider two' })
   await memberRow.getByRole('button', { name: 'Remove' }).click()
   await expect(memberRow).not.toBeVisible()
-
-  await page.getByRole('tab', { name: 'Activity' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
-  await page.getByRole('tab', { name: 'Completion' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
-  await page.getByRole('tab', { name: 'Capture' }).click()
-  await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
 })
 
 test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
