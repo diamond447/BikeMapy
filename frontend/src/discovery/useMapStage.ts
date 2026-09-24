@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
-import type { Geometry as GeoJSONGeometry } from 'geojson'
 import { MAP_PROVIDER } from '../mapProvider'
 import { geometryBounds } from './geometry'
 import type { Geometry, ViewState, SpatialRoute, ViewportResponse } from './types'
@@ -10,8 +9,8 @@ const ROUTE_SOURCE = 'browse-routes'
 const HEAT_SOURCE = 'browse-heatmap'
 const SELECTED_SOURCE = 'selected-route'
 
-const asGeoJSONGeometry = (geometry: Geometry): GeoJSONGeometry =>
-  geometry as unknown as GeoJSONGeometry
+const asGeoJSONGeometry = (geometry: Geometry): GeoJSON.Geometry =>
+  geometry as unknown as GeoJSON.Geometry
 
 type MapStageOptions = {
   mapNode: RefObject<HTMLDivElement | null>
