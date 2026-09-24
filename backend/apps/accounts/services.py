@@ -452,30 +452,54 @@ def disconnect_player(
     return player
 
 
+def _competition_ids_for_player(player_id: int) -> list[Any]:
+    """Read a player's memberships in stable order for lifecycle locking."""
+
+    return list(
+        CompetitionMembership.objects.filter(player_id=player_id)
+        .order_by("competition_id")
+        .values_list("competition_id", flat=True)
+    )
+
+
+def _affected_player_ids(player_id: int, competition_ids: list[Any]) -> set[int]:
+    """Return players whose rows can be changed by deleting these competitions."""
+
+    affected_player_ids = set(
+        CompetitionMembership.objects.filter(competition_id__in=competition_ids).values_list(
+            "player_id", flat=True
+        )
+    )
+    affected_player_ids.add(player_id)
+    affected_player_ids.update(
+        Player.objects.filter(active_competition_id__in=competition_ids).values_list(
+            "pk", flat=True
+        )
+    )
+    return affected_player_ids
+
+
 def delete_player(player: Player, *, session_key: str | None = None) -> None:
     access_token = None
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
-        affected_competition_ids = list(
-            CompetitionMembership.objects.filter(player_id=player.pk)
-            .order_by("competition_id")
-            .values_list("competition_id", flat=True)
-        )
-        affected_player_ids = set(
-            CompetitionMembership.objects.filter(
-                competition_id__in=affected_competition_ids
-            ).values_list("player_id", flat=True)
-        )
-        affected_player_ids.add(player.pk)
-        affected_player_ids.update(
-            Player.objects.filter(active_competition_id__in=affected_competition_ids).values_list(
-                "pk", flat=True
-            )
-        )
+        affected_competition_ids = _competition_ids_for_player(player.pk)
+        affected_player_ids = _affected_player_ids(player.pk, affected_competition_ids)
         locked_players = list(
             Player.objects.select_for_update().filter(pk__in=affected_player_ids).order_by("pk")
         )
         player = next(locked for locked in locked_players if locked.pk == player.pk)
+        current_competition_ids = _competition_ids_for_player(player.pk)
+        if current_competition_ids != affected_competition_ids:
+            # The target lock serializes all normal membership writes. A join
+            # that committed after the first snapshot is included by this
+            # second read before any Competition row is locked.
+            affected_competition_ids = current_competition_ids
+            affected_player_ids = _affected_player_ids(player.pk, affected_competition_ids)
+            locked_players = list(
+                Player.objects.select_for_update().filter(pk__in=affected_player_ids).order_by("pk")
+            )
+            player = next(locked for locked in locked_players if locked.pk == player.pk)
         affected_competitions = list(
             Competition.objects.select_for_update()
             .filter(pk__in=affected_competition_ids)

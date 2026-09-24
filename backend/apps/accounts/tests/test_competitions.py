@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from threading import Barrier
+from threading import Barrier, Event
 from time import monotonic
 from unittest.mock import patch
 from uuid import uuid4
@@ -15,6 +15,7 @@ from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.accounts import services
 from apps.accounts.competition_services import (
     CompetitionError,
     create_competition,
@@ -206,6 +207,47 @@ def test_player_deletion_serializes_with_competition_player_operations(operation
         futures = [executor.submit(delete_owner), executor.submit(change_competition)]
         for future in futures:
             future.result(timeout=15)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locks")
+@override_settings(**SETTINGS)
+def test_player_deletion_rechecks_membership_after_a_concurrent_join() -> None:
+    owner = player(90)
+    target = player(91)
+    competition, _ = create_competition(owner, name="Join during deletion")
+    snapshot_ready = Event()
+    join_finished = Event()
+    original_snapshot = services._competition_ids_for_player
+
+    def synchronized_snapshot(player_id: int) -> list[object]:
+        result = original_snapshot(player_id)
+        if player_id == target.pk and not snapshot_ready.is_set():
+            snapshot_ready.set()
+            assert join_finished.wait(timeout=10)
+        return result
+
+    def delete_target() -> None:
+        close_old_connections()
+        try:
+            delete_player(target)
+        finally:
+            close_old_connections()
+
+    with patch.object(services, "_competition_ids_for_player", synchronized_snapshot):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(delete_target)
+            assert snapshot_ready.wait(timeout=10)
+            join_competition(target, invite_code=competition.invite_code)
+            join_finished.set()
+            future.result(timeout=15)
+
+    competition.refresh_from_db()
+    assert not Player.objects.filter(pk=target.pk).exists()
+    assert not CompetitionMembership.objects.filter(competition=competition, player=target).exists()
+    job = CompetitionRecomputation.objects.get(competition=competition)
+    assert job.affected_player_id == target.pk
+    assert competition.revision == job.generation == 1
 
 
 @override_settings(**SETTINGS)
