@@ -85,7 +85,7 @@ const projection = (status = 'fresh', partial = false) => ({
     status === 'fresh'
       ? [
           { month: '2026-08-01', covered_length_meters: '9999.000' },
-          { month: '2026-09-01', covered_length_meters: '7400.000' },
+          { month: '2026-09-01', covered_length_meters: '7400.000', gain_length_meters: '123.000' },
         ]
       : [],
   partial,
@@ -182,6 +182,7 @@ describe('official route completion presentation', () => {
     fireEvent.click(routeButton)
     const stageButton = await screen.findByRole('button', { name: /1A North stage/ })
     fireEvent.click(stageButton)
+    expect(await screen.findByText('123.0 m')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: 'Competition' }))
     await waitFor(() =>
       expect(document.querySelector('.completion-status')).toHaveTextContent('Calculation failed'),

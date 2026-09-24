@@ -13,6 +13,7 @@ const competition = {
   created_at: '2026-09-21T00:00:00Z',
   members: [
     { player_id: 7, display_name: 'Rider', nickname: null, color: '#F4B942', is_owner: true },
+    { player_id: 8, display_name: 'Rider two', nickname: null, color: '#527A66', is_owner: false },
   ],
 }
 const activity = {
@@ -61,6 +62,79 @@ test.beforeEach(async ({ page }) => {
       }),
     }),
   )
+  await page.route('**/api/v1/game/competitions/*/capture/**', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'fresh',
+        is_final: true,
+        competition_id: competition.id,
+        generation: 3,
+        snapshot_generation: 3,
+        calculated_at: '2026-09-21T12:00:00Z',
+        faces: [
+          {
+            id: 9,
+            geometry: {
+              type: 'Polygon',
+              coordinates: [
+                [
+                  [14, 49],
+                  [14.1, 49],
+                  [14.1, 49.1],
+                  [14, 49],
+                ],
+              ],
+            },
+            area_m2: '100.000',
+            effective_date: '2026-09-21',
+            shared: true,
+            owners: [
+              {
+                player_id: 7,
+                display_name: 'Rider',
+                nickname: null,
+                color: '#F4B942',
+                shared_area_m2: '50.000',
+              },
+              {
+                player_id: 8,
+                display_name: 'Rider two',
+                nickname: null,
+                color: '#527A66',
+                shared_area_m2: '50.000',
+              },
+            ],
+          },
+        ],
+        members: [
+          {
+            player_id: 7,
+            display_name: 'Rider',
+            nickname: null,
+            color: '#F4B942',
+            is_owner: true,
+            area_m2: '50.000',
+            rank: 1,
+            monthly_net_change_m2: [{ month: '2026-09', net_change_m2: '12.300' }],
+          },
+          {
+            player_id: 8,
+            display_name: 'Rider two',
+            nickname: null,
+            color: '#527A66',
+            is_owner: false,
+            area_m2: '50.000',
+            rank: 2,
+            monthly_net_change_m2: [{ month: '2026-09', net_change_m2: '-4.500' }],
+          },
+        ],
+        help: {},
+        limits: { max_faces: 1200, max_response_bytes: 4000000 },
+      }),
+    }),
+  )
 })
 
 test('game map keeps competition controls outside the public catalogue URL', async ({ page }) => {
@@ -95,11 +169,11 @@ test('game map controls remain usable on a narrow viewport', async ({ page }) =>
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/game')
   await expect(page.getByRole('group', { name: 'Member traces' })).toBeVisible()
-  const member = page.getByRole('checkbox')
+  const member = page.getByRole('checkbox').first()
   await expect(member).toBeChecked()
   await member.uncheck()
   await page.reload()
-  await expect(page.getByRole('checkbox')).not.toBeChecked()
+  await expect(page.getByRole('checkbox').first()).not.toBeChecked()
 })
 
 test('game map has no automated accessibility violations and honors reduced motion', async ({
@@ -214,6 +288,41 @@ test('completion mode keeps route selection and player/group progress keyboard a
   await expect.poll(() => completionCalls).toBeGreaterThan(1)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+})
+
+test('capture mode keeps global ranks while member visibility changes', async ({ page }) => {
+  await page.goto('/game')
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
+  await expect(page.locator('[data-capture-response-loaded="true"]')).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(() => performance.getEntriesByName('capture-response-to-render').length),
+    )
+    .toBeGreaterThan(0)
+  await expect(page.getByText('Area leaderboard')).toBeVisible()
+  await expect(page.getByText('+12.3')).toBeVisible()
+  await expect(page.getByText('-4.5')).toBeVisible()
+  await expect(page.locator('.capture-map-legend')).toContainText('Shared')
+  const captureA11y = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze()
+  expect(captureA11y.violations, captureA11y.violations.map((item) => item.id).join(', ')).toEqual(
+    [],
+  )
+
+  const secondMember = page.getByRole('checkbox', { name: 'Rider two' })
+  await secondMember.uncheck()
+  await expect(secondMember).not.toBeChecked()
+  const secondRow = page.locator('.capture-ranking-row').filter({ hasText: 'Rider two' })
+  await expect(secondRow).toContainText('2')
+
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('.capture-map-stage')).toBeVisible()
+  await expect(page.locator('.capture-ledger')).toBeVisible()
 })
 
 test('game map applies the latest member filter after an in-flight response', async ({ page }) => {

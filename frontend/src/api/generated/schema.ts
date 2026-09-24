@@ -203,6 +203,23 @@ export interface paths {
     patch: operations['v1_game_competitions_partial_update']
     trace?: never
   }
+  '/api/v1/game/competitions/{competition_id}/capture/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Return only the authenticated member's competition capture snapshot. */
+    get: operations['v1_game_competitions_capture_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/competitions/{competition_id}/leave/': {
     parameters: {
       query?: never
@@ -535,6 +552,63 @@ export interface components {
     AnalyticsEvent: {
       event: components['schemas']['EventEnum']
     }
+    CaptureFace: {
+      id: number
+      geometry: unknown
+      /** Format: decimal */
+      area_m2: string
+      /** Format: date */
+      effective_date: string | null
+      shared: boolean
+      owners: components['schemas']['CaptureOwner'][]
+    }
+    CaptureMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+      /** Format: decimal */
+      area_m2: string
+      rank: number
+      monthly_net_change_m2: {
+        [key: string]: unknown
+      }[]
+    }
+    CaptureOwner: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      /** Format: decimal */
+      shared_area_m2: string
+    }
+    CaptureResponse: {
+      status: components['schemas']['CaptureResponseStatusEnum']
+      is_final: boolean
+      /** Format: uuid */
+      competition_id: string
+      generation: number | null
+      snapshot_generation: number | null
+      /** Format: date-time */
+      calculated_at: string | null
+      faces: components['schemas']['CaptureFace'][]
+      members: components['schemas']['CaptureMember'][]
+      help: {
+        [key: string]: string
+      }
+      limits: {
+        [key: string]: number
+      }
+    }
+    /**
+     * @description * `fresh` - fresh
+     *     * `pending` - pending
+     *     * `failed` - failed
+     *     * `empty` - empty
+     * @enum {string}
+     */
+    CaptureResponseStatusEnum: 'fresh' | 'pending' | 'failed' | 'empty'
     Category: {
       slug: string
       name: string
@@ -585,7 +659,7 @@ export interface components {
       is_owner: boolean
     }
     CompetitionMapResponse: {
-      status: components['schemas']['StatusEnum']
+      status: components['schemas']['CompetitionMapResponseStatusEnum']
       /** Format: uuid */
       competition_id: string
       members: components['schemas']['CompetitionMapMember'][]
@@ -598,6 +672,13 @@ export interface components {
         [key: string]: number
       }
     }
+    /**
+     * @description * `loaded` - loaded
+     *     * `empty` - empty
+     *     * `syncing` - syncing
+     * @enum {string}
+     */
+    CompetitionMapResponseStatusEnum: 'loaded' | 'empty' | 'syncing'
     CompetitionMember: {
       player_id: number
       display_name: string
@@ -616,6 +697,14 @@ export interface components {
       /** Format: uuid */
       active_competition_id: string | null
     }
+    CompletionMonthly: {
+      /** Format: date */
+      month: string
+      /** Format: decimal */
+      covered_length_meters: string
+      /** Format: decimal */
+      gain_length_meters: string
+    }
     CompletionProjection: {
       status: string
       /** Format: decimal */
@@ -628,9 +717,7 @@ export interface components {
       calculated_at: string | null
       error: string
       covered_geometry: unknown
-      monthly: {
-        [key: string]: unknown
-      }[]
+      monthly: components['schemas']['CompletionMonthly'][]
       partial: boolean
     }
     ElevationProfilePoint: {
@@ -860,13 +947,6 @@ export interface components {
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
     }
-    /**
-     * @description * `loaded` - loaded
-     *     * `empty` - empty
-     *     * `syncing` - syncing
-     * @enum {string}
-     */
-    StatusEnum: 'loaded' | 'empty' | 'syncing'
     StravaWebhookPayload: {
       object_type: string
       object_id: number
@@ -1610,6 +1690,34 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_capture_retrieve: {
+    parameters: {
+      query: {
+        east: number
+        member?: number[]
+        north: number
+        south: number
+        west: number
+        zoom: number
+      }
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureResponse']
         }
       }
     }

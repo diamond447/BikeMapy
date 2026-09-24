@@ -1401,6 +1401,217 @@ h1 {
   padding-top: 11px;
 }
 
+/* Capture is the territory view: a forest ledger against a paper map. */
+.capture-layout {
+  --capture-forest: #162d28;
+  --capture-paper: #f7faf2;
+  --capture-moss: #527a66;
+  --capture-lime: #e7f24e;
+  --capture-vermilion: #d34d32;
+  background: var(--capture-paper);
+  color: var(--capture-forest);
+  display: grid;
+  grid-template-columns: minmax(320px, 390px) 1fr;
+  min-height: calc(100dvh - 122px);
+}
+.capture-ledger {
+  background: var(--capture-paper);
+  border-right: 1px solid color-mix(in srgb, var(--capture-forest) 18%, transparent);
+  min-width: 0;
+  overflow: auto;
+  padding: 32px 28px 38px;
+  position: relative;
+  z-index: 1;
+}
+.capture-header h1 {
+  color: var(--capture-forest);
+  font-size: clamp(1.9rem, 3vw, 2.75rem);
+  letter-spacing: -0.06em;
+  line-height: 0.98;
+  margin: 11px 0 14px;
+  max-width: 8ch;
+}
+.capture-header p {
+  color: color-mix(in srgb, var(--capture-forest) 72%, transparent);
+  line-height: 1.5;
+  margin: 0;
+  max-width: 32ch;
+}
+.capture-header .game-map-label {
+  color: var(--capture-moss);
+  margin-top: 25px;
+}
+.capture-header .game-map-label select {
+  background: var(--capture-paper);
+  border-color: color-mix(in srgb, var(--capture-forest) 28%, transparent);
+  border-radius: 0;
+  color: var(--capture-forest);
+  margin-top: 8px;
+}
+.capture-state {
+  border-left: 3px solid var(--capture-lime);
+  color: var(--capture-forest);
+  line-height: 1.45;
+  margin: 22px 0 0;
+  padding: 10px 12px;
+}
+.capture-state-failed {
+  border-left-color: var(--capture-vermilion);
+}
+.capture-state button {
+  background: var(--capture-forest);
+  border: 0;
+  color: var(--capture-paper);
+  cursor: pointer;
+  font:
+    600 0.72rem 'DM Mono',
+    monospace;
+  margin-top: 7px;
+  padding: 9px 12px;
+}
+.capture-members {
+  border: 0;
+  margin: 27px 0 0;
+  padding: 0;
+}
+.capture-members legend,
+.capture-ranking h2 {
+  color: var(--capture-moss);
+  font:
+    700 0.64rem 'DM Mono',
+    monospace;
+  letter-spacing: 0.07em;
+  margin: 0 0 9px;
+  text-transform: uppercase;
+}
+.capture-members label {
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--capture-forest) 11%, transparent);
+  cursor: pointer;
+  display: flex;
+  gap: 9px;
+  min-height: 42px;
+}
+.capture-members input {
+  accent-color: var(--capture-moss);
+  block-size: 17px;
+  inline-size: 17px;
+}
+.member-swatch {
+  border: 2px solid color-mix(in srgb, var(--capture-forest) 22%, transparent);
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 11px;
+  width: 11px;
+}
+.capture-ranking {
+  margin-top: 31px;
+}
+.capture-ranking h2 {
+  border-bottom: 1px solid color-mix(in srgb, var(--capture-forest) 18%, transparent);
+  padding-bottom: 9px;
+}
+.capture-ranking-row {
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--capture-forest) 11%, transparent);
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 1.4rem 11px minmax(0, 1fr) auto;
+  min-height: 58px;
+}
+.capture-rank,
+.capture-area,
+.capture-rider small {
+  font-family: 'DM Mono', monospace;
+}
+.capture-rank {
+  color: var(--capture-moss);
+  font-size: 0.72rem;
+}
+.capture-rider {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.capture-rider strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.capture-rider small {
+  color: var(--capture-moss);
+  font-size: 0.58rem;
+}
+.capture-area {
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.capture-help {
+  border-top: 1px solid color-mix(in srgb, var(--capture-forest) 18%, transparent);
+  margin-top: 27px;
+  padding-top: 14px;
+}
+.capture-help summary {
+  color: var(--capture-forest);
+  cursor: pointer;
+  font-weight: 700;
+}
+.capture-help ul {
+  color: color-mix(in srgb, var(--capture-forest) 72%, transparent);
+  line-height: 1.5;
+  margin: 11px 0 0;
+  padding-left: 19px;
+}
+.capture-map-stage {
+  background: #dce8df;
+  min-height: 0;
+  position: relative;
+}
+.capture-map-stage .game-map-canvas {
+  min-height: 580px;
+}
+.capture-map-status,
+.capture-map-legend {
+  background: var(--capture-paper);
+  color: var(--capture-forest);
+  font:
+    600 0.62rem 'DM Mono',
+    monospace;
+  position: absolute;
+  z-index: 2;
+}
+.capture-map-status {
+  left: 20px;
+  padding: 8px 11px;
+  top: 20px;
+}
+.capture-map-legend {
+  align-items: center;
+  bottom: 19px;
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  right: 20px;
+}
+.capture-legend-solid,
+.capture-legend-hatch {
+  display: inline-block;
+  height: 12px;
+  width: 18px;
+}
+.capture-legend-solid {
+  background: var(--capture-moss);
+}
+.capture-legend-hatch {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--capture-moss) 0 3px,
+    var(--capture-lime) 3px 6px
+  );
+}
+
 .game-shell :focus-visible {
   outline: 3px solid #f4b942;
   outline-offset: 3px;
@@ -1473,6 +1684,36 @@ h1 {
     max-width: none;
     right: 15px;
     width: auto;
+  }
+  .capture-layout {
+    display: flex;
+    flex-direction: column-reverse;
+    min-height: calc(100dvh - 112px);
+  }
+  .capture-map-stage {
+    min-height: 58dvh;
+  }
+  .capture-map-stage .game-map-canvas {
+    min-height: 58dvh;
+  }
+  .capture-ledger {
+    border-right: 0;
+    border-top: 1px solid rgba(22, 45, 40, 0.18);
+    max-height: 49dvh;
+    overflow: auto;
+    padding: 22px 18px 32px;
+  }
+  .capture-header h1 {
+    font-size: 2rem;
+  }
+  .capture-map-status {
+    left: 13px;
+    top: 13px;
+  }
+  .capture-map-legend {
+    bottom: 13px;
+    left: 13px;
+    right: auto;
   }
 }
 

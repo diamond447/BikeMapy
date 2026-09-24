@@ -12,6 +12,7 @@ import { apiClient, rememberCsrfToken } from './api/client'
 import type { components } from './api/generated/schema'
 import { GameAccount } from './components/GameAccount'
 import { CompletionDashboard } from './components/CompletionDashboard'
+import { CaptureDashboard } from './components/CaptureDashboard'
 import { MAP_PROVIDER } from './mapProvider'
 import { setMapLibreWorker } from './maplibreWorker'
 import { translations } from './i18n/translations'
@@ -90,11 +91,10 @@ export default function GameApp() {
   const [error, setError] = useState<string | null>(null)
   const [signedOut, setSignedOut] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<'activity' | 'completion'>(() => {
+  const [viewMode, setViewMode] = useState<'activity' | 'completion' | 'capture'>(() => {
     try {
-      return sessionStorage.getItem('bikemapy:game-view') === 'completion'
-        ? 'completion'
-        : 'activity'
+      const stored = sessionStorage.getItem('bikemapy:game-view')
+      return stored === 'completion' || stored === 'capture' ? stored : 'activity'
     } catch {
       return 'activity'
     }
@@ -364,7 +364,7 @@ export default function GameApp() {
       return members.includes(id) ? members.filter((item) => item !== id) : [...members, id]
     })
 
-  const changeViewMode = (mode: 'activity' | 'completion') => {
+  const changeViewMode = (mode: 'activity' | 'completion' | 'capture') => {
     setViewMode(mode)
     try {
       sessionStorage.setItem('bikemapy:game-view', mode)
@@ -413,9 +413,26 @@ export default function GameApp() {
         >
           {copy.gameCompletionMode}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === 'capture'}
+          className={viewMode === 'capture' ? 'is-active' : ''}
+          onClick={() => changeViewMode('capture')}
+        >
+          {copy.gameCaptureMode}
+        </button>
       </div>
       {viewMode === 'completion' ? (
         <CompletionDashboard
+          copy={copy}
+          competitions={competitions}
+          competitionId={competitionId}
+          setCompetitionId={setCompetitionId}
+          signedOut={signedOut}
+        />
+      ) : viewMode === 'capture' ? (
+        <CaptureDashboard
           copy={copy}
           competitions={competitions}
           competitionId={competitionId}

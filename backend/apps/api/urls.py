@@ -16,6 +16,7 @@ from apps.accounts.competition_api import (
     CompetitionSwitchView,
     CompetitionTransferView,
 )
+from apps.accounts.competition_capture_api import CompetitionCaptureView
 from apps.accounts.competition_map_api import CompetitionMapView
 from apps.accounts.game_api import (
     PlayerAccountView,
@@ -84,6 +85,11 @@ urlpatterns = [
         "game/competitions/<uuid:competition_id>/map/",
         CompetitionMapView.as_view(),
         name="game-competition-map",
+    ),
+    path(
+        "game/competitions/<uuid:competition_id>/capture/",
+        CompetitionCaptureView.as_view(),
+        name="game-competition-capture",
     ),
     path(
         "game/competitions/<uuid:competition_id>/rotate-invite/",
