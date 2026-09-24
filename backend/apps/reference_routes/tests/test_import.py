@@ -17,6 +17,7 @@ from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
+from apps.accounts.models import Player
 from apps.api.views_reference_routes import reference_queryset
 from apps.catalogue.fields import _GIS_AVAILABLE
 from apps.reference_routes.models import (
@@ -1184,8 +1185,10 @@ def test_reference_endpoints_require_game_session_claim() -> None:
     client = Client()
     assert client.get("/api/v1/game/reference-routes/").status_code == 403
     user = get_user_model().objects.create_user(username="player")
-    client.force_login(user)
+    player = Player.objects.create(user=user, strava_athlete_id=123)
     session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
     session["game_session"] = {
         "competition_id": "competition-1",
         "reference_route_read": True,
@@ -1201,6 +1204,38 @@ def test_reference_endpoints_require_game_session_claim() -> None:
     assert response["Cache-Control"] == "private, no-store"
     assert response["X-Robots-Tag"] == "noindex, nofollow, noarchive"
     session["game_session"]["test_authorized_competition"] = "revoked"
+    session.save()
+    assert client.get("/api/v1/game/reference-routes/").status_code == 403
+
+
+@override_settings(
+    GAME_ENABLED=True,
+    REFERENCE_ROUTE_AUTHORIZER="apps.api.reference_authorization.allow_session_claim_for_tests",
+)
+def test_reference_endpoints_reject_stale_and_disconnected_player_sessions() -> None:
+    item = collection()
+    import_production_snapshot(item)
+    publish_offer(item)
+    approve_reference_route(ReferenceRoute.objects.get(collection=item), reviewer="reviewer")
+    user = get_user_model().objects.create_user(username="session-player")
+    player = Player.objects.create(user=user, strava_athlete_id=456)
+    client = Client()
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch + 1
+    session["game_session"] = {
+        "competition_id": "competition-1",
+        "reference_route_read": True,
+        "test_authorized_competition": "competition-1",
+    }
+    session.save()
+    assert client.get("/api/v1/game/reference-routes/").status_code == 403
+
+    session["player_session_epoch"] = player.session_epoch
+    session.save()
+    player.mark_disconnected()
+    player.refresh_from_db()
+    session["player_session_epoch"] = player.session_epoch
     session.save()
     assert client.get("/api/v1/game/reference-routes/").status_code == 403
 
@@ -1258,8 +1293,10 @@ def test_reference_api_paginates_and_filters_active_stages() -> None:
     stage.save(update_fields=["current_version"])
     client = Client()
     user = get_user_model().objects.create_user(username="paged-player")
-    client.force_login(user)
+    player = Player.objects.create(user=user, strava_athlete_id=789)
     session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
     session["game_session"] = {
         "competition_id": "competition-1",
         "reference_route_read": True,
