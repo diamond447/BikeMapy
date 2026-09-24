@@ -281,7 +281,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
             <dd>{player.display_name}</dd>
           </div>
         </dl>
-        <GameCompetitions copy={copy} />
+        {player.competition_game_enabled && <GameCompetitions copy={copy} />}
         <div className="game-account-actions">
           <button type="button" onClick={() => void refresh()} disabled={busy}>
             {busy ? copy.gameRefreshing : copy.gameRefresh}

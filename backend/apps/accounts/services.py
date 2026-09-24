@@ -19,6 +19,9 @@ from django.utils import timezone
 
 from .models import (
     OAUTH_STATE_TTL,
+    Competition,
+    CompetitionMembership,
+    CompetitionResult,
     OAuthState,
     Player,
     PlayerCredential,
@@ -50,6 +53,12 @@ def game_is_available() -> bool:
         and getattr(settings, "STRAVA_TOKEN_ENCRYPTION_KEY", "")
         and getattr(settings, "STRAVA_IDENTITY_GUARD_KEY", "")
     )
+
+
+def competition_is_available() -> bool:
+    """Require the separate legal/rollout gate for cross-member features."""
+
+    return bool(getattr(settings, "COMPETITION_GAME_ENABLED", False) and game_is_available())
 
 
 def redirect_uri() -> str:
@@ -448,6 +457,37 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
         player = Player.objects.select_for_update().get(pk=player.pk)
+        affected_competition_ids = list(
+            CompetitionMembership.objects.filter(player=player)
+            .order_by("competition_id")
+            .values_list("competition_id", flat=True)
+        )
+        affected_competitions = list(
+            Competition.objects.select_for_update()
+            .filter(pk__in=affected_competition_ids)
+            .order_by("pk")
+        )
+        # Lock memberships after Player -> Competition, matching the global
+        # competition lock order used by leave/remove/delete operations.
+        list(
+            CompetitionMembership.objects.select_for_update()
+            .filter(player=player, competition_id__in=affected_competition_ids)
+            .order_by("competition_id", "pk")
+        )
+        surviving_competitions = [
+            competition
+            for competition in affected_competitions
+            if competition.owner_id != player.pk
+        ]
+        for competition in surviving_competitions:
+            CompetitionResult.objects.filter(competition=competition, player=player).delete()
+            CompetitionMembership.objects.filter(competition=competition, player=player).delete()
+            from .competition_services import schedule_recomputation
+
+            schedule_recomputation(competition, affected_player_id=player.pk)
+        for competition in affected_competitions:
+            if competition.owner_id == player.pk:
+                competition.delete()
         try:
             access_token = (
                 PlayerCredential.objects.select_for_update().get(player=player).access_token

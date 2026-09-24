@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -40,11 +41,17 @@ pytestmark = pytest.mark.django_db
 
 SETTINGS = {
     "GAME_ENABLED": True,
+    "COMPETITION_GAME_ENABLED": True,
     "STRAVA_OAUTH_CLIENT_ID": "client-id",
     "STRAVA_OAUTH_CLIENT_SECRET": "client-secret",
     "STRAVA_TOKEN_ENCRYPTION_KEY": "test-key",
     "STRAVA_IDENTITY_GUARD_KEY": "test-identity-key",
 }
+
+
+@pytest.fixture(autouse=True)
+def clear_throttle_cache() -> None:
+    cache.clear()
 
 
 def player(athlete_id: int) -> Player:
@@ -98,6 +105,39 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
 
     switched = member_client.post(reverse("game-competition-switch", args=[identifier]))
     assert switched.status_code == 200
+
+
+@override_settings(**{**SETTINGS, "COMPETITION_GAME_ENABLED": False})
+def test_competition_gate_does_not_disable_player_account_endpoints() -> None:
+    current = player(4)
+    client = authenticated_client(current)
+    assert client.get(reverse("game-player-account")).status_code == 200
+    assert client.get(reverse("game-competition-list")).status_code == 404
+
+
+@override_settings(**SETTINGS, GAME_PLAYER_RATE="1/minute", COMPETITION_INVITE_RATE="1/minute")
+def test_player_throttle_is_per_session_but_invite_guessing_is_per_ip() -> None:
+    owner = player(5)
+    first = player(6)
+    second = player(7)
+    competition, _ = create_competition(owner, name="Throttle")
+    first_client = authenticated_client(first)
+    second_client = authenticated_client(second)
+    assert first_client.get(reverse("game-competition-list")).status_code == 200
+    assert second_client.get(reverse("game-competition-list")).status_code == 200
+    cache.clear()
+    assert (
+        first_client.post(
+            reverse("game-competition-join"), {"invite_code": competition.invite_code}
+        ).status_code
+        == 200
+    )
+    assert (
+        second_client.post(
+            reverse("game-competition-join"), {"invite_code": competition.invite_code}
+        ).status_code
+        == 429
+    )
 
 
 @override_settings(**SETTINGS)

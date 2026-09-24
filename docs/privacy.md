@@ -33,7 +33,10 @@ explicitly enabled.
 ## Future Strava module
 
 The private Strava module is disabled by default and is not part of the public
-catalogue. The current [Strava API and cross-member display review](strava-api-review.md)
+catalogue. Player account access (`GAME_ENABLED`) and cross-member competition
+access (`COMPETITION_GAME_ENABLED`) are separate gates; both must be enabled
+before competition members or their names can be shown to one another. The
+current [Strava API and cross-member display review](strava-api-review.md)
 rejects or blocks cross-member activity geometry, profile fields, and derived
 competition results under the current Strava API Agreement and API Policy. No
 Strava OAuth credentials or activity data may be collected until the applicable

@@ -574,6 +574,7 @@ export interface components {
       lifecycle: string
       /** Format: date-time */
       connected_at: string
+      competition_game_enabled: boolean
     }
     PlayerResponse: {
       player: components['schemas']['Player']
