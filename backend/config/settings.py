@@ -60,6 +60,18 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
         "DJANGO_DEBUG must be explicitly set to false in production deployments"
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
+GAME_ENABLED = env_bool("GAME_ENABLED", False)
+REFERENCE_ROUTE_AUTHORIZER = os.getenv(
+    "REFERENCE_ROUTE_AUTHORIZER",
+    "apps.api.reference_authorization.default_reference_route_authorizer",
+)
+REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = os.getenv(
+    "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL",
+    "",
+)
+# Synthetic source snapshots are useful in local tests, but must be explicitly
+# enabled and can never satisfy the production publication gate.
+REFERENCE_ROUTE_ALLOW_TEST_IMPORTS = env_bool("REFERENCE_ROUTE_ALLOW_TEST_IMPORTS", False)
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")
@@ -91,6 +103,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.api",
     "apps.analytics",
+    "apps.reference_routes",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
     # Host-side smoke checks can run without native GeoDjango libraries. The
@@ -140,7 +153,6 @@ if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
         "secret": GITHUB_OAUTH_CLIENT_SECRET,
     }
 
-GAME_ENABLED = env_bool("GAME_ENABLED", False)
 STRAVA_OAUTH_CLIENT_ID = os.getenv("STRAVA_OAUTH_CLIENT_ID", "")
 STRAVA_OAUTH_CLIENT_SECRET = os.getenv("STRAVA_OAUTH_CLIENT_SECRET", "")
 STRAVA_TOKEN_ENCRYPTION_KEY = os.getenv("STRAVA_TOKEN_ENCRYPTION_KEY", "")

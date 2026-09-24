@@ -139,6 +139,38 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/reference-routes/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_list']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/{route_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/routes/': {
     parameters: {
       query?: never
@@ -304,6 +336,19 @@ export interface components {
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
+    PaginatedReferenceRouteListList: {
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cD00ODY%3D"
+       */
+      next?: string | null
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+       */
+      previous?: string | null
+      results: components['schemas']['ReferenceRouteList'][]
+    }
     PaginatedRouteList: {
       /** @example 123 */
       count: number
@@ -337,6 +382,13 @@ export interface components {
       player: components['schemas']['Player']
     }
     /**
+     * @description * `pending` - Pending publication review
+     *     * `approved` - Approved
+     *     * `rejected` - Rejected
+     * @enum {string}
+     */
+    PublicationStatusEnum: 'pending' | 'approved' | 'rejected'
+    /**
      * @description * `incorrect_route` - Incorrect route
      *     * `source_attribution` - Source or attribution
      *     * `author_removal` - Author removal
@@ -346,6 +398,49 @@ export interface components {
      */
     ReasonEnum:
       'incorrect_route' | 'source_attribution' | 'author_removal' | 'rights_holder' | 'other'
+    ReferenceRoute: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+      readonly version: number
+      readonly version_attribution_metadata: {
+        [key: string]: unknown
+      }
+      readonly geometry: unknown
+      readonly stages: components['schemas']['ReferenceStage'][]
+    }
+    ReferenceRouteList: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+    }
+    ReferenceStage: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      readonly geometry: unknown
+      readonly attribution: {
+        [key: string]: unknown
+      }
+    }
     ReportSubmission: {
       reason: components['schemas']['ReasonEnum']
       message: string
@@ -765,6 +860,51 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_list: {
+    parameters: {
+      query?: {
+        cursor?: string
+        page_size?: number
+        route_number?: string
+        source?: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PaginatedReferenceRouteListList']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceRoute']
         }
       }
     }

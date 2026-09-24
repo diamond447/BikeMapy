@@ -79,6 +79,56 @@ update cursor. A changed relation version, changeset, timestamp, member set,
 or payload hash creates a new immutable BikeMapy version; unchanged payloads
 are idempotent. This is the concrete source and mechanism issue #53 must use.
 
+### 2026-09-21 implementation evidence amendment: bounded OSM API fallback
+
+The approved bounded Overpass discovery query remains the only discovery
+mechanism and is run first. If its snapshot is unavailable, an operator may
+use the OSM API v0.6 `/api/0.6/relation/<id>/full.json` endpoint only for the
+relation IDs already selected by that query (or by a previously retained
+complete Overpass snapshot). This fallback is not national discovery and must
+never enumerate relation IDs, scrape individual elements, or replace the
+approved candidate predicate.
+
+The fallback is capped at 50 selected relation requests per refresh, issued
+serially at no more than one request per second, with at most one bounded
+operator-triggered fallback refresh in addition to the monthly cached
+refresh. Every relation response is stored byte-for-byte with a per-relation
+manifest containing the exact endpoint and query, UTC retrieval time, HTTP
+status and headers (including an explicit absence record for ETag and
+Last-Modified when unavailable), payload SHA-256, relation version,
+changeset, timestamp, selected ID, and complete way/node counts. A response
+missing a selected member or node, or with any evidence mismatch, is rejected
+before activation.
+
+The fallback is temporary evidence collection, not permission to increase
+scraping volume. Once Overpass is available again, refreshes revert to the
+approved bounded Overpass snapshot. If the candidate set outgrows the stated
+limits, use a dated Czech regional extract with its provider and licence
+recorded; do not expand API requests or use per-element scraping.
+
+The checked-in relation `7689870` is explicitly a manually reviewed primary
+OSM validation sample. Its manifest records the selection date, deterministic
+rationale, direct `route`/`ref`/`network`/`operator` tags, and Czechia bounds
+eligibility. It is permitted only for executable importer and geometry-fixture
+tests, and its validation-only manifest cannot activate or publish a route.
+Production imports require a separate retained discovery record: the Overpass
+query or regional-extract identifier, execution time, result hash and artifact
+URL, with the imported relation IDs present in that discovery result. The
+sample must never be presented as evidence that Overpass discovered a national
+catalogue or as a substitute for production candidate selection.
+
+The discovery artifact is retained as the exact response bytes, represented in
+the manifest by `discovery_artifact_content_base64` and its SHA-256
+`discovery_result_sha256`; the importer decodes and parses those bytes and
+derives relation membership, tags, and OSM `version`/`timestamp`/`changeset`
+fields from them. A caller-authored ID/tag dictionary or a hash of such a
+dictionary is not discovery evidence. The artifact URL must be a separate
+trusted retained artifact, never the selected relation's download URL. A
+`regional_extract` record additionally carries `overpass_failure_evidence`:
+the approved Overpass endpoint and query, UTC `attempted_at`, an HTTP/network
+failure status and error, and base64 log bytes with their exact SHA-256. The
+`overpass_unavailable` flag alone is insufficient.
+
 ### Deterministic international-route exclusion
 
 Before applying the allow predicate, normalize each `network`, `ref`, `name`,
