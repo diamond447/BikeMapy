@@ -28,6 +28,8 @@ from .models import (
     PlayerDeletionTombstone,
     PlayerIdentityGuard,
     RevocationJob,
+    StravaSyncJob,
+    StravaSyncState,
 )
 
 STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
@@ -283,6 +285,9 @@ def save_connection(payload: dict[str, Any], *, oauth_state_id: int | None = Non
             oauth_state.player = player
             oauth_state.player_session_epoch = player.session_epoch
             oauth_state.save(update_fields=("player", "player_session_epoch"))
+    from .activity_services import queue_sync
+
+    queue_sync(player, kind="initial")
     return player
 
 
@@ -452,6 +457,9 @@ def disconnect_player(
             state_filter |= Q(player__isnull=True, session_key=session_key)
         OAuthState.objects.filter(state_filter).delete()
         player.mark_disconnected()
+        from .activity_services import pause_sync
+
+        pause_sync(player)
     if job is not None:
         _record_revocation_result(job, success=_revoke_access_token(access_token))
     return player
@@ -491,6 +499,8 @@ def _delete_player_once(
     job = None
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
+        StravaSyncState.objects.select_for_update().filter(player_id=player.pk).first()
+        list(StravaSyncJob.objects.select_for_update().filter(player_id=player.pk).order_by("pk"))
         affected_competition_ids = _competition_ids_for_player(player.pk)
         affected_player_ids = _affected_player_ids(player.pk, affected_competition_ids)
         locked_players = list(
@@ -551,6 +561,11 @@ def _delete_player_once(
                 expires_at=timezone.now() + timedelta(days=7),
             )
         PlayerCredential.objects.filter(player=player).delete()
+        affected_competition_ids = list(
+            CompetitionMembership.objects.filter(player=player).values_list(
+                "competition_id", flat=True
+            )
+        )
         guard.invalidated_at = timezone.now()
         guard.save(update_fields=("invalidated_at", "updated_at"))
         state_filter = Q(player=player)

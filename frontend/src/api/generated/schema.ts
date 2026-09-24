@@ -43,6 +43,38 @@ export interface paths {
     patch: operations['v1_game_account_partial_update']
     trace?: never
   }
+  '/api/v1/game/account/activities/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_account_activities_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/activities/full-history/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_activities_full_history_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/account/disconnect/': {
     parameters: {
       query?: never
@@ -315,6 +347,22 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/webhooks/strava/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_webhooks_strava_retrieve']
+    put?: never
+    post: operations['v1_game_webhooks_strava_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/routes/': {
     parameters: {
       query?: never
@@ -472,6 +520,15 @@ export interface components {
       /** Format: date-time */
       created_at: string
       members: components['schemas']['CompetitionMember'][]
+      activities: components['schemas']['CompetitionActivity'][]
+    }
+    CompetitionActivity: {
+      /** Format: uuid */
+      id: string
+      player_id: number
+      /** Format: date */
+      calendar_date: string
+      geometry: unknown
     }
     CompetitionCreate: {
       name: string
@@ -898,6 +955,72 @@ export interface operations {
         content: {
           'application/json': components['schemas']['ErrorResponse']
         }
+      }
+    }
+  }
+  v1_game_account_activities_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivitySyncResponse']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The private game is unavailable. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_activities_full_history_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivitySyncResponse']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The private game is unavailable. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }
@@ -1880,6 +2003,76 @@ export interface operations {
         content: {
           'application/json': components['schemas']['ReferenceRoute']
         }
+      }
+    }
+  }
+  v1_game_webhooks_strava_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Verified Strava subscription challenge. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid subscription challenge. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid challenge. */
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_webhooks_strava_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['StravaWebhookPayload']
+        'application/x-www-form-urlencoded': components['schemas']['StravaWebhookPayload']
+        'multipart/form-data': components['schemas']['StravaWebhookPayload']
+      }
+    }
+    responses: {
+      /** @description Webhook accepted. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid Strava event. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Unknown Strava athlete. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }

@@ -162,6 +162,14 @@ STRAVA_OAUTH_CLIENT_ID = os.getenv("STRAVA_OAUTH_CLIENT_ID", "")
 STRAVA_OAUTH_CLIENT_SECRET = os.getenv("STRAVA_OAUTH_CLIENT_SECRET", "")
 STRAVA_TOKEN_ENCRYPTION_KEY = os.getenv("STRAVA_TOKEN_ENCRYPTION_KEY", "")
 STRAVA_IDENTITY_GUARD_KEY = os.getenv("STRAVA_IDENTITY_GUARD_KEY", "")
+STRAVA_WEBHOOK_VERIFY_TOKEN = os.getenv("STRAVA_WEBHOOK_VERIFY_TOKEN", "")
+STRAVA_WEBHOOK_SUBSCRIPTION_ID = int(os.getenv("STRAVA_WEBHOOK_SUBSCRIPTION_ID", "0"))
+STRAVA_API_TIMEOUT = float(os.getenv("STRAVA_API_TIMEOUT", "10"))
+STRAVA_SYNC_PAGE_SIZE = int(os.getenv("STRAVA_SYNC_PAGE_SIZE", "100"))
+STRAVA_SYNC_PAGES_PER_RUN = int(os.getenv("STRAVA_SYNC_PAGES_PER_RUN", "5"))
+STRAVA_SYNC_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_LEASE_SECONDS", "600"))
+STRAVA_SYNC_DISPATCH_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_DISPATCH_LEASE_SECONDS", "60"))
+STRAVA_SYNC_MAX_RETRY_AFTER = int(os.getenv("STRAVA_SYNC_MAX_RETRY_AFTER", "3600"))
 STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "STRAVA_OAUTH_REDIRECT_URI",
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
@@ -437,6 +445,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "dispatch-game-recomputations": {
         "task": "bikemapy.accounts.dispatch_competition_recomputations",
+        "schedule": 60,
+    },
+    "dispatch-strava-sync": {
+        "task": "bikemapy.accounts.dispatch_strava_sync",
         "schedule": 60,
     },
 }
