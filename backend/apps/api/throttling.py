@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.conf import settings
-from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle, UserRateThrottle
 
 from config.client_identity import client_ip, rate_limit_identifier
 
@@ -27,7 +27,18 @@ class ApiUserRateThrottle(TrustedClientThrottleMixin, UserRateThrottle):
     """Throttle authenticated API clients using the same boundary policy."""
 
 
-class PlayerSessionThrottle(TrustedClientThrottleMixin, AnonRateThrottle):
+class ExplicitIdentityThrottle(TrustedClientThrottleMixin, SimpleRateThrottle):
+    """Apply the selected identity even when DRF has an authenticated user."""
+
+    def get_cache_key(self, request: Any, view: Any) -> str | None:
+        del view
+        ident = self.get_ident(request)
+        if not ident:
+            return None
+        return str(self.cache_format % {"scope": self.scope, "ident": ident})
+
+
+class PlayerSessionThrottle(ExplicitIdentityThrottle):
     """Throttle session-authenticated players by player and epoch."""
 
     scope = "game_player"
@@ -43,7 +54,7 @@ class PlayerSessionThrottle(TrustedClientThrottleMixin, AnonRateThrottle):
         return TrustedClientThrottleMixin.get_ident(self, request)
 
 
-class CompetitionInviteThrottle(TrustedClientThrottleMixin, AnonRateThrottle):
+class CompetitionInviteThrottle(ExplicitIdentityThrottle):
     """Keep invite-code guessing bound to the stricter client-IP bucket."""
 
     scope = "competition_invites"

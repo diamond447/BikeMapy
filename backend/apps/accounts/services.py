@@ -456,12 +456,26 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
     access_token = None
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
-        player = Player.objects.select_for_update().get(pk=player.pk)
         affected_competition_ids = list(
-            CompetitionMembership.objects.filter(player=player)
+            CompetitionMembership.objects.filter(player_id=player.pk)
             .order_by("competition_id")
             .values_list("competition_id", flat=True)
         )
+        affected_player_ids = set(
+            CompetitionMembership.objects.filter(
+                competition_id__in=affected_competition_ids
+            ).values_list("player_id", flat=True)
+        )
+        affected_player_ids.add(player.pk)
+        affected_player_ids.update(
+            Player.objects.filter(active_competition_id__in=affected_competition_ids).values_list(
+                "pk", flat=True
+            )
+        )
+        locked_players = list(
+            Player.objects.select_for_update().filter(pk__in=affected_player_ids).order_by("pk")
+        )
+        player = next(locked for locked in locked_players if locked.pk == player.pk)
         affected_competitions = list(
             Competition.objects.select_for_update()
             .filter(pk__in=affected_competition_ids)

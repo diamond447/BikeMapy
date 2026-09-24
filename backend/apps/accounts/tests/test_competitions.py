@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier
 from time import monotonic
 from unittest.mock import patch
 from uuid import uuid4
@@ -8,6 +10,7 @@ from uuid import uuid4
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import close_old_connections, connection
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -21,6 +24,7 @@ from apps.accounts.competition_services import (
     remove_member,
     schedule_recomputation,
     set_member_color,
+    switch_competition,
     transfer_ownership,
 )
 from apps.accounts.models import (
@@ -31,6 +35,7 @@ from apps.accounts.models import (
     ImportedActivity,
     Player,
 )
+from apps.accounts.services import delete_player
 from apps.accounts.tasks import (
     dispatch_competition_recomputations_task,
     recompute_competition_results_task,
@@ -138,6 +143,69 @@ def test_player_throttle_is_per_session_but_invite_guessing_is_per_ip() -> None:
         ).status_code
         == 429
     )
+
+
+@override_settings(**SETTINGS, COMPETITION_INVITE_RATE="1/minute")
+def test_invite_throttle_applies_with_authenticated_user_and_player_session() -> None:
+    owner = player(8)
+    member = player(9)
+    first, _ = create_competition(owner, name="First invite")
+    second, _ = create_competition(owner, name="Second invite")
+    client = authenticated_client(member)
+    client.force_login(member.user)
+
+    assert (
+        client.post(
+            reverse("game-competition-join"), {"invite_code": first.invite_code}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            reverse("game-competition-join"), {"invite_code": second.invite_code}
+        ).status_code
+        == 429
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locks")
+@pytest.mark.parametrize("operation", ("switch", "transfer"))
+@override_settings(**SETTINGS)
+def test_player_deletion_serializes_with_competition_player_operations(operation: str) -> None:
+    owner = player(80)
+    member = player(81)
+    competition, _ = create_competition(owner, name=f"Concurrent {operation}")
+    join_competition(member, invite_code=competition.invite_code)
+    barrier = Barrier(2)
+
+    def delete_owner() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=10)
+            delete_player(owner)
+        finally:
+            close_old_connections()
+
+    def change_competition() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=10)
+            if operation == "switch":
+                switch_competition(member, competition)
+            else:
+                transfer_ownership(owner, competition, member)
+        except (Competition.DoesNotExist, CompetitionError, Player.DoesNotExist, StopIteration):
+            # Either transaction may win; a deleted competition or owner is a
+            # valid outcome, while a database deadlock must still fail loudly.
+            pass
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(delete_owner), executor.submit(change_competition)]
+        for future in futures:
+            future.result(timeout=15)
 
 
 @override_settings(**SETTINGS)
