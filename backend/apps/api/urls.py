@@ -1,5 +1,14 @@
 from django.urls import path
 
+from apps.accounts.game_api import (
+    PlayerAccountView,
+    PlayerDisconnectView,
+    PlayerLogoutView,
+    PlayerRefreshView,
+    PlayerSessionView,
+    StravaAuthorizeView,
+    StravaCallbackView,
+)
 from apps.analytics.api import AnalyticsEventView
 from apps.reports.api import RouteReportView
 
@@ -15,6 +24,21 @@ from .views_routes import (
 
 urlpatterns = [
     path("", api_root, name="api-root"),
+    path(
+        "game/auth/strava/authorize/",
+        StravaAuthorizeView.as_view(),
+        name="game-strava-authorize",
+    ),
+    path(
+        "game/auth/strava/callback/",
+        StravaCallbackView.as_view(),
+        name="game-strava-callback",
+    ),
+    path("game/auth/session/", PlayerSessionView.as_view(), name="game-player-session"),
+    path("game/auth/logout/", PlayerLogoutView.as_view(), name="game-player-logout"),
+    path("game/account/refresh/", PlayerRefreshView.as_view(), name="game-player-refresh"),
+    path("game/account/disconnect/", PlayerDisconnectView.as_view(), name="game-player-disconnect"),
+    path("game/account/", PlayerAccountView.as_view(), name="game-player-account"),
     path("analytics/events/", AnalyticsEventView.as_view(), name="analytics-events"),
     path("routes/", RouteListView.as_view(), name="public-route-list"),
     path("routes/viewport/", ViewportRouteView.as_view(), name="public-route-viewport"),

@@ -8,6 +8,11 @@ It is not a legal opinion and does not replace permission from a rights holder.
 The maintainer must repeat this review before enabling a new data source,
 changing the map provider, or publishing GPX files.
 
+The separate [Strava API and cross-member display review](strava-api-review.md)
+records the 2026-09-19 primary-source review for the future private game. Its
+current decision is to keep cross-member Strava data and derived results
+disabled; this document must not be read as permission to enable that module.
+
 The separate, dated [reference-route source decision](reference-route-sources.md)
 is the authority for Via Czechia and numbered Czech cycling-route imports in
 the private completion game. It does not expand the provider or public-GPX
