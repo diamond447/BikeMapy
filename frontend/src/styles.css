@@ -1168,6 +1168,182 @@ h1 {
   color: var(--atlas-orange);
 }
 
+.game-competitions {
+  border-top: 1px solid var(--atlas-line);
+  margin: 15px 0;
+  padding-top: 14px;
+}
+
+.game-competitions-heading,
+.game-competition-code,
+.game-competition-member {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.game-competitions-heading {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.game-competitions-heading h3 {
+  font-size: 0.96rem;
+  letter-spacing: -0.03em;
+  margin: 3px 0 0;
+}
+
+.game-competition-count {
+  color: var(--atlas-orange);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.66rem;
+}
+
+.game-competition-switcher {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 13px;
+}
+
+.game-competition-switcher button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--atlas-moss);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.7rem;
+  gap: 8px;
+  padding: 7px;
+  text-align: left;
+}
+
+.game-competition-switcher button.is-selected {
+  background: #eef1e9;
+  border-color: var(--atlas-line);
+  color: var(--atlas-ink);
+  font-weight: 700;
+}
+
+.game-competition-swatch {
+  border: 1px solid rgba(24, 60, 53, 0.18);
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 10px;
+  width: 10px;
+}
+
+.game-competition-forms {
+  border-bottom: 1px solid var(--atlas-line);
+  display: grid;
+  gap: 12px;
+  padding-bottom: 13px;
+}
+
+.game-competition-forms form,
+.game-competition-owner-actions form {
+  display: grid;
+  gap: 5px;
+}
+
+.game-competition-forms label,
+.game-competition-label,
+.game-competition-color {
+  color: var(--atlas-moss);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.57rem;
+}
+
+.game-competition-forms input,
+.game-competition-owner-actions input {
+  background: #f0f3ed;
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-ink);
+  font-size: 0.72rem;
+  padding: 7px;
+}
+
+.game-competition-management {
+  display: grid;
+  gap: 11px;
+  padding-top: 13px;
+}
+
+.game-competition-code {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.game-competition-code span,
+.game-competition-code code {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.61rem;
+}
+
+.game-competition-code code {
+  color: var(--atlas-orange);
+  letter-spacing: 0.08em;
+}
+
+.game-competition-code button,
+.game-competition-member button,
+.game-competition-owner-actions button,
+.game-competition-leave {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-moss);
+  cursor: pointer;
+  font-size: 0.62rem;
+  padding: 4px 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.game-competition-color {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.game-competition-color input {
+  border: 1px solid var(--atlas-line);
+  height: 25px;
+  padding: 1px;
+  width: 39px;
+}
+
+.game-competition-members {
+  display: grid;
+  gap: 7px;
+}
+
+.game-competition-member {
+  font-size: 0.68rem;
+}
+
+.game-competition-member small {
+  color: var(--atlas-orange);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.54rem;
+  margin-left: auto;
+}
+
+.game-competition-member button {
+  margin-left: auto;
+}
+
+.game-competition-owner-actions {
+  border-top: 1px solid var(--atlas-line);
+  display: grid;
+  gap: 5px;
+  padding-top: 9px;
+}
+
+.game-competition-owner-actions .game-account-danger,
+.game-competition-leave {
+  color: var(--atlas-orange);
+}
+
 @media (max-width: 700px) {
   .topbar {
     align-items: flex-start;

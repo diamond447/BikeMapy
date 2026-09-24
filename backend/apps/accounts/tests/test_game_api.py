@@ -13,7 +13,13 @@ from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.accounts.competition_services import create_competition, join_competition
 from apps.accounts.models import (
+    Competition,
+    CompetitionMembership,
+    CompetitionRecomputation,
+    CompetitionResult,
+    ImportedActivity,
     OAuthState,
     Player,
     PlayerCredential,
@@ -495,6 +501,46 @@ def test_callback_first_then_deletion_leaves_player_deleted() -> None:
     with patch("apps.accounts.services.httpx.post"):
         delete_player(player)
     assert not Player.objects.exists()
+
+
+@override_settings(**_settings())
+def test_player_deletion_erases_owned_data_and_recomputes_surviving_competitions() -> None:
+    survivor = save_connection(_payload(athlete_id=701))
+    target = save_connection(_payload(athlete_id=702))
+    surviving, _ = create_competition(survivor, name="Surviving")
+    join_competition(target, invite_code=surviving.invite_code)
+    owned, _ = create_competition(target, name="Owned")
+    target_activity = ImportedActivity.objects.create(
+        player=target, provider_activity_id="target-activity"
+    )
+    survivor_activity = ImportedActivity.objects.create(
+        player=survivor, provider_activity_id="survivor-activity"
+    )
+    CompetitionResult.objects.create(
+        competition=surviving,
+        player=target,
+        activity=target_activity,
+        points=8,
+    )
+    CompetitionResult.objects.create(
+        competition=surviving,
+        player=survivor,
+        activity=survivor_activity,
+        points=13,
+    )
+    with patch("apps.accounts.services.httpx.post"):
+        delete_player(target)
+
+    assert not Player.objects.filter(pk=target.pk).exists()
+    assert not Competition.objects.filter(pk=owned.pk).exists()
+    assert not CompetitionMembership.objects.filter(competition=surviving, player=target).exists()
+    assert not ImportedActivity.objects.filter(pk=target_activity.pk).exists()
+    assert ImportedActivity.objects.filter(pk=survivor_activity.pk).exists()
+    assert not CompetitionResult.objects.filter(competition=surviving, player=target).exists()
+    job = CompetitionRecomputation.objects.get(competition=surviving)
+    surviving.refresh_from_db()
+    assert job.affected_player_id == target.pk
+    assert job.generation == surviving.revision == 1
 
 
 @override_settings(**_settings())

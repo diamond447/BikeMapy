@@ -61,6 +61,10 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
 GAME_ENABLED = env_bool("GAME_ENABLED", False)
+# Account authentication and competition/cross-member features have separate
+# rollout and legal gates. Competition endpoints remain unavailable unless
+# both flags are explicitly enabled.
+COMPETITION_GAME_ENABLED = env_bool("COMPETITION_GAME_ENABLED", False)
 REFERENCE_ROUTE_AUTHORIZER = os.getenv(
     "REFERENCE_ROUTE_AUTHORIZER",
     "apps.api.reference_authorization.default_reference_route_authorizer",
@@ -130,6 +134,7 @@ if not DEBUG:
     MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "config.urls"
+CSRF_FAILURE_VIEW = "apps.accounts.csrf.csrf_failure"
 SITE_ID = 1
 AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
@@ -353,6 +358,8 @@ REST_FRAMEWORK = {
         "user": os.getenv("API_USER_RATE", "600/minute"),
     },
 }
+GAME_PLAYER_RATE = os.getenv("GAME_PLAYER_RATE", "600/minute")
+COMPETITION_INVITE_RATE = os.getenv("COMPETITION_INVITE_RATE", "10/minute")
 # Analytics is deliberately protected by one coarse, non-identifying bucket;
 # unlike the generic API throttle it never derives a cache key from an IP.
 ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
@@ -384,6 +391,10 @@ else:
     }
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10
+GAME_RECOMPUTATION_LEASE_SECONDS = int(os.getenv("GAME_RECOMPUTATION_LEASE_SECONDS", "600"))
+GAME_RECOMPUTATION_DISPATCH_LEASE_SECONDS = int(
+    os.getenv("GAME_RECOMPUTATION_DISPATCH_LEASE_SECONDS", "60")
+)
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 CELERY_WORKER_REDIRECT_STDOUTS = True
@@ -423,6 +434,10 @@ CELERY_BEAT_SCHEDULE = {
     "retry-player-revocations": {
         "task": "bikemapy.accounts.retry_revocations",
         "schedule": 900,
+    },
+    "dispatch-game-recomputations": {
+        "task": "bikemapy.accounts.dispatch_competition_recomputations",
+        "schedule": 60,
     },
 }
 

@@ -21,6 +21,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.game_api import current_player
+from apps.accounts.services import competition_is_available
+from apps.api.reference_authorization import active_competition_for_player
 from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
@@ -41,21 +43,15 @@ class GameReferencePermission(BasePermission):
     """Require the future game session contract, not any arbitrary Django user."""
 
     def has_permission(self, request: Request, view: object) -> bool:
-        if not getattr(settings, "GAME_ENABLED", False):
+        if not competition_is_available():
             return False
         player = current_player(request)
         if player is None:
             return False
-        claims = request.session.get("game_session")
-        if not bool(
-            isinstance(claims, dict)
-            and claims.get("competition_id")
-            and claims.get("reference_route_read") is True
-        ):
+        competition = active_competition_for_player(player)
+        if competition is None:
             return False
-        return bool(
-            reference_route_authorizer()(player.user, str(claims["competition_id"]), request)
-        )
+        return bool(reference_route_authorizer()(player.user, str(competition.pk), request))
 
 
 class ReferenceRoutePagination(CursorPagination):

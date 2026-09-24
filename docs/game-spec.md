@@ -30,8 +30,10 @@ been covered?” Capture answers “which bounded areas does a player’s accumu
 network currently own?” These are switchable views, not separate activity
 imports or competing sources of truth.
 
-The game must be disabled by default (`GAME_ENABLED=false`). A deployment with
-the flag disabled and no Strava credentials must still build, start, and serve
+The player-account layer must be disabled by default (`GAME_ENABLED=false`).
+Cross-member competitions have a separate fail-closed legal and rollout gate
+(`COMPETITION_GAME_ENABLED=false`) and require both flags to be explicitly
+enabled. A deployment with the account flag disabled and no Strava credentials must still build, start, and serve
 the public catalogue. In that state the game frontend and private endpoints
 are unavailable or return a deliberate not-found/disabled response, and no
 private data is returned. Enabling the game is a separately controlled rollout;
@@ -256,7 +258,10 @@ shared imported activities remain available for other competitions in which
 they participate.
 
 The API must enforce membership and ownership at the object level on every
-competition endpoint. An unauthenticated user, a player from another
+competition endpoint. The authoritative membership record, not an invite,
+session claim, or guessed identifier, controls access to a competition and its
+reference routes. The active competition is synchronized from a current
+membership; stale pointers are cleared before authorization. An unauthenticated user, a player from another
 competition, and a former member must not enumerate or retrieve data by
 guessing competition, membership, activity, route, or result identifiers.
 Invite-code validation must be rate-limited and must not disclose whether
