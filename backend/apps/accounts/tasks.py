@@ -9,13 +9,16 @@ from uuid import uuid4
 from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
 from django.db import connection, transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from .capture_services import (
     CAPTURE_RETRY_SECONDS,
     MAX_CAPTURE_ATTEMPTS,
+    CaptureCalculationBusy,
+    CaptureCalculationError,
     calculate_capture,
+    claim_capture_calculation,
 )
 from .competition_services import DISPATCH_RETRY_SECONDS, MAX_DISPATCH_ATTEMPTS
 from .models import (
@@ -48,11 +51,22 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
     """Claim and retry capture-only generations, such as a new membership."""
 
     now = timezone.now()
-    stale = CaptureCalculation.objects.filter(
-        status=CaptureCalculation.Status.RUNNING,
-        lease_until__isnull=False,
-        lease_until__lte=now,
-    ).order_by("pk")[: max(1, limit)]
+    stale = (
+        CaptureCalculation.objects.filter(
+            status=CaptureCalculation.Status.RUNNING,
+            lease_until__isnull=False,
+            lease_until__lte=now,
+        )
+        .filter(
+            ~Exists(
+                CompetitionRecomputation.objects.filter(
+                    competition_id=OuterRef("competition_id"),
+                    generation=OuterRef("generation"),
+                )
+            )
+        )
+        .order_by("pk")[: max(1, limit)]
+    )
     for stale_calculation in stale:
         CaptureCalculation.objects.filter(
             pk=stale_calculation.pk,
@@ -66,42 +80,50 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             lease_until=None,
         )
     processed = failed = 0
-    candidates = CaptureCalculation.objects.filter(
-        status__in=(CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED),
-        attempts__lt=MAX_CAPTURE_ATTEMPTS,
-        next_attempt_at__lte=now,
-    ).order_by("requested_at", "pk")[: max(1, limit)]
-    for candidate in candidates:
-        token = uuid4().hex
-        with transaction.atomic():
-            try:
-                calculation = CaptureCalculation.objects.select_for_update().get(pk=candidate.pk)
-            except CaptureCalculation.DoesNotExist:
-                continue
-            if (
-                calculation.status
-                not in (CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED)
-                or calculation.attempts >= MAX_CAPTURE_ATTEMPTS
-                or calculation.next_attempt_at > now
-            ):
-                continue
-            calculation.status = CaptureCalculation.Status.RUNNING
-            calculation.attempts += 1
-            calculation.lease_token = token
-            calculation.lease_until = now + timedelta(
-                seconds=settings.GAME_RECOMPUTATION_LEASE_SECONDS
+    candidates = (
+        CaptureCalculation.objects.filter(
+            status__in=(CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED),
+            attempts__lt=MAX_CAPTURE_ATTEMPTS,
+            next_attempt_at__lte=now,
+        )
+        .filter(
+            ~Exists(
+                CompetitionRecomputation.objects.filter(
+                    competition_id=OuterRef("competition_id"),
+                    generation=OuterRef("generation"),
+                )
             )
-            calculation.save(update_fields=("status", "attempts", "lease_token", "lease_until"))
+        )
+        .order_by("requested_at", "pk")[: max(1, limit)]
+    )
+    for candidate in candidates:
+        try:
+            calculation = CaptureCalculation.objects.get(pk=candidate.pk)
+            calculation, token = claim_capture_calculation(
+                calculation.competition, generation=calculation.generation
+            )
+        except (CaptureCalculation.DoesNotExist, CaptureCalculationBusy):
+            continue
+        except CaptureCalculationError:
+            failed += 1
+            continue
+        if token is None:
+            processed += 1
+            continue
         try:
             calculate_capture(
                 calculation.competition,
                 generation=calculation.generation,
+                lease_token=token,
             )
         except Exception as exc:
             failed += 1
             with transaction.atomic():
                 current = CaptureCalculation.objects.select_for_update().get(pk=calculation.pk)
-                if current.lease_token == token:
+                if current.status == CaptureCalculation.Status.FAILED and current.lease_token in {
+                    "",
+                    token,
+                }:
                     retry_index = min(current.attempts - 1, len(CAPTURE_RETRY_SECONDS) - 1)
                     current.status = CaptureCalculation.Status.FAILED
                     current.error = str(exc)[:240]
@@ -122,6 +144,15 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             continue
         processed += 1
     return {"processed": processed, "failed": failed}
+
+
+@shared_task(name="bikemapy.accounts.rebuild_capture_algorithm")  # type: ignore[untyped-decorator]
+def rebuild_capture_algorithm_task(limit: int = 100) -> dict[str, int]:
+    """Operational rollout hook for publishing a new capture algorithm version."""
+
+    from .capture_services import schedule_algorithm_version_rebuilds
+
+    return {"queued": schedule_algorithm_version_rebuilds(limit=max(1, limit))}
 
 
 @shared_task(name="bikemapy.accounts.recompute_competition_results")  # type: ignore[untyped-decorator]
@@ -186,7 +217,15 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
         # a timeout or topology error must commit its failed calculation marker
         # while preserving the previous current snapshot.
         if connection.vendor == "postgresql":
-            calculate_capture(competition, generation=job.generation)
+            capture_calculation, capture_token = claim_capture_calculation(
+                competition, generation=job.generation
+            )
+            if capture_token is not None:
+                calculate_capture(
+                    competition,
+                    generation=capture_calculation.generation,
+                    lease_token=capture_token,
+                )
         with transaction.atomic():
             competition = Competition.objects.select_for_update().get(pk=job_ref.competition_id)
             job = CompetitionRecomputation.objects.select_for_update().get(pk=job_id)

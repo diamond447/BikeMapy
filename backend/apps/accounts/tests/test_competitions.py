@@ -250,9 +250,7 @@ def test_removal_selects_remaining_membership_and_preserves_newer_generation() -
     assert member.active_competition_id == second.pk
 
     first.refresh_from_db()
-    first.revision = 2
-    first.save(update_fields=("revision", "updated_at"))
-    newer = CompetitionRecomputation.objects.create(competition=first, generation=2)
+    newer = CompetitionRecomputation.objects.get(competition=first, generation=first.revision)
     older = CompetitionRecomputation.objects.create(competition=first, generation=0)
     result = CompetitionResult.objects.create(competition=first, player=owner, points=3)
     recompute_competition_results_task.apply(args=[newer.pk]).get()

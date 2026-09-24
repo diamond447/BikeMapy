@@ -20,14 +20,21 @@ one row per owner and `shared_area_m2` is the equal fraction of the face.
 generation. These rows are replaced only inside the successful projection
 transaction.
 
-Activity imports, privacy removals, membership removals, and account deletion
-schedule the existing durable recomputation generation. Competition creation
-and joining queue a capture-only generation; the capture dispatcher claims it
-with the same bounded lease/retry policy. The worker runs the spatial rebuild
-outside its lease transaction, then atomically applies the ordinary competition
-projection. PostGIS failures are recorded as failed work for bounded
-dispatcher retry; SQLite host checks skip spatial execution and retain the
-GIS-optional quality suite behavior.
+Activity imports, privacy removals, membership changes, and account deletion
+schedule a new durable recomputation generation. Competition creation queues a
+capture-only generation; the capture dispatcher claims it with the same
+bounded lease/retry policy. The recomputation worker owns capture generations
+that also have a score job, so the two workers cannot publish the same
+generation concurrently. The worker runs the spatial rebuild outside its lease
+transaction, then atomically applies the ordinary competition projection.
+PostGIS failures are recorded as failed work for bounded dispatcher retry;
+SQLite host checks skip spatial execution and retain the GIS-optional quality
+suite behavior.
+
+An algorithm rollout invokes the operational Celery task
+`bikemapy.accounts.rebuild_capture_algorithm`. It queues only active
+competitions whose current snapshot has an older algorithm version; the normal
+generation worker and capture dispatcher then perform the bounded rebuild.
 
 The service intentionally uses a full bounded rebuild for every generation.
 This is the production-safe baseline: webhook order cannot alter ownership,

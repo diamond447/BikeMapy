@@ -247,19 +247,25 @@ def _dispatch_recomputation(job_id: int, *, dispatch_token: str | None = None) -
 def schedule_recomputation(
     competition: Competition, *, affected_player_id: int | None = None
 ) -> CompetitionRecomputation:
-    competition.revision += 1
-    competition.save(update_fields=("revision", "updated_at"))
-    job, _ = CompetitionRecomputation.objects.get_or_create(
-        competition=competition,
-        generation=competition.revision,
-        defaults={"affected_player_id": affected_player_id},
-    )
-    # Capture has its own immutable projection, but shares this durable
-    # generation so activity and membership changes cannot publish mismatched
-    # completion/capture snapshots.
-    from .capture_services import schedule_capture_calculation
+    with transaction.atomic():
+        locked_competition = Competition.objects.select_for_update().get(pk=competition.pk)
+        locked_competition.revision += 1
+        locked_competition.save(update_fields=("revision", "updated_at"))
+        job, _ = CompetitionRecomputation.objects.get_or_create(
+            competition=locked_competition,
+            generation=locked_competition.revision,
+            defaults={"affected_player_id": affected_player_id},
+        )
+        # Capture has its own immutable projection, but shares this durable
+        # generation so activity and membership changes cannot publish
+        # mismatched completion/capture snapshots.
+        from .capture_services import schedule_capture_calculation
 
-    schedule_capture_calculation(competition, reason="recomputation")
+        schedule_capture_calculation(locked_competition, reason="recomputation")
+    # Keep the caller's model instance coherent with the committed revision;
+    # callers such as join_competition return this instance to their API layer.
+    competition.revision = locked_competition.revision
+    competition.updated_at = locked_competition.updated_at
     return job
 
 
@@ -303,9 +309,11 @@ def join_competition(
     if player.active_competition_id is None:
         Player.objects.filter(pk=player.pk).update(active_competition=competition)
         player.active_competition = competition
-    from .capture_services import schedule_capture_calculation
-
-    schedule_capture_calculation(competition, reason="membership-change")
+    # A membership change is a new chronological generation even when there is
+    # no published snapshot yet.  Reusing the current (possibly exhausted)
+    # capture-only generation would allow a failed initial build to hide the
+    # membership change forever.
+    schedule_recomputation(competition)
     return competition, membership
 
 

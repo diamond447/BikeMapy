@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
+from django.conf import settings
 from django.db import connection, transaction
 from django.utils import timezone
 
@@ -18,6 +20,7 @@ from .models import (
     CaptureFaceOwner,
     CapturePlayerArea,
     Competition,
+    CompetitionRecomputation,
     ImportedActivity,
 )
 
@@ -33,6 +36,10 @@ MAX_CAPTURE_ATTEMPTS = 5
 
 class CaptureCalculationError(RuntimeError):
     """A capture rebuild failed without making the previous result unusable."""
+
+
+class CaptureCalculationBusy(CaptureCalculationError):
+    """Another worker currently owns the generation lease."""
 
 
 def _decimal(value: float | Decimal) -> Decimal:
@@ -144,6 +151,7 @@ def schedule_capture_calculation(
 
     del reason  # Kept in the API for audit callers; generation is the durable reason.
     with transaction.atomic():
+        competition = Competition.objects.select_for_update().get(pk=competition.pk)
         calculation, _ = CaptureCalculation.objects.get_or_create(
             competition=competition,
             generation=competition.revision,
@@ -175,23 +183,103 @@ def schedule_capture_calculation(
     return calculation
 
 
-def schedule_algorithm_version_rebuilds() -> int:
+def schedule_algorithm_version_rebuilds(*, limit: int | None = None) -> int:
     """Queue every active competition after a capture algorithm upgrade."""
 
     from .competition_services import schedule_recomputation
 
     count = 0
-    for competition in Competition.objects.filter(is_active=True).order_by("pk"):
+    competitions = Competition.objects.filter(is_active=True).order_by("pk")
+    for competition in competitions:
+        current = current_capture(competition)
+        if current is not None and current.algorithm_version == CAPTURE_ALGORITHM_VERSION:
+            continue
+        if CompetitionRecomputation.objects.filter(
+            competition=competition,
+            generation=competition.revision,
+            status__in=(
+                CompetitionRecomputation.Status.PENDING,
+                CompetitionRecomputation.Status.RUNNING,
+            ),
+        ).exists():
+            continue
         schedule_recomputation(competition)
         count += 1
+        if limit is not None and count >= max(1, limit):
+            break
     return count
 
 
-def _mark_failed(calculation_id: int, error: str) -> None:
-    CaptureCalculation.objects.filter(pk=calculation_id, is_current=False).update(
+def _lease_seconds() -> int:
+    try:
+        configured = int(settings.GAME_RECOMPUTATION_LEASE_SECONDS)
+    except (AttributeError, TypeError, ValueError):
+        configured = 600
+    return max(30, configured)
+
+
+def claim_capture_calculation(
+    competition: Competition, *, generation: int | None = None
+) -> tuple[CaptureCalculation, str | None]:
+    """Atomically claim a generation before doing expensive spatial work."""
+
+    now = timezone.now()
+    with transaction.atomic():
+        if generation is None:
+            competition = Competition.objects.get(pk=competition.pk)
+            generation = competition.revision
+        calculation, _ = CaptureCalculation.objects.get_or_create(
+            competition=competition,
+            generation=generation,
+            defaults={
+                "algorithm_version": CAPTURE_ALGORITHM_VERSION,
+                "status": CaptureCalculation.Status.PENDING,
+            },
+        )
+        calculation = CaptureCalculation.objects.select_for_update().get(pk=calculation.pk)
+        if calculation.status == CaptureCalculation.Status.FRESH and calculation.is_current:
+            return calculation, None
+        if (
+            calculation.status == CaptureCalculation.Status.RUNNING
+            and calculation.lease_until is not None
+            and calculation.lease_until > now
+        ):
+            raise CaptureCalculationBusy("Capture generation is already being calculated.")
+        if calculation.attempts >= MAX_CAPTURE_ATTEMPTS:
+            raise CaptureCalculationError("Capture calculation retry limit exhausted.")
+        token = uuid4().hex
+        calculation.status = CaptureCalculation.Status.RUNNING
+        calculation.attempts += 1
+        calculation.started_at = now
+        calculation.error = ""
+        calculation.lease_token = token
+        calculation.lease_until = now + timedelta(seconds=_lease_seconds())
+        calculation.save(
+            update_fields=(
+                "status",
+                "attempts",
+                "started_at",
+                "error",
+                "lease_token",
+                "lease_until",
+            )
+        )
+    return calculation, token
+
+
+def _mark_failed(calculation_id: int, error: str, lease_token: str) -> None:
+    CaptureCalculation.objects.filter(
+        pk=calculation_id,
+        is_current=False,
+        status=CaptureCalculation.Status.RUNNING,
+        lease_token=lease_token,
+    ).update(
         status=CaptureCalculation.Status.FAILED,
         error=error[:240],
         completed_at=timezone.now(),
+        next_attempt_at=timezone.now(),
+        lease_token="",
+        lease_until=None,
     )
 
 
@@ -200,11 +288,20 @@ def _persist_faces(
     result: ValidationResult,
     *,
     digest: str,
+    lease_token: str,
 ) -> CaptureCalculation:
     with transaction.atomic():
+        competition = Competition.objects.select_for_update().get(pk=calculation.competition_id)
         calculation = CaptureCalculation.objects.select_for_update().get(pk=calculation.pk)
+        if (
+            calculation.status != CaptureCalculation.Status.RUNNING
+            or calculation.lease_token != lease_token
+            or calculation.lease_until is None
+            or calculation.lease_until <= timezone.now()
+        ):
+            raise CaptureCalculationBusy("Capture generation lease was replaced or expired.")
         current = (
-            CaptureCalculation.objects.filter(competition=calculation.competition, is_current=True)
+            CaptureCalculation.objects.filter(competition=competition, is_current=True)
             .exclude(pk=calculation.pk)
             .order_by("-generation")
             .first()
@@ -212,7 +309,7 @@ def _persist_faces(
         calculation.faces.all().delete()
         calculation.player_areas.all().delete()
         area_totals: dict[int, Decimal] = {}
-        member_ids = set(calculation.competition.memberships.values_list("player_id", flat=True))
+        member_ids = set(competition.memberships.values_list("player_id", flat=True))
         if result.faces:
             from django.contrib.gis.geos import GEOSGeometry
 
@@ -241,11 +338,15 @@ def _persist_faces(
                 player_id=player_id,
                 owned_area_m2=_decimal(area),
             )
-        if current is None or current.generation <= calculation.generation:
-            CaptureCalculation.objects.filter(
-                competition=calculation.competition, is_current=True
-            ).exclude(pk=calculation.pk).update(is_current=False)
+        if calculation.generation == competition.revision and (
+            current is None or current.generation <= calculation.generation
+        ):
+            CaptureCalculation.objects.filter(competition=competition, is_current=True).exclude(
+                pk=calculation.pk
+            ).update(is_current=False)
             calculation.is_current = True
+        else:
+            calculation.is_current = False
         calculation.status = CaptureCalculation.Status.FRESH
         calculation.algorithm_version = CAPTURE_ALGORITHM_VERSION
         calculation.input_digest = digest
@@ -275,27 +376,33 @@ def _persist_faces(
 
 
 def calculate_capture(
-    competition: Competition, *, generation: int | None = None
+    competition: Competition,
+    *,
+    generation: int | None = None,
+    lease_token: str | None = None,
 ) -> CaptureCalculation:
     """Rebuild one immutable capture generation and publish it atomically."""
 
-    generation = competition.revision if generation is None else generation
-    calculation, _ = CaptureCalculation.objects.get_or_create(
-        competition=competition,
-        generation=generation,
-        defaults={
-            "algorithm_version": CAPTURE_ALGORITHM_VERSION,
-            "status": CaptureCalculation.Status.PENDING,
-        },
-    )
+    if generation is None:
+        competition.refresh_from_db(fields=("revision",))
+        generation = competition.revision
+    if lease_token is None:
+        calculation, lease_token = claim_capture_calculation(competition, generation=generation)
+    else:
+        calculation = CaptureCalculation.objects.get(competition=competition, generation=generation)
     if calculation.status == CaptureCalculation.Status.FRESH and calculation.is_current:
-        return calculation
-    calculation.status = CaptureCalculation.Status.RUNNING
-    calculation.algorithm_version = CAPTURE_ALGORITHM_VERSION
-    calculation.started_at = timezone.now()
-    calculation.error = ""
-    calculation.save(update_fields=("status", "algorithm_version", "started_at", "error"))
+        if lease_token is None:
+            return calculation
+        raise CaptureCalculationBusy("Capture generation lease was replaced or expired.")
+    assert lease_token is not None
     try:
+        if (
+            calculation.status != CaptureCalculation.Status.RUNNING
+            or calculation.lease_token != lease_token
+            or calculation.lease_until is None
+            or calculation.lease_until <= timezone.now()
+        ):
+            raise CaptureCalculationBusy("Capture generation lease was replaced or expired.")
         traces = capture_traces(competition)
         if traces and connection.vendor != "postgresql":
             raise CaptureCalculationError("Capture calculation requires PostGIS.")
@@ -303,9 +410,9 @@ def calculate_capture(
         from .capture_validation import validate_capture
 
         result = validate_capture(traces)
-        return _persist_faces(calculation, result, digest=digest)
+        return _persist_faces(calculation, result, digest=digest, lease_token=lease_token)
     except Exception as exc:
-        _mark_failed(calculation.pk, str(exc))
+        _mark_failed(calculation.pk, str(exc), lease_token)
         if isinstance(exc, CaptureCalculationError):
             raise
         raise CaptureCalculationError("Capture calculation failed safely.") from exc
