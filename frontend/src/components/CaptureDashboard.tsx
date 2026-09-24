@@ -118,7 +118,6 @@ export function CaptureDashboard({
   const loadCapture = useCallback(async () => {
     if (!competitionId || !mapLoaded.current || !map.current) return
     const sequence = ++requestSequence.current
-    setCaptureSourceLoaded(false)
     setLoading(true)
     setError(null)
     const current = bounds.current
@@ -143,6 +142,7 @@ export function CaptureDashboard({
       if (result.response?.status === 401) return
       if (result.response?.status === 404 || !result.data) throw new Error('capture')
       if (result.data.competition_id !== competitionId) return
+      setCaptureSourceLoaded(false)
       setCapture(result.data)
     } catch {
       if (sequence === requestSequence.current) {
@@ -231,21 +231,37 @@ export function CaptureDashboard({
     const activeMap = map.current
     const source = activeMap?.getSource('capture-territory') as GeoJSONSource | undefined
     if (!source || !activeMap || !activeCapture) return
-    const mark = `capture-response-${renderSequence.current++}`
+    const renderSequenceId = renderSequence.current++
+    const mark = `capture-response-${renderSequenceId}`
     performance.mark(mark)
-    const onSourceData = (event: MapSourceDataEvent) => {
-      if (event.sourceId !== 'capture-territory' || !event.isSourceLoaded) return
+    let completed = false
+    const cleanup = () => {
       activeMap.off('sourcedata', onSourceData)
+      activeMap.off('idle', onIdle)
+    }
+    const complete = () => {
+      if (completed) return
+      completed = true
+      cleanup()
       setCaptureSourceLoaded(true)
       performance.measure('capture-response-to-source', mark)
       performance.clearMarks(mark)
     }
+    const onSourceData = (event: MapSourceDataEvent) => {
+      if (event.sourceId !== 'capture-territory' || !event.isSourceLoaded) return
+      complete()
+    }
+    const onIdle = () => {
+      if (activeMap.isSourceLoaded('capture-territory')) complete()
+    }
     activeMap.on('sourcedata', onSourceData)
+    activeMap.on('idle', onIdle)
     source.setData({
       type: 'FeatureCollection',
       features: captureFeatures(activeCapture.faces, activeMap, visibleMembers),
     })
     mapNode.current?.setAttribute('data-capture-response-loaded', 'true')
+    return cleanup
   }, [activeCapture, visibleMembers])
 
   const selectedMembers = useMemo(() => activeCapture?.members ?? [], [activeCapture])
@@ -370,7 +386,7 @@ export function CaptureDashboard({
           className="game-map-canvas"
           role="application"
           aria-label={copy.gameMapInteractive}
-          data-capture-source-data-loaded={captureSourceLoaded ? 'true' : 'false'}
+          data-capture-source-data-loaded={activeCapture && captureSourceLoaded ? 'true' : 'false'}
           data-capture-feature-count={activeCapture?.faces.length ?? 0}
         />
         {activeCapture?.is_final && (

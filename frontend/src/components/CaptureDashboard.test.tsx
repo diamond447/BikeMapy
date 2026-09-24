@@ -18,6 +18,11 @@ const { MockMap } = vi.hoisted(() => {
       return this
     }
 
+    off(event: string, handler: () => void) {
+      if (this.handlers[event] === handler) delete this.handlers[event]
+      return this
+    }
+
     addControl() {
       return this
     }
