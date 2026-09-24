@@ -211,13 +211,20 @@ def test_player_deletion_serializes_with_competition_player_operations(operation
 
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locks")
+@pytest.mark.parametrize("operation", ("switch", "transfer"))
 @override_settings(**SETTINGS)
-def test_player_deletion_rechecks_membership_after_a_concurrent_join() -> None:
+def test_player_deletion_rechecks_membership_after_a_concurrent_join(
+    operation: str,
+) -> None:
     owner = player(90)
     target = player(91)
+    new_owner = player(92) if operation == "transfer" else None
     competition, _ = create_competition(owner, name="Join during deletion")
+    if new_owner is not None:
+        join_competition(new_owner, invite_code=competition.invite_code)
     snapshot_ready = Event()
     join_finished = Event()
+    contention_started = Event()
     original_snapshot = services._competition_ids_for_player
 
     def synchronized_snapshot(player_id: int) -> list[object]:
@@ -234,13 +241,30 @@ def test_player_deletion_rechecks_membership_after_a_concurrent_join() -> None:
         finally:
             close_old_connections()
 
+    def contend() -> None:
+        close_old_connections()
+        try:
+            contention_started.set()
+            if operation == "switch":
+                switch_competition(target, competition)
+            else:
+                assert new_owner is not None
+                transfer_ownership(owner, competition, new_owner)
+        except (Competition.DoesNotExist, CompetitionError, Player.DoesNotExist, StopIteration):
+            pass
+        finally:
+            close_old_connections()
+
     with patch.object(services, "_competition_ids_for_player", synchronized_snapshot):
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             future = executor.submit(delete_target)
             assert snapshot_ready.wait(timeout=10)
             join_competition(target, invite_code=competition.invite_code)
+            contention = executor.submit(contend)
+            assert contention_started.wait(timeout=10)
             join_finished.set()
             future.result(timeout=15)
+            contention.result(timeout=15)
 
     competition.refresh_from_db()
     assert not Player.objects.filter(pk=target.pk).exists()
@@ -248,6 +272,33 @@ def test_player_deletion_rechecks_membership_after_a_concurrent_join() -> None:
     job = CompetitionRecomputation.objects.get(competition=competition)
     assert job.affected_player_id == target.pk
     assert competition.revision == job.generation == 1
+
+
+@override_settings(**SETTINGS)
+def test_player_deletion_retry_exhaustion_rolls_back_safely() -> None:
+    owner = player(93)
+    target = player(94)
+    competition, _ = create_competition(owner, name="Retry exhaustion")
+    join_competition(target, invite_code=competition.invite_code)
+
+    snapshot_calls = 0
+
+    def always_changing_snapshot(player_id: int) -> list[object]:
+        nonlocal snapshot_calls
+        if player_id == target.pk:
+            snapshot_calls += 1
+            return [competition.pk] if snapshot_calls % 2 else []
+        return []
+
+    with patch.object(services, "_competition_ids_for_player", always_changing_snapshot):
+        with pytest.raises(RuntimeError, match="conflicted"):
+            delete_player(target)
+
+    assert Player.objects.filter(pk=target.pk).exists()
+    assert CompetitionMembership.objects.filter(competition=competition, player=target).exists()
+    competition.refresh_from_db()
+    assert competition.revision == 0
+    assert not CompetitionRecomputation.objects.filter(competition=competition).exists()
 
 
 @override_settings(**SETTINGS)

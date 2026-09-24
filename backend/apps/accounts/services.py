@@ -43,6 +43,11 @@ RefreshOutcome = Literal["success", "retryable", "revoked"]
 REVOCATION_RETRY_LIMIT = 8
 REQUIRED_STRAVA_SCOPES = frozenset({"read", "activity:read"})
 IDENTITY_GUARD_RETENTION = OAUTH_STATE_TTL + timedelta(minutes=5)
+MAX_PLAYER_DELETION_RETRIES = 3
+
+
+class _RetryPlayerDeletion(Exception):
+    """Signal that a deletion snapshot changed before mutation could begin."""
 
 
 def game_is_available() -> bool:
@@ -479,8 +484,11 @@ def _affected_player_ids(player_id: int, competition_ids: list[Any]) -> set[int]
     return affected_player_ids
 
 
-def delete_player(player: Player, *, session_key: str | None = None) -> None:
+def _delete_player_once(
+    player: Player, *, session_key: str | None = None
+) -> tuple[str | None, RevocationJob | None]:
     access_token = None
+    job = None
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
         affected_competition_ids = _competition_ids_for_player(player.pk)
@@ -490,21 +498,26 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
         )
         player = next(locked for locked in locked_players if locked.pk == player.pk)
         current_competition_ids = _competition_ids_for_player(player.pk)
-        if current_competition_ids != affected_competition_ids:
-            # The target lock serializes all normal membership writes. A join
-            # that committed after the first snapshot is included by this
-            # second read before any Competition row is locked.
-            affected_competition_ids = current_competition_ids
-            affected_player_ids = _affected_player_ids(player.pk, affected_competition_ids)
-            locked_players = list(
-                Player.objects.select_for_update().filter(pk__in=affected_player_ids).order_by("pk")
-            )
-            player = next(locked for locked in locked_players if locked.pk == player.pk)
+        current_player_ids = _affected_player_ids(player.pk, current_competition_ids)
+        if (
+            current_competition_ids != affected_competition_ids
+            or current_player_ids != affected_player_ids
+        ):
+            raise _RetryPlayerDeletion
         affected_competitions = list(
             Competition.objects.select_for_update()
             .filter(pk__in=affected_competition_ids)
             .order_by("pk")
         )
+        locked_competition_ids = [competition.pk for competition in affected_competitions]
+        current_competition_ids = _competition_ids_for_player(player.pk)
+        current_player_ids = _affected_player_ids(player.pk, current_competition_ids)
+        if (
+            locked_competition_ids != affected_competition_ids
+            or current_competition_ids != affected_competition_ids
+            or current_player_ids != affected_player_ids
+        ):
+            raise _RetryPlayerDeletion
         # Lock memberships after Player -> Competition, matching the global
         # competition lock order used by leave/remove/delete operations.
         list(
@@ -532,7 +545,6 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
             )
         except PlayerCredential.DoesNotExist:
             pass
-        job = None
         if access_token:
             job = RevocationJob.objects.create(
                 access_token=access_token,
@@ -549,6 +561,21 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
         player.lifecycle = Player.Lifecycle.DELETED
         player.invalidate_sessions()
         player.user.delete()
+    return access_token, job
+
+
+def delete_player(player: Player, *, session_key: str | None = None) -> None:
+    for attempt in range(MAX_PLAYER_DELETION_RETRIES):
+        try:
+            access_token, job = _delete_player_once(player, session_key=session_key)
+            break
+        except _RetryPlayerDeletion:
+            if attempt + 1 == MAX_PLAYER_DELETION_RETRIES:
+                raise RuntimeError(
+                    "Player deletion conflicted with concurrent competition changes"
+                ) from None
+    else:  # pragma: no cover - range always yields at least one attempt
+        raise RuntimeError("Player deletion could not acquire a stable snapshot")
     if job is not None:
         _record_revocation_result(job, success=_revoke_access_token(access_token))
 
