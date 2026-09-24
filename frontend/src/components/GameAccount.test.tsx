@@ -14,6 +14,7 @@ const player = {
   nickname: 'Ada',
   lifecycle: 'connected',
   connected_at: '2026-09-20T09:00:00Z',
+  competition_game_enabled: false,
 } as const
 
 function response(status: number, headers?: Record<string, string>) {
@@ -106,6 +107,19 @@ describe('GameAccount', () => {
     expect(get).toHaveBeenCalledWith('/api/v1/game/auth/session/', expect.anything())
   })
 
+  it('does not render competition controls when the server gate is closed', async () => {
+    vi.spyOn(apiClient, 'GET').mockResolvedValue({
+      data: { player },
+      error: undefined,
+      response: response(200),
+    } as never)
+
+    render(<GameAccount copy={translations.en} initialOpen />)
+
+    await screen.findByLabelText(/bikemapy nickname/i)
+    expect(screen.queryByRole('heading', { name: /^competitions$/i })).not.toBeInTheDocument()
+  })
+
   it('requires confirmation before deleting an account and handles refresh loss', async () => {
     vi.spyOn(apiClient, 'GET').mockResolvedValue({
       data: { player },
@@ -137,59 +151,5 @@ describe('GameAccount', () => {
     )
     expect(await screen.findByText(/needs attention/i)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /reconnect with strava/i })).toBeInTheDocument()
-  })
-
-  it('shows activity sync progress and queues a full-history import', async () => {
-    const get = vi.spyOn(apiClient, 'GET')
-    get.mockResolvedValueOnce({
-      data: { player },
-      error: undefined,
-      response: response(200),
-    } as never)
-    get.mockResolvedValueOnce({
-      data: {
-        sync: {
-          status: 'running',
-          mode: 'initial',
-          imported_count: 2,
-          rejected_count: 1,
-          processed_count: 3,
-          cursor_page: 2,
-          last_error: '',
-          completed_at: null,
-        },
-      },
-      error: undefined,
-      response: response(200),
-    } as never)
-    const post = vi.spyOn(apiClient, 'POST').mockResolvedValue({
-      data: {
-        sync: {
-          status: 'queued',
-          mode: 'full-history',
-          imported_count: 0,
-          rejected_count: 0,
-          processed_count: 0,
-          cursor_page: 1,
-          last_error: '',
-          completed_at: null,
-        },
-      },
-      error: undefined,
-      response: response(200),
-    } as never)
-    const user = userEvent.setup()
-
-    render(<GameAccount copy={translations.en} initialOpen />)
-    expect(await screen.findByText(/2 rides kept · 3 checked/i)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /import my full strava history/i }))
-
-    await waitFor(() =>
-      expect(post).toHaveBeenCalledWith(
-        '/api/v1/game/account/activities/full-history/',
-        expect.objectContaining({ headers: { 'X-CSRFToken': 'header-csrf-token' } }),
-      ),
-    )
-    expect(await screen.findByText(/full history is queued/i)).toBeInTheDocument()
   })
 })
