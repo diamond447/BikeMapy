@@ -341,6 +341,7 @@ def _persist_faces(
                 player_id=player_id,
                 owned_area_m2=_decimal(area),
             )
+        promoted = False
         if calculation.generation == competition.revision and (
             current is None or current.generation <= calculation.generation
         ):
@@ -348,6 +349,7 @@ def _persist_faces(
                 pk=calculation.pk
             ).update(is_current=False)
             calculation.is_current = True
+            promoted = True
         else:
             calculation.is_current = False
         calculation.status = CaptureCalculation.Status.FRESH
@@ -358,6 +360,8 @@ def _persist_faces(
         calculation.face_count = len(result.faces)
         calculation.error = ""
         calculation.completed_at = timezone.now()
+        if promoted and calculation.published_at is None:
+            calculation.published_at = timezone.now()
         calculation.lease_token = ""
         calculation.lease_until = None
         calculation.save(
@@ -371,6 +375,7 @@ def _persist_faces(
                 "face_count",
                 "error",
                 "completed_at",
+                "published_at",
                 "lease_token",
                 "lease_until",
             )

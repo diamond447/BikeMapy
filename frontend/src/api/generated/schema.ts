@@ -593,6 +593,8 @@ export interface components {
       /** Format: date-time */
       calculated_at: string | null
       faces: components['schemas']['CaptureFace'][]
+      returned_face_count: number
+      truncated: boolean
       members: components['schemas']['CaptureMember'][]
       help: {
         [key: string]: string

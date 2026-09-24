@@ -77,6 +77,8 @@ class CaptureResponseSerializer(serializers.Serializer[dict[str, Any]]):
     snapshot_generation = serializers.IntegerField(allow_null=True)
     calculated_at = serializers.DateTimeField(allow_null=True)
     faces = CaptureFaceSerializer(many=True)
+    returned_face_count = serializers.IntegerField()
+    truncated = serializers.BooleanField()
     members = CaptureMemberSerializer(many=True)
     help = serializers.DictField(child=serializers.CharField())
     limits = serializers.DictField(child=serializers.IntegerField())
@@ -162,9 +164,9 @@ def _monthly_area(
     prague = ZoneInfo("Europe/Prague")
 
     for calculation in calculations:
-        if calculation.completed_at is None:
+        if calculation.published_at is None:
             continue
-        month = calculation.completed_at.astimezone(prague).strftime("%Y-%m")
+        month = calculation.published_at.astimezone(prague).strftime("%Y-%m")
         current = {area.player_id: area.owned_area_m2 for area in calculation.player_areas.all()}
         for player_id in set(previous) | set(current):
             totals[player_id][month] += current.get(player_id, Decimal("0")) - previous.get(
@@ -248,6 +250,7 @@ class CompetitionCaptureView(GameEndpoint):
         if calculation is None:
             faces: list[CaptureFace] = []
             all_faces: list[CaptureFace] = []
+            face_truncated = False
             area_by_player: dict[int, Decimal] = {}
             snapshot_generation = None
             calculated_at = None
@@ -257,7 +260,9 @@ class CompetitionCaptureView(GameEndpoint):
                 calculation.faces.prefetch_related("owners__player").order_by("face_id"),
                 parts,
             )
-            all_faces = list(face_query[: MAX_FACES + 1])[:MAX_FACES]
+            candidate_faces = list(face_query[: MAX_FACES + 1])
+            face_truncated = len(candidate_faces) > MAX_FACES
+            all_faces = candidate_faces[:MAX_FACES]
             faces = [
                 face
                 for face in all_faces
@@ -282,8 +287,9 @@ class CompetitionCaptureView(GameEndpoint):
             CaptureCalculation.objects.filter(
                 competition=competition,
                 status=CaptureCalculation.Status.FRESH,
+                published_at__isnull=False,
             )
-            .order_by("generation")
+            .order_by("published_at", "generation")
             .prefetch_related("player_areas")
         )
         monthly = _monthly_area(monthly_calculations)
@@ -330,6 +336,8 @@ class CompetitionCaptureView(GameEndpoint):
             "snapshot_generation": snapshot_generation,
             "calculated_at": calculated_at,
             "faces": face_payload,
+            "returned_face_count": len(face_payload),
+            "truncated": face_truncated,
             "members": leaderboard,
             "help": _help_copy(),
             "limits": {"max_faces": MAX_FACES, "max_response_bytes": MAX_RESPONSE_BYTES},
@@ -343,11 +351,14 @@ class CompetitionCaptureView(GameEndpoint):
             while low < high:
                 middle = (low + high + 1) // 2
                 payload["faces"] = face_payload[:middle]
+                payload["returned_face_count"] = middle
                 if encoded_size() <= MAX_RESPONSE_BYTES:
                     low = middle
                 else:
                     high = middle - 1
             payload["faces"] = face_payload[:low]
+            payload["returned_face_count"] = low
+            payload["truncated"] = True
             if encoded_size() > MAX_RESPONSE_BYTES:
                 return _private(
                     Response(

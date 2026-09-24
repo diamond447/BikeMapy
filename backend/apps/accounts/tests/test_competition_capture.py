@@ -9,10 +9,11 @@ from django.db import connection
 from django.test import Client, override_settings
 from django.urls import reverse
 
+from apps.accounts import competition_capture_api
 from apps.accounts.activity_services import remove_activity
 from apps.accounts.capture_services import calculate_capture
 from apps.accounts.competition_services import create_competition, join_competition
-from apps.accounts.models import CaptureCalculation, ImportedActivity, Player
+from apps.accounts.models import CaptureCalculation, CapturePlayerArea, ImportedActivity, Player
 from apps.accounts.tasks import recompute_competition_results_task
 
 pytestmark = pytest.mark.django_db
@@ -79,6 +80,8 @@ def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
     assert payload["status"] == "pending"
     assert payload["is_final"] is False
     assert payload["faces"] == []
+    assert payload["truncated"] is False
+    assert payload["returned_face_count"] == 0
     assert float(payload["members"][0]["area_m2"]) == 0
     assert "connection_rule" in payload["help"]
     assert payload["limits"]["max_faces"] > 0
@@ -86,7 +89,9 @@ def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
 
 @pytest.mark.skipif(connection.vendor != "postgresql", reason="capture API requires PostGIS")
 @override_settings(**SETTINGS)
-def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks() -> None:
+def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     owner = make_player(603)
     member = make_player(604)
     competition, _ = create_competition(owner, name="Capture ranking", color="#123456")
@@ -111,11 +116,32 @@ def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks() -> None:
     calculate_capture(competition)
     initial_calculation = CaptureCalculation.objects.get(competition=competition, is_current=True)
     initial_calculation.completed_at = datetime(2025, 1, 15, tzinfo=UTC)
-    initial_calculation.save(update_fields=("completed_at",))
+    initial_calculation.published_at = datetime(2025, 1, 15, tzinfo=UTC)
+    initial_calculation.save(update_fields=("completed_at", "published_at"))
+    stale = CaptureCalculation.objects.create(
+        competition=competition,
+        generation=competition.revision + 100,
+        algorithm_version="test-stale",
+        status=CaptureCalculation.Status.FRESH,
+        completed_at=datetime(2099, 1, 15, tzinfo=UTC),
+    )
+    CapturePlayerArea.objects.create(
+        calculation=stale,
+        player=owner,
+        owned_area_m2="999999.000",
+    )
     url = reverse("game-competition-capture", args=[competition.pk])
     initial = session_client(owner).get(url, viewport()).json()
     owner_initial = next(item for item in initial["members"] if item["player_id"] == owner.pk)
     assert any(float(item["net_change_m2"]) > 0 for item in owner_initial["monthly_net_change_m2"])
+    assert {item["month"] for item in owner_initial["monthly_net_change_m2"]} == {"2025-01"}
+    assert initial["truncated"] is False
+    assert initial["returned_face_count"] == 2
+
+    monkeypatch.setattr(competition_capture_api, "MAX_FACES", 1)
+    limited = session_client(owner).get(url, viewport()).json()
+    assert limited["truncated"] is True
+    assert limited["returned_face_count"] == 1
 
     narrow = session_client(owner).get(url, viewport() | {"east": "14.25"}).json()
     owner_narrow = next(item for item in narrow["members"] if item["player_id"] == owner.pk)
@@ -135,7 +161,11 @@ def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks() -> None:
     recompute_competition_results_task.apply(args=[job.pk]).get()
     latest_calculation = CaptureCalculation.objects.get(competition=competition, is_current=True)
     latest_calculation.completed_at = datetime(2025, 2, 15, tzinfo=UTC)
-    latest_calculation.save(update_fields=("completed_at",))
+    latest_calculation.published_at = datetime(2025, 2, 15, tzinfo=UTC)
+    latest_calculation.save(update_fields=("completed_at", "published_at"))
+    initial_calculation.refresh_from_db()
+    assert initial_calculation.is_current is False
+    assert initial_calculation.published_at == datetime(2025, 1, 15, tzinfo=UTC)
     after = session_client(owner).get(url, viewport()).json()
     owner_after = next(item for item in after["members"] if item["player_id"] == owner.pk)
     assert any(

@@ -193,7 +193,9 @@ describe('capture territory presentation', () => {
   })
 
   it('announces pending and failed results without hiding the last leaderboard', async () => {
-    get.mockResolvedValueOnce(apiResult({ ...capture, status: 'pending', is_final: false }))
+    get.mockResolvedValueOnce(
+      apiResult({ ...capture, status: 'pending', is_final: false, truncated: true }),
+    )
     render(
       <CaptureDashboard
         copy={copy}
@@ -204,6 +206,7 @@ describe('capture territory presentation', () => {
       />,
     )
     expect(await screen.findByText(copy.gameCapturePending)).toBeInTheDocument()
+    expect(screen.getByText(copy.gameCaptureTruncated)).toBeInTheDocument()
     expect(screen.getAllByText('Rider one')).not.toHaveLength(0)
 
     cleanup()
@@ -218,5 +221,40 @@ describe('capture territory presentation', () => {
       />,
     )
     expect(await screen.findByText(copy.gameCaptureFailed)).toBeInTheDocument()
+  })
+
+  it('clears the previous competition before a delayed response and failed switch', async () => {
+    const pending = new Map<
+      string,
+      { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    >()
+    get.mockImplementation(
+      (_path: string, options?: { params?: { path?: { competition_id?: string } } }) => {
+        const id = options?.params?.path?.competition_id ?? ''
+        return new Promise((resolve, reject) => pending.set(id, { resolve, reject }))
+      },
+    )
+    const props = {
+      copy,
+      competitions: [
+        { ...competition, id: 'competition-a', name: 'A' },
+        { ...competition, id: 'competition-b', name: 'B' },
+      ] as never,
+      setCompetitionId: vi.fn(),
+      signedOut: false,
+    }
+    const { rerender } = render(<CaptureDashboard {...props} competitionId="competition-a" />)
+    await waitFor(() => expect(pending.has('competition-a')).toBe(true))
+    pending
+      .get('competition-a')
+      ?.resolve(apiResult({ ...capture, competition_id: 'competition-a' }))
+    expect((await screen.findAllByText('Rider one')).length).toBeGreaterThan(0)
+
+    rerender(<CaptureDashboard {...props} competitionId="competition-b" />)
+    expect(screen.queryByText('Rider one')).not.toBeInTheDocument()
+    await waitFor(() => expect(pending.has('competition-b')).toBe(true))
+    pending.get('competition-b')?.reject(new Error('offline'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.gameCaptureError)
+    expect(screen.queryByText('Rider one')).not.toBeInTheDocument()
   })
 })

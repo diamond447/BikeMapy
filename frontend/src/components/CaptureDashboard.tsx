@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AttributionControl,
   Map as MapLibreMap,
   NavigationControl,
   setWorkerUrl,
 } from 'maplibre-gl'
-import type { GeoJSONSource } from 'maplibre-gl'
+import type { GeoJSONSource, MapSourceDataEvent } from 'maplibre-gl'
 
 import { apiClient, rememberCsrfToken } from '../api/client'
 import type { components } from '../api/generated/schema'
@@ -101,6 +101,7 @@ export function CaptureDashboard({
   const [capture, setCapture] = useState<CaptureResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [errorCompetitionId, setErrorCompetitionId] = useState<string | undefined>()
   const [visibility, setVisibility] = useState<{
     competitionId?: string
     members: Set<number> | null
@@ -139,9 +140,13 @@ export function CaptureDashboard({
       if (sequence !== requestSequence.current) return
       if (result.response?.status === 401) return
       if (result.response?.status === 404 || !result.data) throw new Error('capture')
+      if (result.data.competition_id !== competitionId) return
       setCapture(result.data)
     } catch {
-      if (sequence === requestSequence.current) setError(copy.gameCaptureError)
+      if (sequence === requestSequence.current) {
+        setErrorCompetitionId(competitionId)
+        setError(copy.gameCaptureError)
+      }
     } finally {
       if (sequence === requestSequence.current) setLoading(false)
     }
@@ -150,6 +155,13 @@ export function CaptureDashboard({
   useEffect(() => {
     loadCaptureRef.current = loadCapture
   }, [loadCapture])
+
+  useLayoutEffect(() => {
+    requestSequence.current += 1
+    const source = map.current?.getSource('capture-territory') as GeoJSONSource | undefined
+    source?.setData({ type: 'FeatureCollection', features: [] })
+    mapNode.current?.removeAttribute('data-capture-response-loaded')
+  }, [competitionId])
 
   useEffect(() => {
     if (!mapNode.current || map.current) return
@@ -209,30 +221,37 @@ export function CaptureDashboard({
     if (mapLoaded.current) void loadCapture()
   }, [competitionId, loadCapture])
 
+  const activeCapture = capture?.competition_id === competitionId ? capture : null
+  const activeError = errorCompetitionId === competitionId ? error : null
   const visibleMembers = visibility.competitionId === competitionId ? visibility.members : null
 
   useEffect(() => {
     const activeMap = map.current
     const source = activeMap?.getSource('capture-territory') as GeoJSONSource | undefined
-    if (!source || !activeMap || !capture) return
+    if (!source || !activeMap || !activeCapture) return
     const mark = `capture-response-${renderSequence.current++}`
     performance.mark(mark)
-    source.setData({
-      type: 'FeatureCollection',
-      features: captureFeatures(capture.faces, activeMap, visibleMembers),
-    })
-    mapNode.current?.setAttribute('data-capture-response-loaded', 'true')
-    window.requestAnimationFrame(() => {
+    const onSourceData = (event: MapSourceDataEvent) => {
+      if (event.sourceId !== 'capture-territory' || !event.isSourceLoaded) return
+      activeMap.off('sourcedata', onSourceData)
       performance.measure('capture-response-to-render', mark)
       performance.clearMarks(mark)
+    }
+    activeMap.on('sourcedata', onSourceData)
+    source.setData({
+      type: 'FeatureCollection',
+      features: captureFeatures(activeCapture.faces, activeMap, visibleMembers),
     })
-  }, [capture, visibleMembers])
+    mapNode.current?.setAttribute('data-capture-response-loaded', 'true')
+  }, [activeCapture, visibleMembers])
 
-  const selectedMembers = useMemo(() => capture?.members ?? [], [capture])
+  const selectedMembers = useMemo(() => activeCapture?.members ?? [], [activeCapture])
   const toggleMember = (playerId: number) => {
     setVisibility((currentState) => {
       const current = currentState.competitionId === competitionId ? currentState.members : null
-      const next = new Set(current ?? capture?.members.map((member) => member.player_id) ?? [])
+      const next = new Set(
+        current ?? activeCapture?.members.map((member) => member.player_id) ?? [],
+      )
       if (next.has(playerId)) next.delete(playerId)
       else next.add(playerId)
       return { competitionId, members: next }
@@ -271,14 +290,19 @@ export function CaptureDashboard({
             </label>
           )}
         </div>
-        {capture && capture.status !== 'fresh' && capture.status !== 'empty' && (
-          <p className={`capture-state capture-state-${capture.status}`} role="status">
-            {capture.status === 'pending' ? copy.gameCapturePending : copy.gameCaptureFailed}
+        {activeCapture && activeCapture.status !== 'fresh' && activeCapture.status !== 'empty' && (
+          <p className={`capture-state capture-state-${activeCapture.status}`} role="status">
+            {activeCapture.status === 'pending' ? copy.gameCapturePending : copy.gameCaptureFailed}
           </p>
         )}
-        {error && (
+        {activeCapture?.truncated && (
+          <p className="capture-state capture-state-truncated" role="status">
+            {copy.gameCaptureTruncated}
+          </p>
+        )}
+        {activeError && (
           <div className="capture-state capture-state-failed" role="alert">
-            <p>{error}</p>
+            <p>{activeError}</p>
             <button type="button" onClick={() => void loadCapture()}>
               {copy.gameCaptureRetry}
             </button>
@@ -286,7 +310,7 @@ export function CaptureDashboard({
         )}
         <fieldset className="capture-members">
           <legend>{copy.gameCaptureMembers}</legend>
-          {capture?.members.map((member) => (
+          {activeCapture?.members.map((member) => (
             <label key={member.player_id}>
               <input
                 type="checkbox"
@@ -305,7 +329,9 @@ export function CaptureDashboard({
         <div className="capture-ranking" aria-label={copy.gameCaptureLeaderboard}>
           <h2>{copy.gameCaptureLeaderboard}</h2>
           {loading && <p role="status">{copy.gameCaptureLoading}</p>}
-          {!loading && !error && !capture?.members.length && <p>{copy.gameCaptureEmpty}</p>}
+          {!loading && !activeError && !activeCapture?.members.length && (
+            <p>{copy.gameCaptureEmpty}</p>
+          )}
           {selectedMembers.map((member) => (
             <div className="capture-ranking-row" key={member.player_id}>
               <span className="capture-rank">{member.rank}</span>
@@ -342,8 +368,10 @@ export function CaptureDashboard({
           role="application"
           aria-label={copy.gameMapInteractive}
         />
-        {capture?.is_final && <span className="capture-map-status">{copy.gameCaptureFinal}</span>}
-        {capture && !capture.is_final && (
+        {activeCapture?.is_final && (
+          <span className="capture-map-status">{copy.gameCaptureFinal}</span>
+        )}
+        {activeCapture && !activeCapture.is_final && (
           <span className="capture-map-status">{copy.gameCaptureNotFinal}</span>
         )}
         <span className="capture-map-legend">

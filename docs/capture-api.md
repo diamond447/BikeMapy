@@ -14,8 +14,11 @@ authorization or ranking filters. `member=0` is the explicit empty selection.
 
 The response is private and sent with `Cache-Control: private, no-store`.
 Faces are capped at 1,200 and the serialized response at four million bytes.
-When the face prefix cannot fit inside the byte limit, the endpoint returns
-`413 response_limit`; it never silently serves unbounded geometry.
+The `truncated` flag is true whenever either cap removed faces and
+`returned_face_count` reports the number actually sent. When fixed metadata
+alone cannot fit inside the byte limit, the endpoint returns
+`413 response_limit`; it never silently serves unbounded geometry. The UI
+warns when a 200 response is a partial map.
 
 Capture calculations are immutable fresh generations. `area_m2` is the current
 equal-share area, so a face with multiple owners contributes the same face area

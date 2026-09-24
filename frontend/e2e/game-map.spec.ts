@@ -325,6 +325,116 @@ test('capture mode keeps global ranks while member visibility changes', async ({
   await expect(page.locator('.capture-ledger')).toBeVisible()
 })
 
+test('private game journey joins by invite, syncs activity, removes a member, and switches maps', async ({
+  page,
+}) => {
+  let activeMembers = [...competition.members]
+  const joinedMember = {
+    player_id: 9,
+    display_name: 'New rider',
+    nickname: null,
+    color: '#D34D32',
+    is_owner: false,
+  }
+  await page.unroute('**/api/v1/game/competitions/')
+  await page.route('**/api/v1/game/competitions/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        competitions: [{ ...competition, members: activeMembers }],
+        active_competition_id: competition.id,
+      }),
+    }),
+  )
+  await page.route('**/api/v1/game/auth/session/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        player: {
+          id: 'player-7',
+          athlete_id: '7',
+          display_name: 'Rider',
+          profile_image_url: null,
+          nickname: null,
+          lifecycle: 'connected',
+          connected_at: '2026-09-21T00:00:00Z',
+        },
+      }),
+    }),
+  )
+  await page.route('**/api/v1/game/account/activities/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sync: {
+          status: 'idle',
+          mode: 'incremental',
+          imported_count: 4,
+          rejected_count: 0,
+          processed_count: 4,
+          cursor_page: 2,
+          last_error: '',
+          completed_at: '2026-09-21T00:00:00Z',
+        },
+      }),
+    }),
+  )
+  await page.route('**/api/v1/game/account/activities/full-history/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sync: {
+          status: 'queued',
+          mode: 'full_history',
+          imported_count: 4,
+          rejected_count: 0,
+          processed_count: 4,
+          cursor_page: 0,
+          last_error: '',
+          completed_at: null,
+        },
+      }),
+    }),
+  )
+  await page.route('**/api/v1/game/competitions/join/', async (route) => {
+    activeMembers = [...activeMembers, joinedMember]
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ competition: { ...competition, members: activeMembers } }),
+    })
+  })
+  await page.route('**/api/v1/game/competitions/*/members/8/', async (route) => {
+    activeMembers = activeMembers.filter((member) => member.player_id !== 8)
+    await route.fulfill({ status: 204 })
+  })
+
+  await page.goto('/game')
+  await page.getByRole('button', { name: 'Player account' }).click()
+  await expect(page.getByRole('heading', { name: 'Your rides, kept private' })).toBeVisible()
+  await expect(page.getByText('Up to date')).toBeVisible()
+  await page.getByRole('button', { name: 'Import my full Strava history' }).click()
+  await expect(page.getByText(/Full history is queued/)).toBeVisible()
+
+  await page.getByPlaceholder('Enter invite code').fill('JOIN-9')
+  await page.getByRole('button', { name: 'Join competition' }).click()
+  await expect(page.getByText('New rider')).toBeVisible()
+  const memberRow = page.locator('.game-competition-member').filter({ hasText: 'Rider two' })
+  await memberRow.getByRole('button', { name: 'Remove' }).click()
+  await expect(memberRow).not.toBeVisible()
+
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
+})
+
 test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
   await page.unroute('**/api/v1/game/competitions/*/map/**')
   let mapCalls = 0

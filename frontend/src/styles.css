@@ -1458,6 +1458,9 @@ h1 {
 .capture-state-failed {
   border-left-color: var(--capture-vermilion);
 }
+.capture-state-truncated {
+  border-left-color: var(--capture-moss);
+}
 .capture-state button {
   background: var(--capture-forest);
   border: 0;

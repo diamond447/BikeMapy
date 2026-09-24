@@ -322,6 +322,8 @@ def test_stale_generation_is_persisted_without_replacing_current_snapshot() -> N
 
     assert completed.status == CaptureCalculation.Status.FRESH
     assert not completed.is_current
+    assert first.published_at is not None
+    assert completed.published_at is None
     assert retry_token is None
     assert claimed_again.pk == completed.pk
     assert retried.pk == completed.pk
