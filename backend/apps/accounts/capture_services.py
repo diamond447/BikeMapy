@@ -237,7 +237,10 @@ def claim_capture_calculation(
             },
         )
         calculation = CaptureCalculation.objects.select_for_update().get(pk=calculation.pk)
-        if calculation.status == CaptureCalculation.Status.FRESH and calculation.is_current:
+        # Every successfully persisted generation is immutable. A completed
+        # stale generation remains a valid historical snapshot and must not be
+        # reclaimed merely because a newer revision became current.
+        if calculation.status == CaptureCalculation.Status.FRESH:
             return calculation, None
         if (
             calculation.status == CaptureCalculation.Status.RUNNING
@@ -390,10 +393,8 @@ def calculate_capture(
         calculation, lease_token = claim_capture_calculation(competition, generation=generation)
     else:
         calculation = CaptureCalculation.objects.get(competition=competition, generation=generation)
-    if calculation.status == CaptureCalculation.Status.FRESH and calculation.is_current:
-        if lease_token is None:
-            return calculation
-        raise CaptureCalculationBusy("Capture generation lease was replaced or expired.")
+    if calculation.status == CaptureCalculation.Status.FRESH:
+        return calculation
     assert lease_token is not None
     try:
         if (

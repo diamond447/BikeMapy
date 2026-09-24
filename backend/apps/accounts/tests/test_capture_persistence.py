@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.utils import timezone
 
+from apps.accounts.activity_services import remove_activity
 from apps.accounts.capture_services import (
     CaptureCalculationBusy,
     CaptureCalculationError,
@@ -20,6 +21,7 @@ from apps.accounts.capture_services import (
 from apps.accounts.competition_services import (
     create_competition,
     join_competition,
+    remove_member,
     schedule_recomputation,
 )
 from apps.accounts.models import (
@@ -29,6 +31,7 @@ from apps.accounts.models import (
     ImportedActivity,
     Player,
 )
+from apps.accounts.services import delete_player
 from apps.accounts.tasks import (
     dispatch_capture_calculations_task,
     rebuild_capture_algorithm_task,
@@ -75,6 +78,23 @@ def _activity(
         geometry=_line(points),
         geometry_hash=provider_id,
     )
+
+
+def _projection_signature(calculation: CaptureCalculation) -> tuple[object, ...]:
+    faces = tuple(
+        (
+            face.face_id,
+            face.geometry.wkb.hex(),
+            face.area_m2,
+            face.effective_date,
+            tuple(sorted((owner.player_id, owner.shared_area_m2) for owner in face.owners.all())),
+        )
+        for face in calculation.faces.all()
+    )
+    areas = tuple(
+        sorted((area.player_id, area.owned_area_m2) for area in calculation.player_areas.all())
+    )
+    return faces, areas
 
 
 def test_persists_atomic_faces_shared_owners_and_equal_player_areas() -> None:
@@ -203,9 +223,88 @@ def test_join_after_current_snapshot_queues_and_publishes_new_generation() -> No
     assert set(face.owners.values_list("player_id", flat=True)) == {member.pk}
 
 
+def test_activity_removal_publishes_generation_without_removed_trace() -> None:
+    owner = _player(1081)
+    member = _player(1082)
+    competition, _ = create_competition(owner, name="Activity removal")
+    join_competition(member, invite_code=competition.invite_code)
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "activity-owner", square, 2)
+    _activity(member, "activity-removed", square, 4)
+    calculate_capture(competition)
+
+    assert remove_activity(member, "activity-removed", reason="privacy")
+    job = CompetitionRecomputation.objects.get(competition=competition, generation=2)
+    recompute_competition_results_task.apply(args=[job.pk]).get()
+
+    current = current_capture(competition)
+    assert current is not None
+    assert current.generation == 2
+    assert current.trace_count == 1
+    assert all(
+        owner_row.player_id != member.pk
+        for face in current.faces.all()
+        for owner_row in face.owners.all()
+    )
+    assert not CapturePlayerArea.objects.filter(calculation=current, player_id=member.pk).exists()
+
+
+def test_member_removal_publishes_generation_without_removed_owner() -> None:
+    owner = _player(1091)
+    member = _player(1092)
+    competition, _ = create_competition(owner, name="Member removal")
+    join_competition(member, invite_code=competition.invite_code)
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "member-removal-owner", square, 2)
+    _activity(member, "member-removal-member", square, 4)
+    calculate_capture(competition)
+
+    job = remove_member(owner, competition, member)
+    recompute_competition_results_task.apply(args=[job.pk]).get()
+
+    current = current_capture(competition)
+    assert current is not None
+    assert current.generation == 2
+    assert current.trace_count == 1
+    assert all(
+        owner_row.player_id != member.pk
+        for face in current.faces.all()
+        for owner_row in face.owners.all()
+    )
+
+
+def test_account_deletion_publishes_generation_without_deleted_member_input() -> None:
+    owner = _player(1101)
+    member = _player(1102)
+    competition, _ = create_competition(owner, name="Account deletion")
+    join_competition(member, invite_code=competition.invite_code)
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "deletion-owner", square, 2)
+    _activity(member, "deletion-member", square, 4)
+    calculate_capture(competition)
+
+    member_id = member.pk
+    delete_player(member)
+    job = CompetitionRecomputation.objects.get(competition=competition, generation=2)
+    recompute_competition_results_task.apply(args=[job.pk]).get()
+
+    current = current_capture(competition)
+    assert current is not None
+    assert current.generation == 2
+    assert current.trace_count == 1
+    assert not Player.objects.filter(pk=member_id).exists()
+    assert all(
+        owner_row.player_id != member_id
+        for face in current.faces.all()
+        for owner_row in face.owners.all()
+    )
+
+
 def test_stale_generation_is_persisted_without_replacing_current_snapshot() -> None:
     owner = _player(1041)
     competition, _ = create_competition(owner, name="Stale generation")
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "stale-boundary", square, 2)
     first = calculate_capture(competition)
 
     older_job = schedule_recomputation(competition)
@@ -214,12 +313,27 @@ def test_stale_generation_is_persisted_without_replacing_current_snapshot() -> N
     schedule_recomputation(competition)
 
     completed = calculate_capture(competition, generation=older.generation, lease_token=token)
+    signature = _projection_signature(completed)
+    digest = completed.input_digest
+    attempts = completed.attempts
+
+    claimed_again, retry_token = claim_capture_calculation(competition, generation=older.generation)
+    retried = calculate_capture(competition, generation=older.generation)
 
     assert completed.status == CaptureCalculation.Status.FRESH
     assert not completed.is_current
+    assert retry_token is None
+    assert claimed_again.pk == completed.pk
+    assert retried.pk == completed.pk
+    assert retried.input_digest == digest
+    assert retried.attempts == attempts
+    assert _projection_signature(retried) == signature
     current = current_capture(competition)
     assert current is not None
     assert current.pk == first.pk
+    assert (
+        recompute_competition_results_task.apply(args=[older_job.pk]).get()["status"] == "completed"
+    )
 
 
 def test_replaced_capture_lease_cannot_publish_or_mark_replacement_failed() -> None:
