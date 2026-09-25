@@ -1,6 +1,6 @@
 {
-  "measured_at_utc": "2026-09-25T20:39:52.280207+00:00",
-  "revision": "7a5340ed5241a72188c0fa7842a84836886e1b44",
+  "measured_at_utc": "2026-09-25T21:19:56.617469+00:00",
+  "revision": "639a2d3fd509a5e4a67cb8b57e2779fba6c41683",
   "environment": {
     "database": "postgresql",
     "database_name": "bikemapy",
@@ -14,33 +14,33 @@
     "in_viewport_activities": 1200
   },
   "api_ms": {
-    "median": 915.9311864999609,
-    "p95": 985.8578900000339
+    "median": 1078.8182594997124,
+    "p95": 1143.4957219998978
   },
   "budgets_ms": {
     "api_p95": 1500.0,
     "browser_p95": 100.0
   },
   "browser_response_to_render_ms": {
-    "median": 24.0,
-    "p95": 30.300000000046566
+    "median": 23.799999999813735,
+    "p95": 25.5
   },
   "browser_lazy_interaction_ms": {
-    "median": 28.150000000023283,
-    "p95": 37.0999999998603
+    "median": 30.24999999953434,
+    "p95": 38.39999999944121
   },
   "browser_stages_ms": {
     "response_to_source": {
       "median": 0.6000000000931323,
-      "p95": 3.3999999999068677
+      "p95": 2.6000000005587935
     },
     "overlay_update": {
-      "median": 1.2999999999301508,
-      "p95": 2.4000000001396984
+      "median": 1.1499999999068677,
+      "p95": 1.8999999994412065
     },
     "render_to_visible": {
-      "median": 24.0,
-      "p95": 30.300000000046566
+      "median": 23.799999999813735,
+      "p95": 25.5
     }
   }
 }
