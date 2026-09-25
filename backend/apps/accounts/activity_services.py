@@ -14,7 +14,6 @@ from uuid import uuid4
 import httpx
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from .models import (
@@ -38,7 +37,9 @@ WEBHOOK_UPDATE_FIELDS = frozenset({"title", "type", "private"})
 MAX_RETRY_AFTER_SECONDS = 86_400
 STRAVA_QUOTA_KEY = "global"
 STRAVA_SHORT_WINDOW_SECONDS = 15 * 60
-STRAVA_QUOTA_RESERVATION_TTL = 120
+STRAVA_API_TIMEOUT_DEFAULT = 10.0
+STRAVA_API_TIMEOUT_MAX = 300.0
+STRAVA_QUOTA_RESERVATION_GRACE_SECONDS = 30
 
 
 class StravaActivityError(RuntimeError):
@@ -102,6 +103,22 @@ def _quota_settings() -> tuple[int, int, int]:
     )
 
 
+def _strava_api_timeout() -> float:
+    """Return the bounded timeout used by both HTTP requests and leases."""
+
+    try:
+        configured = float(getattr(settings, "STRAVA_API_TIMEOUT", STRAVA_API_TIMEOUT_DEFAULT))
+    except (TypeError, ValueError, OverflowError):
+        configured = STRAVA_API_TIMEOUT_DEFAULT
+    if not math.isfinite(configured) or configured <= 0:
+        configured = STRAVA_API_TIMEOUT_DEFAULT
+    return min(STRAVA_API_TIMEOUT_MAX, max(1.0, configured))
+
+
+def _quota_reservation_ttl() -> int:
+    return math.ceil(_strava_api_timeout()) + STRAVA_QUOTA_RESERVATION_GRACE_SECONDS
+
+
 def _reserve_quota_slot() -> str:
     """Reserve one provider request across all workers before making I/O."""
 
@@ -120,12 +137,25 @@ def _reserve_quota_slot() -> str:
             },
         )
         quota = StravaQuotaState.objects.select_for_update().get(pk=quota.pk)
-        StravaQuotaReservation.objects.filter(
-            Q(released_at__isnull=False) | Q(expires_at__lte=now)
-        ).delete()
-        active_reservations = StravaQuotaReservation.objects.filter(
-            released_at__isnull=True, expires_at__gt=now
-        ).count()
+        short_window_reset = quota.short_window_reset_at
+        daily_reset = quota.daily_reset_at
+        expired_reservations = list(
+            StravaQuotaReservation.objects.filter(
+                released_at__isnull=True, expires_at__lte=now
+            ).values_list("expires_at", flat=True)
+        )
+        expired_short_count = sum(
+            1
+            for expires_at in expired_reservations
+            if short_window_reset is None
+            or short_window_reset > now
+            or expires_at > short_window_reset
+        )
+        expired_daily_count = sum(
+            1
+            for expires_at in expired_reservations
+            if daily_reset is None or daily_reset > now or expires_at > daily_reset
+        )
         if quota.short_window_reset_at and quota.short_window_reset_at <= now:
             quota.short_window_used = 0
             quota.read_short_window_used = 0
@@ -138,6 +168,18 @@ def _reserve_quota_slot() -> str:
             quota.daily_limit = daily_limit
             quota.read_daily_limit = daily_limit
             quota.daily_reset_at = _next_daily_window(now)
+        quota.short_window_used += expired_short_count
+        quota.read_short_window_used += expired_short_count
+        quota.daily_used += expired_daily_count
+        quota.read_daily_used += expired_daily_count
+        if expired_reservations:
+            StravaQuotaReservation.objects.filter(
+                released_at__isnull=True, expires_at__lte=now
+            ).update(released_at=now)
+        StravaQuotaReservation.objects.filter(released_at__isnull=False).delete()
+        active_reservations = StravaQuotaReservation.objects.filter(
+            released_at__isnull=True, expires_at__gt=now
+        ).count()
         quota.short_window_limit = min(max(1, quota.short_window_limit), short_limit)
         quota.daily_limit = min(max(1, quota.daily_limit), daily_limit)
         quota.read_short_window_limit = min(max(1, quota.read_short_window_limit), short_limit)
@@ -149,19 +191,19 @@ def _reserve_quota_slot() -> str:
         if cooldown and cooldown > now:
             blocked_until = cooldown
         elif quota.short_window_used + active_reservations >= max(
-            1, short_limit - margin
+            1, quota.short_window_limit - margin
         ) or quota.read_short_window_used + active_reservations >= max(
             1, quota.read_short_window_limit - margin
         ):
             blocked_until = quota.short_window_reset_at or _next_short_window(now)
         elif quota.daily_used + active_reservations >= max(
-            1, daily_limit - margin
+            1, quota.daily_limit - margin
         ) or quota.read_daily_used + active_reservations >= max(1, quota.read_daily_limit - margin):
             blocked_until = quota.daily_reset_at or _next_daily_window(now)
         if blocked_until is None:
             StravaQuotaReservation.objects.create(
                 token=token,
-                expires_at=now + timedelta(seconds=STRAVA_QUOTA_RESERVATION_TTL),
+                expires_at=now + timedelta(seconds=_quota_reservation_ttl()),
             )
             quota.in_flight = active_reservations + 1
         else:
@@ -701,7 +743,7 @@ def _strava_get(
             f"{STRAVA_API_URL}{path}",
             headers={"Authorization": f"Bearer {token}"},
             params=params or {},
-            timeout=float(getattr(settings, "STRAVA_API_TIMEOUT", 10)),
+            timeout=_strava_api_timeout(),
         )
     except httpx.HTTPError as exc:
         _record_quota_response(None, reservation_token=reservation_token)
