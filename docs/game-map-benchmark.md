@@ -58,8 +58,8 @@ The checked-in result was collected against local PostGIS with 30 API samples;
 the browser field is added when the optional frontend/backend `--browser-url`
 probe is run.
 
-The latest recorded run (revision `059f17f984f55b9a4b4ee9967bddc7bf586585dd`,
-2026-09-25T09:41:01Z) measured API p95 1,045.5 ms against the 1,500 ms budget
-and browser response-to-render p95 302.4 ms against the 100 ms budget. The API
+The latest recorded run (revision `b7058f742f104f65b496a727a9cae1583528df5b`,
+2026-09-25T09:44:04Z) measured API p95 1,031.2 ms against the 1,500 ms budget
+and browser response-to-render p95 322.6 ms against the 100 ms budget. The API
 budget passes; the browser budget fails. This result is diagnostic evidence,
 not an acceptance claim, and the browser budget remains a release blocker.
