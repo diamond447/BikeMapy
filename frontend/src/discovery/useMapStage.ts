@@ -9,8 +9,12 @@ const ROUTE_SOURCE = 'browse-routes'
 const HEAT_SOURCE = 'browse-heatmap'
 const SELECTED_SOURCE = 'selected-route'
 
-const asGeoJSONGeometry = (geometry: Geometry): GeoJSON.Geometry =>
-  geometry as unknown as GeoJSON.Geometry
+type GeoJSONSourceData = Exclude<Parameters<GeoJSONSource['setData']>[0], string>
+type GeoJSONFeature = Extract<GeoJSONSourceData, { type: 'FeatureCollection' }>['features'][number]
+type GeoJSONGeometry = NonNullable<GeoJSONFeature['geometry']>
+
+const asGeoJSONGeometry = (geometry: Geometry): GeoJSONGeometry =>
+  geometry as unknown as GeoJSONGeometry
 
 type MapStageOptions = {
   mapNode: RefObject<HTMLDivElement | null>

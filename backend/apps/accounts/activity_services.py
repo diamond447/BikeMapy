@@ -20,6 +20,7 @@ from .models import (
     ImportedActivity,
     Player,
     PlayerCredential,
+    StravaQuotaState,
     StravaSyncJob,
     StravaSyncState,
     StravaWebhookEvent,
@@ -32,6 +33,8 @@ MAX_POLYLINE_LENGTH = 250_000
 MAX_POLYLINE_POINTS = 100_000
 WEBHOOK_UPDATE_FIELDS = frozenset({"title", "type", "private"})
 MAX_RETRY_AFTER_SECONDS = 86_400
+STRAVA_QUOTA_KEY = "global"
+STRAVA_SHORT_WINDOW_SECONDS = 15 * 60
 
 
 class StravaActivityError(RuntimeError):
@@ -41,6 +44,166 @@ class StravaActivityError(RuntimeError):
         super().__init__(message)
         self.retryable = retryable
         self.retry_after = retry_after
+
+
+class StravaActivityNotFound(StravaActivityError):
+    """Provider-authoritative confirmation that an activity no longer exists."""
+
+    def __init__(self) -> None:
+        super().__init__("Strava activity was not found.", retryable=False)
+
+
+def _next_short_window(now: datetime) -> datetime:
+    timestamp = now.timestamp()
+    return datetime.fromtimestamp(
+        timestamp - (timestamp % STRAVA_SHORT_WINDOW_SECONDS) + STRAVA_SHORT_WINDOW_SECONDS,
+        tz=UTC,
+    )
+
+
+def _next_daily_window(now: datetime) -> datetime:
+    next_day = (now + timedelta(days=1)).date()
+    return datetime.combine(next_day, datetime.min.time(), tzinfo=UTC)
+
+
+def _quota_pair(value: str | None) -> tuple[int | None, int | None]:
+    if not value:
+        return None, None
+    values: list[int] = []
+    for item in value.split(","):
+        try:
+            values.append(max(0, int(item.strip())))
+        except (TypeError, ValueError, OverflowError):
+            return None, None
+    if len(values) < 2:
+        return values[0] if values else None, None
+    return values[0], values[1]
+
+
+def _quota_settings() -> tuple[int, int, int]:
+    def positive(name: str, default: int) -> int:
+        try:
+            return max(1, int(getattr(settings, name, default)))
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    try:
+        margin = max(0, int(getattr(settings, "STRAVA_QUOTA_SAFETY_MARGIN", 1)))
+    except (TypeError, ValueError, OverflowError):
+        margin = 1
+    return (
+        positive("STRAVA_QUOTA_SHORT_LIMIT", 100),
+        positive("STRAVA_QUOTA_DAILY_LIMIT", 1000),
+        margin,
+    )
+
+
+def _reserve_quota_slot() -> None:
+    """Reserve one provider request across all workers before making I/O."""
+
+    now = timezone.now()
+    short_limit, daily_limit, margin = _quota_settings()
+    blocked_until: datetime | None = None
+    with transaction.atomic():
+        quota, _ = StravaQuotaState.objects.get_or_create(
+            key=STRAVA_QUOTA_KEY,
+            defaults={
+                "short_window_limit": short_limit,
+                "daily_limit": daily_limit,
+                "short_window_reset_at": _next_short_window(now),
+                "daily_reset_at": _next_daily_window(now),
+            },
+        )
+        quota = StravaQuotaState.objects.select_for_update().get(pk=quota.pk)
+        if quota.short_window_reset_at and quota.short_window_reset_at <= now:
+            quota.short_window_used = 0
+            quota.short_window_reset_at = _next_short_window(now)
+        if quota.daily_reset_at and quota.daily_reset_at <= now:
+            quota.daily_used = 0
+            quota.daily_reset_at = _next_daily_window(now)
+        quota.short_window_limit = short_limit
+        quota.daily_limit = daily_limit
+        cooldown = quota.cooldown_until
+        if cooldown and cooldown <= now:
+            quota.cooldown_until = None
+            cooldown = None
+        if cooldown and cooldown > now:
+            blocked_until = cooldown
+        elif quota.short_window_used + quota.in_flight >= max(1, short_limit - margin):
+            blocked_until = quota.short_window_reset_at or _next_short_window(now)
+        elif quota.daily_used + quota.in_flight >= max(1, daily_limit - margin):
+            blocked_until = quota.daily_reset_at or _next_daily_window(now)
+        if blocked_until is None:
+            quota.in_flight += 1
+        else:
+            quota.cooldown_until = blocked_until
+        quota.save(
+            update_fields=(
+                "short_window_used",
+                "daily_used",
+                "short_window_limit",
+                "daily_limit",
+                "short_window_reset_at",
+                "daily_reset_at",
+                "cooldown_until",
+                "in_flight",
+                "updated_at",
+            )
+        )
+    if blocked_until is not None:
+        delay = max(1, math.ceil((blocked_until - now).total_seconds()))
+        raise StravaActivityError("Strava request quota is cooling down.", retry_after=delay)
+
+
+def _record_quota_response(
+    response: httpx.Response | None, *, retry_after: int | None = None
+) -> None:
+    now = timezone.now()
+    short_limit, daily_limit, margin = _quota_settings()
+    with transaction.atomic():
+        quota, _ = StravaQuotaState.objects.get_or_create(key=STRAVA_QUOTA_KEY)
+        quota = StravaQuotaState.objects.select_for_update().get(pk=quota.pk)
+        quota.in_flight = max(0, quota.in_flight - 1)
+        quota.short_window_limit = short_limit
+        quota.daily_limit = daily_limit
+        if quota.short_window_reset_at is None or quota.short_window_reset_at <= now:
+            quota.short_window_reset_at = _next_short_window(now)
+            quota.short_window_used = 0
+        if quota.daily_reset_at is None or quota.daily_reset_at <= now:
+            quota.daily_reset_at = _next_daily_window(now)
+            quota.daily_used = 0
+        usage_short = usage_daily = None
+        if response is not None:
+            header_short, header_daily = _quota_pair(response.headers.get("X-RateLimit-Usage"))
+            limit_short, limit_daily = _quota_pair(response.headers.get("X-RateLimit-Limit"))
+            usage_short, usage_daily = header_short, header_daily
+            if limit_short:
+                quota.short_window_limit = limit_short
+            if limit_daily:
+                quota.daily_limit = limit_daily
+        quota.short_window_used = (
+            usage_short if usage_short is not None else quota.short_window_used + 1
+        )
+        quota.daily_used = usage_daily if usage_daily is not None else quota.daily_used + 1
+        if retry_after is not None:
+            quota.cooldown_until = now + timedelta(seconds=max(1, retry_after))
+        elif quota.short_window_used + quota.in_flight >= max(1, quota.short_window_limit - margin):
+            quota.cooldown_until = quota.short_window_reset_at
+        elif quota.daily_used + quota.in_flight >= max(1, quota.daily_limit - margin):
+            quota.cooldown_until = quota.daily_reset_at
+        quota.save(
+            update_fields=(
+                "short_window_used",
+                "daily_used",
+                "short_window_limit",
+                "daily_limit",
+                "short_window_reset_at",
+                "daily_reset_at",
+                "cooldown_until",
+                "in_flight",
+                "updated_at",
+            )
+        )
 
 
 def _retry_after_cap() -> int:
@@ -431,18 +594,27 @@ def _strava_get(
     params: dict[str, Any] | None = None,
     _retried_after_refresh: bool = False,
 ) -> Any:
+    token = _credential(player_id)
+    _reserve_quota_slot()
+    response: httpx.Response | None = None
     try:
         response = httpx.get(
             f"{STRAVA_API_URL}{path}",
-            headers={"Authorization": f"Bearer {_credential(player_id)}"},
+            headers={"Authorization": f"Bearer {token}"},
             params=params or {},
             timeout=float(getattr(settings, "STRAVA_API_TIMEOUT", 10)),
         )
     except httpx.HTTPError as exc:
+        _record_quota_response(None)
         raise StravaActivityError("Strava is temporarily unavailable.") from exc
+    retry_after: int | None = None
     if response.status_code == 429:
-        delay = _retry_after_seconds(response)
-        raise StravaActivityError("Strava rate limit reached.", retry_after=delay)
+        retry_after = _retry_after_seconds(response)
+    _record_quota_response(response, retry_after=retry_after)
+    if response.status_code == 429:
+        raise StravaActivityError("Strava rate limit reached.", retry_after=retry_after)
+    if response.status_code == 404:
+        raise StravaActivityNotFound
     if response.status_code in {401, 403}:
         if not _retried_after_refresh:
             from .services import refresh_connection
@@ -539,6 +711,7 @@ def queue_sync(player: Player, *, kind: str, full_history: bool = False) -> Stra
             )
         )
         job.status = StravaSyncJob.Status.PENDING
+        job.retryable = True
         job.page = 1
         job.next_attempt_at = now
         job.last_error = ""
@@ -547,6 +720,7 @@ def queue_sync(player: Player, *, kind: str, full_history: bool = False) -> Stra
         job.save(
             update_fields=(
                 "status",
+                "retryable",
                 "page",
                 "next_attempt_at",
                 "last_error",
@@ -597,6 +771,8 @@ def queue_webhook_event(payload: dict[str, Any], event_key: str) -> StravaWebhoo
                 strava_athlete_id=owner_id, lifecycle=Player.Lifecycle.CONNECTED
             ).first()
             if player is not None:
+                event.player = player
+                event.save(update_fields=("player",))
                 StravaSyncJob.objects.create(
                     player=player,
                     kind=StravaSyncJob.Kind.WEBHOOK,
@@ -604,6 +780,18 @@ def queue_webhook_event(payload: dict[str, Any], event_key: str) -> StravaWebhoo
                     idempotency_key=f"webhook:{event_key}",
                 )
     return event
+
+
+def purge_expired_webhook_events(*, limit: int = 1000) -> int:
+    """Delete bounded webhook audit data after its 30-day retention window."""
+
+    candidates = list(
+        StravaWebhookEvent.objects.filter(expires_at__lte=timezone.now())
+        .order_by("expires_at", "pk")
+        .values_list("pk", flat=True)[: max(1, limit)]
+    )
+    deleted, _ = StravaWebhookEvent.objects.filter(pk__in=candidates).delete()
+    return deleted
 
 
 def webhook_event_key(payload: dict[str, Any], raw_body: bytes) -> str:
@@ -757,6 +945,7 @@ def _fail_job(
         ):
             return "in_progress"
         locked_job.status = StravaSyncJob.Status.FAILED
+        locked_job.retryable = error.retryable
         locked_job.last_error = str(error)[:240]
         locked_job.next_attempt_at = timezone.now() + timedelta(seconds=delay)
         locked_job.lease_token = ""
@@ -766,6 +955,7 @@ def _fail_job(
         locked_job.save(
             update_fields=(
                 "status",
+                "retryable",
                 "last_error",
                 "next_attempt_at",
                 "lease_token",
@@ -776,7 +966,9 @@ def _fail_job(
             )
         )
         if locked_state is not None:
-            locked_state.status = StravaSyncState.Status.FAILED
+            locked_state.status = (
+                StravaSyncState.Status.FAILED if error.retryable else StravaSyncState.Status.PAUSED
+            )
             locked_state.last_error = str(error)[:240]
             locked_state.next_attempt_at = locked_job.next_attempt_at
             locked_state.lease_token = ""
@@ -896,10 +1088,14 @@ def process_sync_job(job_id: int) -> str:
             if event is None:
                 return _finish_job(job, state=state, lease_token=lease_token)
             payload = None
-            if event.aspect_type != "delete":
-                # Provider I/O must not hold database locks. The authoritative
-                # payload is checked again inside the guarded transaction.
+            provider_deleted = False
+            # Provider I/O must not hold database locks. Even delete events are
+            # reconciled against the activity endpoint; subscription IDs and
+            # event shape alone are not sender authentication.
+            try:
                 payload = fetch_activity(job.player_id, str(event.object_id))
+            except StravaActivityNotFound:
+                provider_deleted = True
 
             def apply_webhook(
                 locked_job: StravaSyncJob, _locked_state: StravaSyncState | None
@@ -907,7 +1103,7 @@ def process_sync_job(job_id: int) -> str:
                 locked_event = StravaWebhookEvent.objects.select_for_update().get(pk=event.pk)
                 if locked_event.owner_athlete_id != locked_job.player.strava_athlete_id:
                     locked_event.last_error = "Webhook owner did not match the connected athlete."
-                elif locked_event.aspect_type == "delete":
+                elif locked_event.aspect_type == "delete" and provider_deleted:
                     activity = ImportedActivity.objects.filter(
                         player=locked_job.player, provider_activity_id=str(locked_event.object_id)
                     ).first()
@@ -922,6 +1118,16 @@ def process_sync_job(job_id: int) -> str:
                             locked_job.player, str(locked_event.object_id), reason="deleted"
                         )
                     locked_event.last_error = ""
+                elif locked_event.aspect_type == "delete":
+                    if not isinstance(payload, dict) or not activity_belongs_to_player(
+                        locked_job.player, payload, require_athlete=True
+                    ):
+                        locked_event.last_error = (
+                            "Activity owner did not match the connected athlete."
+                        )
+                    else:
+                        import_activity(locked_job.player, payload)
+                        locked_event.last_error = "Provider retained activity after delete event."
                 elif not isinstance(payload, dict) or not activity_belongs_to_player(
                     locked_job.player, payload, require_athlete=True
                 ):

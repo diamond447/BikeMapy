@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from django.conf import settings
@@ -16,6 +16,10 @@ from apps.catalogue.fields import RouteGeometryField
 from .fields import EncryptedSecretField
 
 OAUTH_STATE_TTL = timedelta(minutes=10)
+
+
+def webhook_event_expiry() -> datetime:
+    return timezone.now() + timedelta(days=30)
 
 
 class Player(models.Model):
@@ -247,6 +251,7 @@ class StravaSyncJob(models.Model):
     )
     page = models.PositiveIntegerField(default=1)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    retryable = models.BooleanField(default=True)
     attempts = models.PositiveSmallIntegerField(default=0)
     next_attempt_at = models.DateTimeField(default=timezone.now)
     last_error = models.CharField(max_length=240, blank=True)
@@ -264,10 +269,35 @@ class StravaSyncJob(models.Model):
         return f"Strava sync {self.kind} for player {self.player_id}"
 
 
+class StravaQuotaState(models.Model):
+    """Shared provider quota reservation state for all synchronization workers."""
+
+    key = models.CharField(max_length=32, primary_key=True, default="global")
+    short_window_used = models.PositiveIntegerField(default=0)
+    daily_used = models.PositiveIntegerField(default=0)
+    short_window_limit = models.PositiveIntegerField(default=100)
+    daily_limit = models.PositiveIntegerField(default=1000)
+    short_window_reset_at = models.DateTimeField(null=True, blank=True)
+    daily_reset_at = models.DateTimeField(null=True, blank=True)
+    cooldown_until = models.DateTimeField(null=True, blank=True)
+    in_flight = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Strava quota {self.key}"
+
+
 class StravaWebhookEvent(models.Model):
     """Idempotency and audit record for a verified provider event."""
 
     event_key = models.CharField(max_length=64, unique=True)
+    player = models.ForeignKey(
+        "accounts.Player",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="strava_webhook_events",
+    )
     subscription_id = models.PositiveBigIntegerField(null=True, blank=True)
     object_id = models.PositiveBigIntegerField()
     owner_athlete_id = models.PositiveBigIntegerField()
@@ -277,6 +307,7 @@ class StravaWebhookEvent(models.Model):
     received_at = models.DateTimeField(default=timezone.now)
     processed_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=240, blank=True)
+    expires_at = models.DateTimeField(default=webhook_event_expiry)
 
     def __str__(self) -> str:
         return f"Strava webhook {self.event_key}"

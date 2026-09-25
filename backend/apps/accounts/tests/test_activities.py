@@ -17,10 +17,13 @@ from django.utils import timezone
 from apps.accounts.activity_services import (
     StravaActivityError,
     _lock_sync_state_then_job,
+    _record_quota_response,
+    _reserve_quota_slot,
     _retry_after_seconds,
     activity_is_eligible,
     import_activity,
     process_sync_job,
+    purge_expired_webhook_events,
     queue_sync,
     validate_webhook_payload,
 )
@@ -34,6 +37,7 @@ from apps.accounts.models import (
     Player,
     PlayerCredential,
     RevocationJob,
+    StravaQuotaState,
     StravaSyncJob,
     StravaSyncState,
     StravaWebhookEvent,
@@ -182,6 +186,42 @@ def test_official_webhook_challenge_replay_and_subscription_are_verified() -> No
     )
     assert response.status_code == 404
     assert Player.objects.filter(strava_athlete_id=999).count() == 0
+
+
+@override_settings(**_settings())
+def test_webhook_identifiers_expire_and_account_deletion_cascades_them() -> None:
+    player = _player(420)
+    from apps.accounts.activity_services import queue_webhook_event
+
+    event = queue_webhook_event(
+        {
+            "object_type": "activity",
+            "object_id": 420,
+            "owner_id": 420,
+            "aspect_type": "update",
+            "event_time": 123,
+            "subscription_id": 9,
+        },
+        "retention-event",
+    )
+    event.expires_at = timezone.now() - timedelta(seconds=1)
+    event.save(update_fields=("expires_at",))
+    assert purge_expired_webhook_events() == 1
+    assert not StravaWebhookEvent.objects.filter(pk=event.pk).exists()
+
+    event = queue_webhook_event(
+        {
+            "object_type": "activity",
+            "object_id": 421,
+            "owner_id": 420,
+            "aspect_type": "update",
+            "event_time": 123,
+            "subscription_id": 9,
+        },
+        "deletion-event",
+    )
+    delete_player(player)
+    assert not StravaWebhookEvent.objects.filter(pk=event.pk).exists()
 
 
 @override_settings(**_settings())
@@ -410,6 +450,59 @@ def test_rate_limit_failure_is_visible_and_retryable_without_credentials() -> No
     assert "access-token" not in job.last_error
 
 
+@override_settings(
+    **_settings(),
+    STRAVA_QUOTA_SHORT_LIMIT=2,
+    STRAVA_QUOTA_DAILY_LIMIT=10,
+    STRAVA_QUOTA_SAFETY_MARGIN=0,
+)
+def test_shared_quota_reservation_stops_concurrent_request_bursts() -> None:
+    _reserve_quota_slot()
+    _record_quota_response(
+        httpx.Response(
+            200,
+            headers={"X-RateLimit-Limit": "2,10", "X-RateLimit-Usage": "1,1"},
+            request=httpx.Request("GET", "https://www.strava.com/api/v3/athlete/activities"),
+        )
+    )
+    _reserve_quota_slot()
+    _record_quota_response(
+        httpx.Response(
+            200,
+            headers={"X-RateLimit-Limit": "2,10", "X-RateLimit-Usage": "2,2"},
+            request=httpx.Request("GET", "https://www.strava.com/api/v3/athlete/activities"),
+        )
+    )
+    with pytest.raises(StravaActivityError) as error:
+        _reserve_quota_slot()
+    assert error.value.retry_after is not None
+    quota = StravaQuotaState.objects.get()
+    assert quota.in_flight == 0
+    assert quota.cooldown_until is not None
+
+
+@override_settings(**_settings())
+def test_non_retryable_sync_failure_pauses_without_redispatch() -> None:
+    player = _player(78)
+    job = StravaSyncJob.objects.create(
+        player=player,
+        kind=StravaSyncJob.Kind.INITIAL,
+        idempotency_key="non-retryable-job",
+    )
+    StravaSyncState.objects.create(player=player)
+    with patch(
+        "apps.accounts.activity_services.fetch_activity_page",
+        side_effect=StravaActivityError("Strava credentials are unavailable.", retryable=False),
+    ):
+        assert process_sync_job(job.pk) == "failed"
+    job.refresh_from_db()
+    assert job.retryable is False
+    assert StravaSyncState.objects.get(player=player).status == StravaSyncState.Status.PAUSED
+    with patch("apps.accounts.activity_tasks.sync_strava_activities_task.apply_async") as publish:
+        assert dispatch_strava_sync_task() == {"dispatched": 0}
+    publish.assert_not_called()
+
+
 @override_settings(**_settings())
 def test_older_webhook_delete_cannot_remove_newer_activity() -> None:
     player = _player(88)
@@ -425,7 +518,11 @@ def test_older_webhook_delete_cannot_remove_newer_activity() -> None:
 
     event = queue_webhook_event(payload, "older-delete")
     job = StravaSyncJob.objects.get(webhook_event=event)
-    assert process_sync_job(job.pk) == "completed"
+    with patch(
+        "apps.accounts.activity_services.fetch_activity",
+        return_value=_activity(activity_id=88, athlete={"id": 88}),
+    ):
+        assert process_sync_job(job.pk) == "completed"
     assert ImportedActivity.objects.filter(player=player, provider_activity_id="88").exists()
 
 

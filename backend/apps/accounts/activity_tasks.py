@@ -12,7 +12,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .activity_services import process_sync_job
+from .activity_services import process_sync_job, purge_expired_webhook_events
 from .models import StravaSyncJob, StravaSyncState
 
 
@@ -35,6 +35,7 @@ def dispatch_strava_sync_task(limit: int = 100) -> dict[str, int]:
 
     from .models import Player
 
+    purge_expired_webhook_events(limit=100)
     dispatched = 0
     now = timezone.now()
     claim_seconds = max(30, int(getattr(settings, "STRAVA_SYNC_DISPATCH_LEASE_SECONDS", 60)))
@@ -77,10 +78,15 @@ def dispatch_strava_sync_task(limit: int = 100) -> dict[str, int]:
                     "updated_at",
                 )
             )
-    for _ in range(max(1, limit)):
+    dispatch_limit = min(
+        max(1, limit),
+        max(1, int(getattr(settings, "STRAVA_SYNC_MAX_DISPATCH_PER_RUN", 10))),
+    )
+    for _ in range(dispatch_limit):
         candidate_ref = (
             StravaSyncJob.objects.filter(
                 status__in=(StravaSyncJob.Status.PENDING, StravaSyncJob.Status.FAILED),
+                retryable=True,
                 next_attempt_at__lte=now,
                 player__lifecycle=Player.Lifecycle.CONNECTED,
             )
