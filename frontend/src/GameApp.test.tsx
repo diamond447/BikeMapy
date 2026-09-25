@@ -381,6 +381,7 @@ describe('private game map presentation', () => {
         { x: 1, y: 20 },
       ],
       100,
+      100,
     )
     expect(calls).toEqual([
       'begin',
@@ -402,6 +403,16 @@ describe('private game map presentation', () => {
       800,
     )
     expect(calls).toEqual(['begin', 'move:501:10', 'line:503:20', 'stroke'])
+    calls.length = 0
+    drawWrappedLine(
+      context,
+      [
+        { x: 100, y: 10 },
+        { x: 700, y: 20 },
+      ],
+      800,
+    )
+    expect(calls).toEqual(['begin', 'move:100:10', 'line:700:20', 'stroke'])
   })
 
   it('bounds adversarial wide-trace index construction and keeps fallback clicks exact', () => {

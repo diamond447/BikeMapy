@@ -18,6 +18,7 @@ import { translations } from './i18n/translations'
 import type { Copy, Language } from './i18n/types'
 
 type Competition = components['schemas']['Competition']
+type RosterMember = components['schemas']['CompetitionRosterMember']
 type MapResponse = components['schemas']['CompetitionMapResponse']
 type MapActivity = components['schemas']['CompetitionMapActivity']
 
@@ -443,28 +444,42 @@ export function memberFeatureCollection(
 export function drawWrappedLine(
   context: CanvasRenderingContext2D,
   points: Array<{ x: number; y: number }>,
-  width: number,
+  canvasWidth: number,
+  worldWidth?: number,
 ) {
   if (!points.length) return
+  const validWorldWidth = Number.isFinite(worldWidth) && (worldWidth ?? 0) > 0
   context.beginPath()
   context.moveTo(points[0]?.x ?? 0, points[0]?.y ?? 0)
   for (let index = 1; index < points.length; index += 1) {
     const previous = points[index - 1] ?? { x: 0, y: 0 }
     const current = points[index] ?? previous
     const delta = current.x - previous.x
-    if (Math.abs(delta) <= width / 2) {
+    // Projected points are normalized around the viewport before reaching
+    // this helper. Without an explicitly supplied world width, they already
+    // form one continuous path; the canvas width is never a wrap threshold.
+    if (!validWorldWidth || Math.abs(delta) <= (worldWidth as number) / 2) {
       context.lineTo(current.x, current.y)
       continue
     }
     const direction = delta > 0 ? -1 : 1
-    const wrappedX = current.x + direction * width
-    const boundary = direction > 0 ? width : 0
-    const fraction = (boundary - previous.x) / (wrappedX - previous.x)
+    const wrappedX = current.x + direction * (worldWidth as number)
+    const boundary = direction > 0 ? canvasWidth : 0
+    const denominator = wrappedX - previous.x
+    if (!Number.isFinite(denominator) || denominator === 0) {
+      context.lineTo(current.x, current.y)
+      continue
+    }
+    const fraction = Math.max(0, Math.min(1, (boundary - previous.x) / denominator))
     const boundaryY = previous.y + (current.y - previous.y) * fraction
+    if (!Number.isFinite(boundaryY)) {
+      context.lineTo(current.x, current.y)
+      continue
+    }
     context.lineTo(boundary, boundaryY)
     context.stroke()
     context.beginPath()
-    context.moveTo(boundary === 0 ? width : 0, boundaryY)
+    context.moveTo(boundary === 0 ? canvasWidth : 0, boundaryY)
     context.lineTo(current.x, current.y)
   }
   context.stroke()
@@ -511,6 +526,8 @@ export default function GameApp() {
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('benchmark') === 'full-update'
   const [competitions, setCompetitions] = useState<Competition[]>([])
+  const [rosterMembers, setRosterMembers] = useState<RosterMember[]>([])
+  const [rosterCursor, setRosterCursor] = useState<string | null>(null)
   const [competitionId, setCompetitionId] = useState<string | undefined>(
     () => readPrivateState().competitionId,
   )
@@ -539,6 +556,7 @@ export default function GameApp() {
   const mapRequestPending = useRef(false)
   const mapMeasureSequence = useRef(0)
   const visibleMemberIdsRef = useRef<number[]>([])
+  const rosterMembersRef = useRef<RosterMember[]>([])
   const fullMapDataRef = useRef<MapResponse | null>(null)
   const fullMapRequestKey = useRef<string | null>(null)
   const visualDataRef = useRef(memberFeatureCollection([]))
@@ -579,6 +597,8 @@ export default function GameApp() {
     setCompetitions([])
     setCompetitionId(undefined)
     setVisibleMembers(null)
+    setRosterMembers([])
+    setRosterCursor(null)
   }, [clearMapData])
 
   const loadCompetitions = useCallback(async () => {
@@ -596,6 +616,8 @@ export default function GameApp() {
       }
       if (!result.data) throw new Error('competition-load')
       setSignedOut(false)
+      setRosterMembers([])
+      setRosterCursor(null)
       setCompetitions(result.data.competitions)
       setCompetitionId((current) => {
         const selected = result.data.competitions.find((item) => item.id === current)
@@ -607,6 +629,37 @@ export default function GameApp() {
       setLoading(false)
     }
   }, [clearMapData, clearSessionState, copy.gameMapError])
+
+  const loadRosterPage = useCallback(async (competition: Competition, cursor?: string) => {
+    try {
+      const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/members/', {
+        params: {
+          path: { competition_id: competition.id },
+          query: { cursor },
+        },
+        credentials: 'include',
+      })
+      if (!result.data) return
+      setRosterMembers((previous) => {
+        const members = cursor ? [...previous, ...result.data.members] : result.data.members
+        return [...new Map(members.map((member) => [member.player_id, member])).values()]
+      })
+      setRosterCursor(result.data.next_cursor)
+    } catch {
+      // The first 100 members from the competition payload remain available.
+    }
+  }, [])
+
+  useEffect(() => {
+    rosterMembersRef.current = rosterMembers
+  }, [rosterMembers])
+
+  useEffect(() => {
+    const selected = competitions.find((competition) => competition.id === competitionId)
+    if (!selected?.members_truncated) return
+    const timer = window.setTimeout(() => void loadRosterPage(selected), 0)
+    return () => window.clearTimeout(timer)
+  }, [competitionId, competitions, loadRosterPage])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadCompetitions(), 0)
@@ -633,11 +686,23 @@ export default function GameApp() {
     setError(null)
     const current = bounds.current
     const selectedCompetition = competitions.find((competition) => competition.id === competitionId)
-    const availableMembers =
-      selectedCompetition?.members.slice(0, MAX_MAP_MEMBERS).map((member) => member.player_id) ?? []
+    const extraMembers = rosterMembersRef.current.filter((member) => member.sharing_active)
+    const knownMembers = selectedCompetition
+      ? [
+          ...selectedCompetition.members,
+          ...extraMembers.filter(
+            (member) =>
+              !selectedCompetition.members.some(
+                (selectedMember) => selectedMember.player_id === member.player_id,
+              ),
+          ),
+        ]
+      : []
+    const defaultMembers = knownMembers.slice(0, MAX_MAP_MEMBERS)
+    const availableMembers = knownMembers.map((member) => member.player_id)
     const selected =
       visibleMembers === null
-        ? availableMembers
+        ? defaultMembers.map((member) => member.player_id)
         : visibleMembers.filter((id) => availableMembers.includes(id))
     // A competition list contains at most the map endpoint's member cap in
     // the normal path. Cache that authorized response and change visibility
@@ -719,9 +784,7 @@ export default function GameApp() {
       const processingStart = `game-map-response-to-source-${mapMeasureSequence.current}`
       performance.mark(processingStart)
       const colors = new globalThis.Map(
-        competitions
-          .find((competition) => competition.id === competitionId)
-          ?.members.map((member) => [member.player_id, member.color] as [number, string]),
+        knownMembers.map((member) => [member.player_id, member.color] as [number, string]),
       )
       const sequence = mapMeasureSequence.current++
       const startMark = `game-map-response-${sequence}`
@@ -749,6 +812,10 @@ export default function GameApp() {
         // failed request; successful requests remain deduplicated.
         lastMapRequestKey.current = null
         clearMapData()
+        // clearMapData resets request bookkeeping for a fresh retry. Keep
+        // the failed key until finally runs so it is not mistaken for a
+        // superseded request and retried automatically.
+        latestMapRequestKey.current = requestKey
         setError(copy.gameMapError)
       }
     } finally {
@@ -888,6 +955,7 @@ export default function GameApp() {
                 })(),
               ),
               width,
+              worldWidth,
             )
           }
         }
@@ -1008,6 +1076,23 @@ export default function GameApp() {
   const selectedCompetition = useMemo(
     () => competitions.find((competition) => competition.id === competitionId),
     [competitionId, competitions],
+  )
+  const mapMembers = useMemo(() => {
+    if (!selectedCompetition) return []
+    return [
+      ...selectedCompetition.members,
+      ...rosterMembers.filter(
+        (member) =>
+          member.sharing_active &&
+          !selectedCompetition.members.some(
+            (selectedMember) => selectedMember.player_id === member.player_id,
+          ),
+      ),
+    ]
+  }, [rosterMembers, selectedCompetition])
+  const defaultMapMemberIds = useMemo(
+    () => new Set(mapMembers.slice(0, MAX_MAP_MEMBERS).map((member) => member.player_id)),
+    [mapMembers],
   )
   const traceActivities = useMemo(() => mapData?.activities ?? [], [mapData])
   const selectedTrace = useMemo(() => {
@@ -1137,6 +1222,8 @@ export default function GameApp() {
                 value={competitionId ?? ''}
                 onChange={(event) => {
                   clearMapData()
+                  setRosterMembers([])
+                  setRosterCursor(null)
                   setCompetitionId(event.target.value)
                 }}
               >
@@ -1148,11 +1235,15 @@ export default function GameApp() {
               </select>
               <fieldset className="game-member-list">
                 <legend>{copy.gameMapMembers}</legend>
-                {selectedCompetition?.members.map((member) => (
+                {mapMembers.map((member) => (
                   <label key={member.player_id}>
                     <input
                       type="checkbox"
-                      checked={visibleMembers === null || visibleMembers.includes(member.player_id)}
+                      checked={
+                        visibleMembers === null
+                          ? defaultMapMemberIds.has(member.player_id)
+                          : visibleMembers.includes(member.player_id)
+                      }
                       onChange={() => toggleMember(member.player_id)}
                     />
                     <span
@@ -1163,6 +1254,15 @@ export default function GameApp() {
                     {member.nickname || member.display_name}
                   </label>
                 ))}
+                {selectedCompetition?.members_truncated && rosterCursor && (
+                  <button
+                    type="button"
+                    className="game-map-more-traces"
+                    onClick={() => void loadRosterPage(selectedCompetition, rosterCursor)}
+                  >
+                    {copy.gameCompetitionMemberLoadMore}
+                  </button>
+                )}
               </fieldset>
               {mapData && (
                 <p className="game-map-status" role="status">

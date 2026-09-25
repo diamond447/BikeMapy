@@ -150,6 +150,50 @@ def test_competition_list_caps_legacy_consenting_members() -> None:
 
 
 @override_settings(**SETTINGS)
+def test_roster_is_cursor_paginated_searchable_and_keeps_inactive_viewer_access() -> None:
+    owner = player(20_500)
+    competition, owner_membership = create_competition(owner, name="Roster")
+    now = timezone.now()
+    owner_membership.sharing_consent_at = now
+    owner_membership.sharing_scope = CompetitionMembership.SharingScope.RECENT
+    owner_membership.save(update_fields=["sharing_consent_at", "sharing_scope"])
+    extra_players = [player(20_501 + index) for index in range(101)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=extra,
+                color="#123456",
+                sharing_scope=CompetitionMembership.SharingScope.RECENT,
+                sharing_consent_at=now,
+            )
+            for extra in extra_players
+        ]
+    )
+    url = reverse("game-competition-members", args=[competition.pk])
+    client = authenticated_client(owner)
+    first = client.get(url)
+    assert first.status_code == 200
+    assert len(first.json()["members"]) == 100
+    assert first.json()["has_more"] is True
+    second = client.get(url, {"cursor": first.json()["next_cursor"]})
+    assert second.status_code == 200
+    assert len(second.json()["members"]) == 2
+    late = extra_players[-1]
+    searched = client.get(url, {"search": str(late.pk)})
+    assert [member["player_id"] for member in searched.json()["members"]] == [late.pk]
+
+    owner_membership.sharing_scope = CompetitionMembership.SharingScope.NONE
+    owner_membership.sharing_consent_at = None
+    owner_membership.save(update_fields=["sharing_scope", "sharing_consent_at"])
+    inactive = client.get(url)
+    assert inactive.status_code == 200
+    assert inactive.json()["members"][0]["player_id"] == owner.pk
+    outsider = authenticated_client(player(20_999))
+    assert outsider.get(url).status_code == 404
+
+
+@override_settings(**SETTINGS)
 def test_join_rejects_the_101st_member_without_breaking_legacy_rosters() -> None:
     owner = player(21_000)
     competition, _ = create_competition(owner, name="Capped roster")

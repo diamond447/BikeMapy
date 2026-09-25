@@ -8,7 +8,11 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from django.core import signing
+from django.db.models import Q
+from django.utils.dateparse import parse_datetime
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers, status
 from rest_framework.response import Response
 from rest_framework.throttling import BaseThrottle
@@ -44,6 +48,16 @@ class CompetitionMemberSerializer(serializers.Serializer[dict[str, Any]]):
     nickname = serializers.CharField(allow_null=True)
     color = serializers.CharField()
     is_owner = serializers.BooleanField()
+
+
+class CompetitionRosterMemberSerializer(CompetitionMemberSerializer):
+    sharing_active = serializers.BooleanField()
+
+
+class CompetitionRosterResponseSerializer(serializers.Serializer[dict[str, Any]]):
+    members = CompetitionRosterMemberSerializer(many=True)
+    next_cursor = serializers.CharField(allow_null=True)
+    has_more = serializers.BooleanField()
 
 
 class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -474,6 +488,92 @@ class CompetitionMemberColorView(CompetitionApi):
         except CompetitionError as error:
             return self._error(error)
         return self._response(competition, player)
+
+
+class CompetitionRosterView(CompetitionApi):
+    """Return a bounded, pseudonymous, cursor-paginated member roster."""
+
+    page_size = 100
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("cursor", OpenApiTypes.STR, required=False),
+            OpenApiParameter("search", OpenApiTypes.STR, required=False),
+        ],
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionRosterResponseSerializer},
+        tags=["game-competitions"],
+    )
+    def get(self, request: Any, competition_id: UUID) -> Response:
+        if (response := self._enabled()) is not None:
+            return response
+        player = self.player_or_401(request)
+        if isinstance(player, Response):
+            return player
+        competition = Competition.objects.filter(
+            pk=competition_id, is_active=True, memberships__player=player
+        ).first()
+        # Keep missing competitions and unauthorized competitions indistinguishable.
+        if competition is None:
+            return Response({"detail": "Competition not found."}, status=404)
+
+        cursor = request.query_params.get("cursor")
+        cursor_joined_at = None
+        cursor_pk = None
+        if cursor:
+            try:
+                decoded = signing.loads(cursor)
+                cursor_joined_at = parse_datetime(str(decoded["joined_at"]))
+                cursor_pk = int(decoded["pk"])
+            except (TypeError, ValueError, KeyError, signing.BadSignature):
+                return Response({"detail": "Invalid roster cursor."}, status=400)
+            if cursor_joined_at is None or cursor_pk < 1:
+                return Response({"detail": "Invalid roster cursor."}, status=400)
+
+        search = str(request.query_params.get("search", "")).strip()
+        if len(search) > 64:
+            return Response({"detail": "Search is too long."}, status=400)
+        memberships = CompetitionMembership.objects.filter(competition=competition)
+        # Player IDs are the only searchable identifier. Display names remain
+        # competition-scoped pseudonyms and are never backed by PII search.
+        if search:
+            try:
+                player_id = int(search)
+            except ValueError:
+                memberships = memberships.filter(pk__in=[])
+            else:
+                memberships = memberships.filter(player_id=player_id)
+        if cursor_joined_at is not None and cursor_pk is not None:
+            memberships = memberships.filter(
+                Q(joined_at__gt=cursor_joined_at) | Q(joined_at=cursor_joined_at, pk__gt=cursor_pk)
+            )
+        rows = list(
+            memberships.order_by("joined_at", "pk").select_related("player")[: self.page_size + 1]
+        )
+        has_more = len(rows) > self.page_size
+        rows = rows[: self.page_size]
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = signing.dumps(
+                {"joined_at": last.joined_at.isoformat(), "pk": last.pk}, compress=True
+            )
+        return Response(
+            {
+                "members": [
+                    {
+                        "player_id": membership.player_id,
+                        "display_name": competition_member_label(membership),
+                        "nickname": None,
+                        "color": membership.color,
+                        "is_owner": membership.player_id == competition.owner_id,
+                        "sharing_active": sharing_is_active(membership),
+                    }
+                    for membership in rows
+                ],
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+            }
+        )
 
 
 class CompetitionRemoveMemberView(CompetitionApi):

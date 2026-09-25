@@ -236,6 +236,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/competitions/{competition_id}/members/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Return a bounded, pseudonymous, cursor-paginated member roster. */
+    get: operations['v1_game_competitions_members_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/competitions/{competition_id}/members/{player_id}/': {
     parameters: {
       query?: never
@@ -625,6 +642,19 @@ export interface components {
     }
     CompetitionResponse: {
       competition: components['schemas']['Competition']
+    }
+    CompetitionRosterMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+      sharing_active: boolean
+    }
+    CompetitionRosterResponse: {
+      members: components['schemas']['CompetitionRosterMember'][]
+      next_cursor: string | null
+      has_more: boolean
     }
     CompetitionSharingConsent: {
       scope: components['schemas']['ScopeEnum']
@@ -1721,6 +1751,70 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CompetitionMapResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_members_retrieve: {
+    parameters: {
+      query?: {
+        cursor?: string
+        search?: string
+      }
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionRosterResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
         }
       }
     }

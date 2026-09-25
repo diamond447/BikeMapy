@@ -8,13 +8,13 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 from uuid import UUID
 
 from django.core.exceptions import ValidationError
 from django.db import connection
-from django.db.models import F, Q, Window
-from django.db.models.functions import RowNumber
+from django.db.models import Q
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
@@ -365,26 +365,6 @@ def _member_payload(membership: CompetitionMembership, competition: Competition)
     }
 
 
-def _ranked_candidate_queryset(queryset: Any) -> Any:
-    return queryset.annotate(
-        member_rank=Window(
-            expression=RowNumber(),
-            partition_by=[F("player_id")],
-            order_by=[F("calendar_date").asc(nulls_last=True), F("pk").asc()],
-        )
-    )
-
-
-def _fair_candidate_queryset(queryset: Any, member_limit: int) -> Any:
-    """Bound each member before the global activity cap is applied."""
-
-    return (
-        _ranked_candidate_queryset(queryset)
-        .filter(member_rank__lte=member_limit)
-        .order_by("calendar_date", "pk")
-    )
-
-
 @extend_schema(
     parameters=MAP_PARAMETERS,
     responses={200: CompetitionMapResponseSerializer},
@@ -468,7 +448,12 @@ class CompetitionMapView(GameEndpoint):
         queryset = authorized_activity_queryset(
             ImportedActivity.objects.all(), selected_memberships
         ).order_by("calendar_date", "pk")
-        if connection.vendor == "postgresql":
+        # Probe each member independently with a hard LIMIT. This preserves a
+        # deterministic candidate budget for quiet members without asking the
+        # database to rank an unbounded spatial intersection first.
+        candidate_overflow = False
+        candidate_ids: set[UUID] = set()
+        if connection.vendor == "postgresql" and selected_memberships:
             from django.contrib.gis.db.models.functions import (
                 Intersection,
                 NumPoints,
@@ -480,23 +465,24 @@ class CompetitionMapView(GameEndpoint):
             spatial_filter = Q()
             for envelope in envelopes:
                 spatial_filter |= Q(geometry__intersects=envelope)
-            clipped_candidates = (
-                queryset.filter(spatial_filter)
-                .only("pk", "player_id", "calendar_date")
-                .annotate(source_points=NumPoints("geometry"))
-                .filter(source_points__lte=MAX_SOURCE_COORDINATES)
-            )
-            ranked_candidates = _ranked_candidate_queryset(clipped_candidates)
-            candidate_overflow = ranked_candidates.filter(
-                member_rank=candidate_member_limit + 1
-            ).exists()
-            candidate_ids = set(
-                ranked_candidates.filter(member_rank__lte=candidate_member_limit).values_list(
-                    "pk", flat=True
-                )[: MAX_FEATURES + 1]
-            )
+            for membership in selected_memberships:
+                member_candidates = (
+                    authorized_activity_queryset(ImportedActivity.objects.all(), [membership])
+                    .filter(spatial_filter)
+                    .only("pk", "player_id", "calendar_date")
+                    .annotate(source_points=NumPoints("geometry"))
+                    .filter(source_points__lte=MAX_SOURCE_COORDINATES)
+                    .order_by("calendar_date", "pk")
+                )
+                rows = list(member_candidates[: candidate_member_limit + 1])
+                if len(rows) > candidate_member_limit:
+                    candidate_overflow = True
+                candidate_ids.update(row.pk for row in rows[:candidate_member_limit])
             candidate_count = len(candidate_ids)
             candidates: list[ImportedActivity] = []
+            clipped_candidates = queryset.filter(pk__in=candidate_ids).only(
+                "pk", "player_id", "calendar_date"
+            )
             tolerance = max(0.5, 156543.03392804097 / (2**zoom) * 0.5)
             for envelope in envelopes:
                 clipped_geometry = Intersection("geometry", envelope)
@@ -509,17 +495,20 @@ class CompetitionMapView(GameEndpoint):
                         )
                     )[: MAX_FEATURES + 1]
                 )
+        elif selected_memberships:
+            for membership in selected_memberships:
+                member_candidates = authorized_activity_queryset(
+                    ImportedActivity.objects.all(), [membership]
+                ).order_by("calendar_date", "pk")
+                rows = list(member_candidates[: candidate_member_limit + 1])
+                if len(rows) > candidate_member_limit:
+                    candidate_overflow = True
+                candidate_ids.update(row.pk for row in rows[:candidate_member_limit])
+            candidate_count = len(candidate_ids)
+            candidates = list(queryset.filter(pk__in=candidate_ids).order_by("calendar_date", "pk"))
         else:
-            ranked_candidates = _ranked_candidate_queryset(queryset)
-            candidate_overflow = ranked_candidates.filter(
-                member_rank=candidate_member_limit + 1
-            ).exists()
-            candidates = list(
-                ranked_candidates.filter(member_rank__lte=candidate_member_limit).order_by(
-                    "calendar_date", "pk"
-                )[: MAX_FEATURES + 1]
-            )
-            candidate_count = len(candidates)
+            candidates = []
+            candidate_count = 0
         candidate_geometries: dict[UUID, tuple[ImportedActivity, list[Any]]] = {}
         for candidate in candidates:
             source_geometry = getattr(candidate, "private_geometry", None)
@@ -535,7 +524,15 @@ class CompetitionMapView(GameEndpoint):
             or candidate_count > MAX_FEATURES
             or len(candidate_geometries) > MAX_FEATURES
         )
-        for activity, geometries in candidate_geometries.values():
+        ordered_candidates = sorted(
+            candidate_geometries.values(),
+            key=lambda entry: (
+                entry[0].calendar_date is None,
+                entry[0].calendar_date or date.max,
+                str(entry[0].pk),
+            ),
+        )
+        for activity, geometries in ordered_candidates:
             if len(activities) >= MAX_FEATURES:
                 truncated = True
                 break

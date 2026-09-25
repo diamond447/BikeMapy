@@ -6,6 +6,7 @@ import { notifyGameDataRefresh, notifyGameMapReset } from '../gameState'
 import type { Copy } from '../i18n/types'
 
 type Competition = components['schemas']['Competition']
+type RosterMember = components['schemas']['CompetitionRosterMember']
 
 function errorDetail(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('detail' in error)) return null
@@ -25,6 +26,11 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
   const [rename, setRename] = useState('')
   const [sharingScope, setSharingScope] = useState<'recent' | 'full_history'>('recent')
   const [sharingConfirmed, setSharingConfirmed] = useState(false)
+  const [roster, setRoster] = useState<RosterMember[]>([])
+  const [rosterCursor, setRosterCursor] = useState<string | null>(null)
+  const [rosterLoading, setRosterLoading] = useState(false)
+  const [rosterSearch, setRosterSearch] = useState('')
+  const [rosterReload, setRosterReload] = useState(0)
 
   const load = useCallback(async (): Promise<boolean> => {
     setLoading(true)
@@ -63,6 +69,49 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
     return () => window.clearTimeout(timer)
   }, [load])
 
+  const current = competitions.find((competition) => competition.is_selected) ?? competitions[0]
+  const currentId = current?.id
+  const currentMembersTruncated = current?.members_truncated
+
+  const loadRoster = useCallback(
+    async (reset: boolean, search = '', cursor: string | null = null): Promise<void> => {
+      if (!currentId || (!currentMembersTruncated && reset)) {
+        return
+      }
+      setRosterLoading(true)
+      try {
+        const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/members/', {
+          params: {
+            path: { competition_id: currentId },
+            query: {
+              cursor: reset ? undefined : (cursor ?? undefined),
+              search: search.trim() || undefined,
+            },
+          },
+          credentials: 'include',
+        })
+        if (result.data) {
+          setRoster((previous) => {
+            const members = reset ? result.data.members : [...previous, ...result.data.members]
+            return [...new Map(members.map((member) => [member.player_id, member])).values()]
+          })
+          setRosterCursor(result.data.next_cursor)
+        }
+      } catch {
+        // The competition panel remains usable with its bounded initial list.
+      } finally {
+        setRosterLoading(false)
+      }
+    },
+    [currentId, currentMembersTruncated],
+  )
+
+  useEffect(() => {
+    if (!currentMembersTruncated) return
+    const timer = window.setTimeout(() => void loadRoster(true), 0)
+    return () => window.clearTimeout(timer)
+  }, [currentId, currentMembersTruncated, loadRoster, rosterReload])
+
   const action = async (
     run: () => Promise<{ response?: Response; data?: unknown; error?: unknown }>,
   ): Promise<boolean> => {
@@ -77,9 +126,14 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
         setMessage(errorDetail(result.error) ?? copy.gameCompetitionError)
         return false
       } else {
+        setRoster([])
+        setRosterCursor(null)
         const reloaded = await load()
         if (!reloaded) setMessage(copy.gameCompetitionReloadError)
-        else notifyGameDataRefresh()
+        else {
+          setRosterReload((value) => value + 1)
+          notifyGameDataRefresh()
+        }
         return true
       }
     } catch {
@@ -118,7 +172,15 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
       setInvite('')
   }
 
-  const current = competitions.find((competition) => competition.is_selected) ?? competitions[0]
+  const managedMembers = current
+    ? [
+        ...current.members,
+        ...roster.filter(
+          (member) =>
+            !current.members.some((currentMember) => currentMember.player_id === member.player_id),
+        ),
+      ]
+    : []
 
   if (loading) return <p className="game-account-status">{copy.gameCompetitionsLoading}</p>
 
@@ -332,7 +394,7 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
           {current.is_owner ? (
             <div className="game-competition-members">
               <span className="game-competition-label">{copy.gameCompetitionMembers}</span>
-              {current.members.map((member) => (
+              {managedMembers.map((member) => (
                 <div className="game-competition-member" key={member.player_id}>
                   <span
                     className="game-competition-swatch"
@@ -384,6 +446,36 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
                   )}
                 </div>
               ))}
+              {current.members_truncated && (
+                <div className="game-competition-roster-tools">
+                  <label htmlFor="game-competition-member-search">
+                    {copy.gameCompetitionMemberSearch}
+                  </label>
+                  <input
+                    id="game-competition-member-search"
+                    inputMode="numeric"
+                    value={rosterSearch}
+                    onChange={(event) => setRosterSearch(event.target.value)}
+                    placeholder={copy.gameCompetitionMemberSearchPlaceholder}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void loadRoster(true, rosterSearch)}
+                    disabled={busy || rosterLoading}
+                  >
+                    {copy.gameCompetitionMemberSearchAction}
+                  </button>
+                  {rosterCursor && !rosterSearch.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => void loadRoster(false, '', rosterCursor)}
+                      disabled={busy || rosterLoading}
+                    >
+                      {copy.gameCompetitionMemberLoadMore}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <button

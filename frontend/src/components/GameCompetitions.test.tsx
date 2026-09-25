@@ -95,4 +95,56 @@ describe('GameCompetitions', () => {
     await user.click(screen.getByRole('button', { name: 'Join competition' }))
     expect(invite).toHaveValue('JOIN123')
   })
+
+  it('loads and manages members beyond the legacy first page', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      player_id: index + 1,
+      display_name: `Rider ${index + 1}`,
+      nickname: null,
+      color: '#3A86FF',
+      is_owner: index === 0,
+      sharing_active: true,
+    }))
+    const lateMember = {
+      player_id: 101,
+      display_name: 'Rider 101',
+      nickname: null,
+      color: '#E45756',
+      is_owner: false,
+      sharing_active: true,
+    }
+    const largeCompetition = { ...competition, members: firstPage, members_truncated: true }
+    const get = vi.spyOn(apiClient, 'GET').mockImplementation(((
+      path: string,
+      options?: unknown,
+    ) => {
+      if (path.includes('/members/')) {
+        const cursor = String(
+          (options as { params?: { query?: { cursor?: string } } } | undefined)?.params?.query
+            ?.cursor ?? '',
+        )
+        return Promise.resolve(
+          result(
+            cursor
+              ? { members: [lateMember], next_cursor: null, has_more: false }
+              : { members: firstPage, next_cursor: 'next', has_more: true },
+          ) as never,
+        )
+      }
+      return Promise.resolve(
+        result({
+          competitions: [largeCompetition],
+          active_competition_id: competition.id,
+        }) as never,
+      )
+    }) as never)
+    render(<GameCompetitions copy={translations.en} />)
+    expect(await screen.findByText('Rider 1')).toBeInTheDocument()
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Load more members' }))
+    expect(await screen.findByText('Rider 101')).toBeInTheDocument()
+    expect(get).toHaveBeenCalledWith(
+      '/api/v1/game/competitions/{competition_id}/members/',
+      expect.anything(),
+    )
+  })
 })
