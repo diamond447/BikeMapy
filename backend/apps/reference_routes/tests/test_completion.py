@@ -14,8 +14,9 @@ from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
-from apps.accounts.competition_services import create_competition
+from apps.accounts.competition_services import create_competition, join_competition
 from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
+from apps.accounts.services import delete_player
 from apps.reference_routes.completion_services import (
     CompletionLeaseLost,
     calculate_completion,
@@ -29,6 +30,7 @@ from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
     ReferenceSourceKind,
+    RouteCompletion,
     RouteCompletionEvidence,
     RouteCompletionJob,
     RouteCompletionMonthly,
@@ -202,6 +204,69 @@ def test_competition_completion_is_union_and_reverses_after_activity_removal() -
 
 
 @requires_gis_runtime
+def test_activity_deletion_erases_immutable_completion_evidence() -> None:
+    version = _version()
+    player = _player(13)
+    activity = _activity(player, "privacy", [[14, 50], [14.03, 50]], date(2026, 2, 3))
+    completion = calculate_completion(version, CompletionSubject.PLAYER, player=player)
+    evidence = RouteCompletionEvidence.objects.get(completion=completion)
+    assert evidence.provider_activity_id == "privacy"
+    assert evidence.activity_geometry_hash == "privacy"
+    activity.delete()
+    completion.refresh_from_db()
+    assert not RouteCompletionEvidence.objects.filter(pk=evidence.pk).exists()
+    assert not RouteCompletionMonthly.objects.filter(route_version=version, player=player).exists()
+    assert completion.status == CompletionStatus.PENDING
+    assert completion.covered_length_meters == Decimal("0")
+    assert completion.completion_percent == Decimal("0")
+
+
+@override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
+@requires_gis_runtime
+def test_account_deletion_erases_surviving_competition_evidence() -> None:
+    version = _version()
+    version.active = True
+    version.save(update_fields=("active",))
+    version.route.active = True
+    version.route.save(update_fields=("active", "updated_at"))
+    deleted = _player(14)
+    survivor = _player(15)
+    competition, _ = create_competition(survivor, name="Privacy competition")
+    CompetitionMembership.objects.create(competition=competition, player=deleted, color="#123456")
+    _activity(deleted, "deleted", [[14, 50], [14.03, 50]], date(2026, 2, 4))
+    calculate_completion(version, CompletionSubject.COMPETITION, competition=competition)
+    assert RouteCompletionEvidence.objects.filter(completion__competition=competition).exists()
+    delete_player(deleted)
+    surviving_completion = RouteCompletion.objects.get(
+        route_version=version, competition=competition
+    )
+    assert surviving_completion.status == CompletionStatus.PENDING
+    assert not RouteCompletionEvidence.objects.filter(completion=surviving_completion).exists()
+    assert not RouteCompletionMonthly.objects.filter(
+        route_version=version, competition=competition
+    ).exists()
+
+
+@override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
+def test_competition_creation_and_join_schedule_route_completion() -> None:
+    version = _version()
+    version.active = True
+    version.save(update_fields=("active",))
+    version.route.active = True
+    version.route.save(update_fields=("active", "updated_at"))
+    owner = _player(16)
+    joiner = _player(17)
+    _activity(joiner, "before-join", [[14, 50], [14.03, 50]], date(2026, 2, 5))
+    competition, _ = create_competition(owner, name="Scheduled competition")
+    created_job = RouteCompletionJob.objects.get(route_version=version, competition=competition)
+    assert created_job.status == RouteCompletionJob.Status.PENDING
+    join_competition(joiner, invite_code=competition.invite_code)
+    joined_job = RouteCompletionJob.objects.get(route_version=version, competition=competition)
+    assert joined_job.status == RouteCompletionJob.Status.PENDING
+    assert joined_job.reason == "competition-member-joined"
+
+
+@requires_gis_runtime
 def test_completion_job_is_idempotent_and_exposes_fresh_state() -> None:
     version = _version()
     player = _player(4)
@@ -266,6 +331,29 @@ def test_worker_commit_is_fenced_when_subject_is_replaced(monkeypatch: pytest.Mo
     assert job.status == RouteCompletionJob.Status.PENDING
     assert job.lease_token == ""
     assert not RouteCompletionEvidence.objects.filter(completion__route_version=version).exists()
+
+
+def test_completion_worker_redacts_unexpected_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = _version()
+    player = _player(18)
+    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="failure")
+
+    def fail(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("provider token must never be persisted or exposed")
+
+    monkeypatch.setattr("apps.reference_routes.tasks.calculate_completion", fail)
+    result = calculate_route_completion.apply(args=[job.pk]).get()
+    assert result == {
+        "status": "failed",
+        "job_id": job.pk,
+        "error": "completion_unavailable",
+    }
+    job.refresh_from_db()
+    assert job.error == "completion_unavailable"
+    completion = RouteCompletion.objects.get(route_version=version, player=player)
+    assert completion.error == "completion_unavailable"
 
 
 def test_dispatch_claim_is_single_use_and_releases_on_publish_failure(
@@ -367,6 +455,13 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     assert body["route_id"] == str(route.pk)
     assert competition.is_active
     assert response["Cache-Control"] == "private, no-store"
+
+    failed_competition = RouteCompletion.objects.get(route_version=version, competition=competition)
+    failed_competition.status = CompletionStatus.FAILED
+    failed_competition.error = "internal credentials must not be exposed"
+    failed_competition.save(update_fields=("status", "error", "updated_at"))
+    redacted = client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/")
+    assert redacted.json()["competition"]["error"] == "completion_unavailable"
 
     with override_settings(GAME_ENABLED=False):
         assert (

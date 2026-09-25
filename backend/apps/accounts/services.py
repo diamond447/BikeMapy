@@ -528,6 +528,9 @@ def _delete_player_once(
             or current_player_ids != affected_player_ids
         ):
             raise _RetryPlayerDeletion
+        from apps.reference_routes.completion_services import erase_player_completion_data
+
+        erase_player_completion_data(player.pk, affected_competition_ids)
         # Lock memberships after Player -> Competition, matching the global
         # competition lock order used by leave/remove/delete operations.
         list(

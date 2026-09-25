@@ -33,6 +33,7 @@ out meta geom;"""
 MAX_DISCOVERY_ARTIFACT_BYTES = 5 * 1024 * 1024
 MAX_OVERPASS_FAILURE_LOG_BYTES = 512 * 1024
 _completion_evidence_append = contextvars.ContextVar("completion_evidence_append", default=False)
+_completion_evidence_erasure = contextvars.ContextVar("completion_evidence_erasure", default=False)
 
 
 @contextmanager
@@ -44,6 +45,17 @@ def allow_completion_evidence_append() -> Any:
         yield
     finally:
         _completion_evidence_append.reset(token)
+
+
+@contextmanager
+def allow_completion_evidence_erasure() -> Any:
+    """Permit the privacy erasure service to remove derived evidence."""
+
+    token = _completion_evidence_erasure.set(True)
+    try:
+        yield
+    finally:
+        _completion_evidence_erasure.reset(token)
 
 
 def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
@@ -895,12 +907,18 @@ class RouteCompletion(models.Model):
 
 class ImmutableCompletionEvidenceQuerySet(models.QuerySet["RouteCompletionEvidence"]):
     def update(self, **kwargs: object) -> int:
+        if _completion_evidence_erasure.get():
+            return super().update(**kwargs)
         raise ValidationError("Completion evidence is immutable and append-only.")
 
     def delete(self) -> tuple[int, dict[str, int]]:
+        if _completion_evidence_erasure.get():
+            return super().delete()
         raise ProtectedError("Completion evidence is immutable and append-only.", set(self))
 
     def bulk_update(self, objs: Any, fields: Any, batch_size: int | None = None) -> int:
+        if _completion_evidence_erasure.get():
+            return super().bulk_update(objs, fields, batch_size=batch_size)
         raise ValidationError("Completion evidence is immutable and append-only.")
 
     def bulk_create(
@@ -912,6 +930,15 @@ class ImmutableCompletionEvidenceQuerySet(models.QuerySet["RouteCompletionEviden
         update_fields: Iterable[str] | None = None,
         unique_fields: Iterable[str] | None = None,
     ) -> list[RouteCompletionEvidence]:
+        if _completion_evidence_erasure.get():
+            return super().bulk_create(
+                objs,
+                batch_size=batch_size,
+                ignore_conflicts=ignore_conflicts,
+                update_conflicts=update_conflicts,
+                update_fields=set(update_fields) if update_fields is not None else None,
+                unique_fields=set(unique_fields) if unique_fields is not None else None,
+            )
         del objs, batch_size, ignore_conflicts, update_conflicts, update_fields, unique_fields
         raise ValidationError("Use the controlled evidence append service.")
 
@@ -953,7 +980,9 @@ class RouteCompletionEvidence(models.Model):
         return f"{self.completion_id}:{self.provider_activity_id}"
 
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
-        if self.pk or not _completion_evidence_append.get():
+        if (self.pk and not _completion_evidence_erasure.get()) or (
+            not self.pk and not _completion_evidence_append.get()
+        ):
             raise ValidationError("Completion evidence is immutable and append-only.")
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 

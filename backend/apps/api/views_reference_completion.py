@@ -13,6 +13,7 @@ from rest_framework.response import Response
 
 from apps.accounts.game_api import GameEndpoint, _private
 from apps.accounts.services import game_is_available
+from apps.reference_routes.completion_services import PUBLIC_COMPLETION_ERROR_CODE
 from apps.reference_routes.models import (
     ReferencePublicationStatus,
     ReferenceRoute,
@@ -55,7 +56,7 @@ def _projection(value: RouteCompletion | None) -> dict[str, Any]:
         "covered_length_meters": value.covered_length_meters,
         "completion_percent": value.completion_percent,
         "calculated_at": value.calculated_at,
-        "error": value.error,
+        "error": PUBLIC_COMPLETION_ERROR_CODE if value.status == "failed" else "",
     }
 
 
