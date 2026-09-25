@@ -30,7 +30,7 @@ from apps.accounts.activity_services import (
     webhook_event_key,
 )
 from apps.accounts.activity_tasks import dispatch_strava_sync_task
-from apps.accounts.competition_services import create_competition
+from apps.accounts.competition_services import create_competition, grant_sharing_consent
 from apps.accounts.models import (
     CompetitionMembership,
     CompetitionRecomputation,
@@ -105,6 +105,7 @@ def test_activity_eligibility_rejects_private_virtual_and_geometryless_payloads(
 def test_import_is_idempotent_shared_and_privacy_downgrade_removes_results() -> None:
     player = _player()
     competition, _ = create_competition(player, name="Rides")
+    grant_sharing_consent(player, competition, scope="recent")
     assert import_activity(player, _activity()) == "imported"
     assert import_activity(player, _activity()) == "updated"
     activity = ImportedActivity.objects.get(player=player)

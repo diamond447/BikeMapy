@@ -11,8 +11,10 @@ window.
 The runnable fixture creates a competition with 80 members, 1,600 eligible
 activities (20 per member), and 250 vertices per activity. Fifteen activities
 per member are placed in the central-European viewport, giving exactly 1,200
-intersections; the other 400 traces are outside it. The map request is made at
-zoom 12 with all members selected.
+intersections; the other 400 traces are outside it. The fixture records an
+explicit recent-history sharing consent for every membership so the benchmark
+measures the authorized sharing path. The map request is made at zoom 12 with
+all members selected.
 
 ## Limits and acceptance budget
 
@@ -52,5 +54,6 @@ up -d db redis`, apply migrations with the same environment, and start the
 backend at `127.0.0.1:8000` using the command's explicit environment
 assignments (including `DJANGO_CACHE_URL=redis://127.0.0.1:6379/1`). Start the
 frontend at `127.0.0.1:4173` with `VITE_API_URL=http://127.0.0.1:8000`. The
-checked-in result was collected against local PostGIS with 30 API and browser
-samples.
+The checked-in result was collected against local PostGIS with 30 API samples;
+the browser field is added when the optional frontend/backend `--browser-url`
+probe is run.

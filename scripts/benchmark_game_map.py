@@ -33,6 +33,7 @@ from django.contrib.gis.geos import LineString  # noqa: E402
 from django.db import connection  # noqa: E402
 from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
+from django.utils import timezone  # noqa: E402
 
 from apps.accounts.models import (  # noqa: E402
     Competition,
@@ -53,6 +54,7 @@ BENCHMARK_ENVIRONMENT = (
     "POSTGRES_PASSWORD=bikemapy-local-only",
     "DJANGO_CACHE_URL=redis://127.0.0.1:6379/1",
     "GAME_ENABLED=true",
+    "COMPETITION_GAME_ENABLED=true",
     "STRAVA_OAUTH_CLIENT_ID=benchmark-client",
     "STRAVA_OAUTH_CLIENT_SECRET=benchmark-secret",
     "STRAVA_TOKEN_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -113,6 +115,8 @@ def fixture(
                 competition=competition,
                 player=player,
                 color=f"#{(0x24 + member_index * 97) % 0xFFFFFF:06X}",
+                sharing_scope="recent",
+                sharing_consent_at=timezone.now(),
             )
             for member_index, player in enumerate(all_players)
         ]

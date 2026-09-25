@@ -274,7 +274,11 @@ def _subject_activities(
     else:
         if competition is None:
             raise CompletionCalculationError("Competition completion subject is missing.")
-        member_ids = competition.memberships.values_list("player_id", flat=True)
+        member_ids = (
+            competition.memberships.filter(sharing_consent_at__isnull=False)
+            .exclude(sharing_scope="none")
+            .values_list("player_id", flat=True)
+        )
         query = ImportedActivity.objects.filter(
             player_id__in=member_ids,
             removed_at__isnull=True,

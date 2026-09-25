@@ -15,7 +15,11 @@ from django.db.models.deletion import ProtectedError
 from django.test import Client, override_settings
 from django.utils import timezone
 
-from apps.accounts.competition_services import create_competition, join_competition
+from apps.accounts.competition_services import (
+    create_competition,
+    grant_sharing_consent,
+    join_competition,
+)
 from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
 from apps.accounts.services import delete_player
 from apps.reference_routes.completion_services import (
@@ -217,7 +221,9 @@ def test_competition_completion_is_union_and_reverses_after_activity_removal() -
     first = _player(2)
     second = _player(3)
     competition, _ = create_competition(first, name="Union")
+    grant_sharing_consent(first, competition, scope="recent")
     CompetitionMembership.objects.create(competition=competition, player=second, color="#123456")
+    grant_sharing_consent(second, competition, scope="recent")
     _activity(first, "first", [[14, 50], [14.05, 50]], date(2026, 2, 1))
     activity = _activity(second, "second", [[14.05, 50], [14.1, 50]], date(2026, 2, 2))
     union = calculate_completion(version, CompletionSubject.COMPETITION, competition=competition)
@@ -259,7 +265,9 @@ def test_account_deletion_erases_surviving_competition_evidence() -> None:
     deleted = _player(14)
     survivor = _player(15)
     competition, _ = create_competition(survivor, name="Privacy competition")
+    grant_sharing_consent(survivor, competition, scope="recent")
     CompetitionMembership.objects.create(competition=competition, player=deleted, color="#123456")
+    grant_sharing_consent(deleted, competition, scope="recent")
     _activity(deleted, "deleted", [[14, 50], [14.03, 50]], date(2026, 2, 4))
     calculate_completion(version, CompletionSubject.COMPETITION, competition=competition)
     assert RouteCompletionEvidence.objects.filter(completion__competition=competition).exists()

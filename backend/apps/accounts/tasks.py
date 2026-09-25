@@ -89,9 +89,15 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
                 seconds=settings.GAME_RECOMPUTATION_LEASE_SECONDS
             )
             job.save(update_fields=("lease_until",))
-            active_players = set(competition.memberships.values_list("player_id", flat=True))
+            active_players = set(
+                competition.memberships.filter(sharing_consent_at__isnull=False)
+                .exclude(sharing_scope="none")
+                .values_list("player_id", flat=True)
+            )
             activities = list(
-                ImportedActivity.objects.filter(player_id__in=active_players).order_by("pk")
+                ImportedActivity.objects.filter(
+                    player_id__in=active_players, removed_at__isnull=True
+                ).order_by("pk")
             )
             activity_ids = {activity.pk for activity in activities}
             CompetitionResult.objects.filter(competition=competition).exclude(

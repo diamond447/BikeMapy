@@ -284,6 +284,22 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/competitions/{competition_id}/sharing-consent/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_competitions_sharing_consent_create']
+    delete: operations['v1_game_competitions_sharing_consent_destroy']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/competitions/{competition_id}/switch/': {
     parameters: {
       query?: never
@@ -553,15 +569,7 @@ export interface components {
       /** Format: date-time */
       created_at: string
       members: components['schemas']['CompetitionMember'][]
-      activities: components['schemas']['CompetitionActivity'][]
-    }
-    CompetitionActivity: {
-      /** Format: uuid */
-      id: string
-      player_id: number
-      /** Format: date */
-      calendar_date: string
-      geometry: unknown
+      sharing_scope: components['schemas']['SharingScopeEnum']
     }
     CompetitionCreate: {
       name: string
@@ -616,6 +624,9 @@ export interface components {
     }
     CompetitionResponse: {
       competition: components['schemas']['Competition']
+    }
+    CompetitionSharingConsent: {
+      scope: components['schemas']['ScopeEnum']
     }
     CompetitionTransfer: {
       player_id: number
@@ -834,6 +845,19 @@ export interface components {
       /** Format: date-time */
       readonly updated_at: string
     }
+    /**
+     * @description * `recent` - recent
+     *     * `full_history` - full_history
+     * @enum {string}
+     */
+    ScopeEnum: 'recent' | 'full_history'
+    /**
+     * @description * `none` - none
+     *     * `recent` - recent
+     *     * `full_history` - full_history
+     * @enum {string}
+     */
+    SharingScopeEnum: 'none' | 'recent' | 'full_history'
     SourceAttribution: {
       /** Format: uri */
       mapy_url: string
@@ -1827,6 +1851,134 @@ export interface operations {
     }
   }
   v1_game_competitions_rotate_invite_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_sharing_consent_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CompetitionSharingConsent']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionSharingConsent']
+        'multipart/form-data': components['schemas']['CompetitionSharingConsent']
+      }
+    }
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_sharing_consent_destroy: {
     parameters: {
       query?: never
       header?: never

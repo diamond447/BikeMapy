@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
 from datetime import timedelta
 from math import sqrt
@@ -37,6 +39,12 @@ MIN_COLOR_DELTA_E = 18.0
 MAX_DISPATCH_ATTEMPTS = 5
 MAX_INVITE_ATTEMPTS = 5
 DISPATCH_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
+SHARING_SCOPES = frozenset(
+    {
+        CompetitionMembership.SharingScope.RECENT,
+        CompetitionMembership.SharingScope.FULL_HISTORY,
+    }
+)
 
 
 class CompetitionError(Exception):
@@ -137,6 +145,62 @@ def _membership(player: Player, competition: Competition) -> CompetitionMembersh
     except CompetitionMembership.DoesNotExist as exc:
         # Deliberately do not distinguish a missing object from a non-member.
         raise CompetitionError("Competition not found.", code="not_found") from exc
+
+
+def sharing_is_active(membership: CompetitionMembership) -> bool:
+    return bool(
+        membership.sharing_consent_at is not None and membership.sharing_scope in SHARING_SCOPES
+    )
+
+
+def competition_member_label(membership: CompetitionMembership) -> str:
+    """Return a stable, competition-scoped pseudonym without exposing PII."""
+
+    secret = str(getattr(settings, "SECRET_KEY", "bikemapy-local-secret")).encode()
+    message = f"competition-member:{membership.competition_id}:{membership.player_id}".encode()
+    digest = hmac.new(secret, message, hashlib.sha256).hexdigest()[:8].upper()
+    return f"Rider {digest}"
+
+
+@transaction.atomic
+def grant_sharing_consent(
+    player: Player, competition: Competition, *, scope: Any
+) -> CompetitionMembership:
+    player = _locked_player(player)
+    locked = Competition.objects.select_for_update().get(pk=competition.pk)
+    try:
+        membership = CompetitionMembership.objects.select_for_update().get(
+            player=player, competition=locked
+        )
+    except CompetitionMembership.DoesNotExist as exc:
+        raise CompetitionError("Competition not found.", code="not_found") from exc
+    normalized = str(scope or "").strip().lower()
+    if normalized not in SHARING_SCOPES:
+        raise CompetitionError(
+            "Choose recent or full available history.", code="invalid_sharing_scope"
+        )
+    membership.sharing_scope = normalized
+    membership.sharing_consent_at = timezone.now()
+    membership.save(update_fields=("sharing_scope", "sharing_consent_at", "updated_at"))
+    return membership
+
+
+@transaction.atomic
+def withdraw_sharing_consent(player: Player, competition: Competition) -> CompetitionMembership:
+    player = _locked_player(player)
+    locked = Competition.objects.select_for_update().get(pk=competition.pk)
+    try:
+        membership = CompetitionMembership.objects.select_for_update().get(
+            player=player, competition=locked
+        )
+    except CompetitionMembership.DoesNotExist as exc:
+        raise CompetitionError("Competition not found.", code="not_found") from exc
+    membership.sharing_scope = CompetitionMembership.SharingScope.NONE
+    membership.sharing_consent_at = None
+    membership.save(update_fields=("sharing_scope", "sharing_consent_at", "updated_at"))
+    CompetitionResult.objects.filter(competition=locked, player=player).delete()
+    schedule_recomputation(locked, affected_player_id=player.pk)
+    return membership
 
 
 def _locked_player(player: Player) -> Player:

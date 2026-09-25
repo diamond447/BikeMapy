@@ -199,6 +199,44 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
       </div>
       {current && (
         <div className="game-competition-management">
+          <div className="game-competition-sharing">
+            <span className="game-competition-label">{copy.gameCompetitionSharing}</span>
+            <span>
+              {current.sharing_scope === 'none'
+                ? copy.gameCompetitionSharingOff
+                : copy.gameCompetitionSharingOn}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                void action(() =>
+                  current.sharing_scope === 'none'
+                    ? apiClient.POST(
+                        '/api/v1/game/competitions/{competition_id}/sharing-consent/',
+                        {
+                          params: { path: { competition_id: current.id } },
+                          body: { scope: 'recent' },
+                          credentials: 'include',
+                          headers: csrfHeaders(),
+                        },
+                      )
+                    : apiClient.DELETE(
+                        '/api/v1/game/competitions/{competition_id}/sharing-consent/',
+                        {
+                          params: { path: { competition_id: current.id } },
+                          credentials: 'include',
+                          headers: csrfHeaders(),
+                        },
+                      ),
+                )
+              }
+              disabled={busy}
+            >
+              {current.sharing_scope === 'none'
+                ? copy.gameCompetitionSharingEnable
+                : copy.gameCompetitionSharingWithdraw}
+            </button>
+          </div>
           <div className="game-competition-code">
             <span>{copy.gameCompetitionInviteCode}</span>
             <code>{current.invite_code}</code>

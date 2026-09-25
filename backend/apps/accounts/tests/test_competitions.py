@@ -20,6 +20,7 @@ from apps.accounts.competition_services import (
     CompetitionError,
     create_competition,
     delete_competition,
+    grant_sharing_consent,
     join_competition,
     leave_competition,
     remove_member,
@@ -87,6 +88,9 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
     )
     assert created.status_code == 201
     competition = created.json()["competition"]
+    assert "activities" not in competition
+    assert competition["sharing_scope"] == "none"
+    assert competition["members"] == []
     code = competition["invite_code"]
 
     member_client = authenticated_client(member)
@@ -95,6 +99,7 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
     )
     assert joined.status_code == 200
     assert joined.json()["competition"]["is_owner"] is False
+    assert "activities" not in joined.json()["competition"]
     assert member_client.get(reverse("game-competition-list")).json()["active_competition_id"]
 
     outsider_client = authenticated_client(outsider)
@@ -111,6 +116,33 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
 
     switched = member_client.post(reverse("game-competition-switch", args=[identifier]))
     assert switched.status_code == 200
+
+
+@override_settings(**SETTINGS)
+def test_sharing_consent_is_explicit_and_member_metadata_is_pseudonymous() -> None:
+    owner = player(301)
+    member = player(302)
+    competition, _ = create_competition(owner, name="Consent")
+    join_competition(member, invite_code=competition.invite_code)
+    owner_client = authenticated_client(owner)
+    consented = owner_client.post(
+        reverse("game-competition-sharing-consent", args=[competition.pk]),
+        {"scope": "recent"},
+    )
+    assert consented.status_code == 200
+    payload = owner_client.get(reverse("game-competition-detail", args=[competition.pk])).json()[
+        "competition"
+    ]
+    assert "activities" not in payload
+    assert payload["sharing_scope"] == "recent"
+    assert payload["members"]
+    assert payload["members"][0]["display_name"].startswith("Rider ")
+    assert payload["members"][0]["nickname"] is None
+    withdrawn = owner_client.delete(
+        reverse("game-competition-sharing-consent", args=[competition.pk])
+    )
+    assert withdrawn.status_code == 200
+    assert withdrawn.json()["competition"]["sharing_scope"] == "none"
 
 
 @override_settings(**{**SETTINGS, "COMPETITION_GAME_ENABLED": False})
@@ -439,6 +471,7 @@ def test_removal_selects_remaining_membership_and_preserves_newer_generation() -
     member = player(71)
     other = player(72)
     first, _ = create_competition(owner, name="First")
+    grant_sharing_consent(owner, first, scope="recent")
     second, _ = create_competition(other, name="Second")
     join_competition(member, invite_code=first.invite_code)
     member.refresh_from_db()
@@ -532,6 +565,7 @@ def test_dispatch_failure_is_recorded_for_sweeper_retry() -> None:
 def test_recompute_failure_persists_attempts_and_stops_at_retry_limit() -> None:
     owner = player(110)
     competition, _ = create_competition(owner, name="Failure")
+    grant_sharing_consent(owner, competition, scope="recent")
     job = CompetitionRecomputation.objects.create(competition=competition, generation=1)
     result = CompetitionResult.objects.create(competition=competition, player=owner, points=1)
     with patch.object(CompetitionResult, "save", side_effect=RuntimeError("score failure")):

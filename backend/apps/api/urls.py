@@ -13,6 +13,7 @@ from apps.accounts.competition_api import (
     CompetitionMemberColorView,
     CompetitionRemoveMemberView,
     CompetitionRotateInviteView,
+    CompetitionSharingConsentView,
     CompetitionSwitchView,
     CompetitionTransferView,
 )
@@ -89,6 +90,11 @@ urlpatterns = [
         "game/competitions/<uuid:competition_id>/rotate-invite/",
         CompetitionRotateInviteView.as_view(),
         name="game-competition-rotate-invite",
+    ),
+    path(
+        "game/competitions/<uuid:competition_id>/sharing-consent/",
+        CompetitionSharingConsentView.as_view(),
+        name="game-competition-sharing-consent",
     ),
     path(
         "game/competitions/<uuid:competition_id>/leave/",

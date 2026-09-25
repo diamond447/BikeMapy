@@ -213,6 +213,11 @@ export const translations = {
     gameCompetitionLeave: 'Leave competition',
     gameCompetitionRename: 'Rename',
     gameCompetitionDelete: 'Delete competition',
+    gameCompetitionSharing: 'Activity sharing',
+    gameCompetitionSharingOff: 'Not shared',
+    gameCompetitionSharingOn: 'Shared with consenting members',
+    gameCompetitionSharingEnable: 'Share recent activities',
+    gameCompetitionSharingWithdraw: 'Withdraw sharing',
     gameMapKicker: 'Private game map',
     gameMapTitle: 'Ride together, privately.',
     gameMapDescription:
@@ -452,6 +457,11 @@ export const translations = {
     gameCompetitionLeave: 'Opustit soutěž',
     gameCompetitionRename: 'Přejmenovat',
     gameCompetitionDelete: 'Smazat soutěž',
+    gameCompetitionSharing: 'Sdílení aktivit',
+    gameCompetitionSharingOff: 'Nesdílíte',
+    gameCompetitionSharingOn: 'Sdíleno se souhlasícími členy',
+    gameCompetitionSharingEnable: 'Sdílet poslední aktivity',
+    gameCompetitionSharingWithdraw: 'Odvolat sdílení',
     gameMapKicker: 'Soukromá herní mapa',
     gameMapTitle: 'Jezděte spolu, soukromě.',
     gameMapDescription:

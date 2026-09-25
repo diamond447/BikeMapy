@@ -15,22 +15,25 @@ from rest_framework.throttling import BaseThrottle
 
 from apps.api.throttling import CompetitionInviteThrottle, PlayerSessionThrottle
 
-from .activity_api import activity_payload
 from .competition_services import (
     CompetitionError,
+    competition_member_label,
     create_competition,
     delete_competition,
+    grant_sharing_consent,
     join_competition,
     leave_competition,
     remove_member,
     rename_competition,
     rotate_invite_code,
     set_member_color,
+    sharing_is_active,
     switch_competition,
     transfer_ownership,
+    withdraw_sharing_consent,
 )
 from .game_api import GameEndpoint, _private
-from .models import Competition, CompetitionMembership, ImportedActivity, Player
+from .models import Competition, CompetitionMembership, Player
 from .services import competition_is_available
 
 
@@ -40,13 +43,6 @@ class CompetitionMemberSerializer(serializers.Serializer[dict[str, Any]]):
     nickname = serializers.CharField(allow_null=True)
     color = serializers.CharField()
     is_owner = serializers.BooleanField()
-
-
-class CompetitionActivitySerializer(serializers.Serializer[dict[str, Any]]):
-    id = serializers.UUIDField()
-    player_id = serializers.IntegerField()
-    calendar_date = serializers.DateField()
-    geometry = serializers.JSONField()
 
 
 class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -60,7 +56,9 @@ class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
     color = serializers.CharField()
     created_at = serializers.DateTimeField()
     members = CompetitionMemberSerializer(many=True)
-    activities = CompetitionActivitySerializer(many=True)
+    sharing_scope = serializers.ChoiceField(
+        choices=tuple(CompetitionMembership.SharingScope.values)
+    )
 
 
 class CompetitionsResponseSerializer(serializers.Serializer[dict[str, Any]]):
@@ -80,6 +78,15 @@ class CompetitionCreateSerializer(serializers.Serializer[dict[str, Any]]):
 class CompetitionJoinSerializer(serializers.Serializer[dict[str, Any]]):
     invite_code = serializers.CharField(max_length=32)
     color = serializers.CharField(max_length=7, required=False)
+
+
+class CompetitionSharingConsentSerializer(serializers.Serializer[dict[str, Any]]):
+    scope = serializers.ChoiceField(
+        choices=(
+            CompetitionMembership.SharingScope.RECENT,
+            CompetitionMembership.SharingScope.FULL_HISTORY,
+        )
+    )
 
 
 class CompetitionRenameSerializer(serializers.Serializer[dict[str, Any]]):
@@ -154,26 +161,23 @@ class CompetitionApi(GameEndpoint):
     @staticmethod
     def _payload(competition: Competition, player: Player) -> dict[str, Any]:
         membership = CompetitionMembership.objects.get(competition=competition, player=player)
-        members = [
-            {
-                "player_id": member.player_id,
-                "display_name": member.player.strava_display_name,
-                "nickname": member.player.nickname or None,
-                "color": member.color,
-                "is_owner": member.player_id == competition.owner_id,
-            }
-            for member in competition.memberships.select_related("player").order_by(
-                "joined_at", "pk"
-            )
-        ]
-        activities = [
-            activity_payload(activity)
-            for activity in ImportedActivity.objects.filter(
-                player__competition_memberships__competition=competition,
-            )
-            .order_by("calendar_date", "pk")
-            .distinct()
-        ]
+        members = (
+            [
+                {
+                    "player_id": member.player_id,
+                    "display_name": competition_member_label(member),
+                    "nickname": None,
+                    "color": member.color,
+                    "is_owner": member.player_id == competition.owner_id,
+                }
+                for member in competition.memberships.select_related("player")
+                .filter(sharing_consent_at__isnull=False)
+                .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
+                .order_by("joined_at", "pk")
+            ]
+            if sharing_is_active(membership)
+            else []
+        )
         return {
             "id": competition.pk,
             "name": competition.name,
@@ -185,7 +189,7 @@ class CompetitionApi(GameEndpoint):
             "color": membership.color,
             "created_at": competition.created_at,
             "members": members,
-            "activities": activities,
+            "sharing_scope": membership.sharing_scope,
         }
 
     def _response(self, competition: Competition, player: Player, *, code: int = 200) -> Response:
@@ -253,6 +257,49 @@ class CompetitionJoinView(CompetitionApi):
         serializer.is_valid(raise_exception=True)
         try:
             competition, _ = join_competition(player, **serializer.validated_data)
+        except CompetitionError as error:
+            return self._error(error)
+        return self._response(competition, player)
+
+
+class CompetitionSharingConsentView(CompetitionApi):
+    @extend_schema(
+        request=CompetitionSharingConsentSerializer,
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
+        tags=["game-competitions"],
+    )
+    def post(self, request: Any, competition_id: UUID) -> Response:
+        if (response := self._enabled()) is not None:
+            return response
+        player = self.player_or_401(request)
+        if isinstance(player, Response):
+            return player
+        competition = self._competition_or_none(competition_id)
+        if competition is None:
+            return Response({"detail": "Competition not found."}, status=404)
+        serializer = CompetitionSharingConsentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            grant_sharing_consent(player, competition, **serializer.validated_data)
+        except CompetitionError as error:
+            return self._error(error)
+        return self._response(competition, player)
+
+    @extend_schema(
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
+        tags=["game-competitions"],
+    )
+    def delete(self, request: Any, competition_id: UUID) -> Response:
+        if (response := self._enabled()) is not None:
+            return response
+        player = self.player_or_401(request)
+        if isinstance(player, Response):
+            return player
+        competition = self._competition_or_none(competition_id)
+        if competition is None:
+            return Response({"detail": "Competition not found."}, status=404)
+        try:
+            withdraw_sharing_consent(player, competition)
         except CompetitionError as error:
             return self._error(error)
         return self._response(competition, player)
