@@ -17,7 +17,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.accounts.models import Competition, ImportedActivity, Player
+from apps.accounts.models import Competition, CompetitionMembership, ImportedActivity, Player
 
 from .models import (
     CompletionStatus,
@@ -80,21 +80,43 @@ def _reset_completion_projection(completion: RouteCompletion) -> None:
     )
 
 
-def erase_activity_completion_data(activity_id: Any) -> None:
+def erase_activity_completion_data(activity_id: Any, *, player_id: int | None = None) -> None:
     """Erase activity-derived evidence and fence projections for privacy removal."""
 
     with transaction.atomic():
+        if player_id is None:
+            player_id = (
+                ImportedActivity.objects.filter(pk=activity_id)
+                .values_list("player_id", flat=True)
+                .first()
+            )
+        competition_ids = (
+            tuple(
+                CompetitionMembership.objects.filter(player_id=player_id)
+                .order_by("competition_id")
+                .values_list("competition_id", flat=True)
+            )
+            if player_id is not None
+            else ()
+        )
         completion_ids = list(
             RouteCompletionEvidence.objects.filter(activity_id=activity_id).values_list(
                 "completion_id", flat=True
             )
         )
-        if not completion_ids:
+        subject_filter = Q(pk__in=completion_ids)
+        if player_id is not None:
+            subject_filter |= Q(player_id=player_id)
+        if competition_ids:
+            subject_filter |= Q(competition_id__in=competition_ids)
+        completions = list(RouteCompletion.objects.filter(subject_filter).order_by("pk"))
+        if not completions:
             return
-        completions = list(RouteCompletion.objects.filter(pk__in=completion_ids).order_by("pk"))
         _fence_completion_jobs(completions)
         locked_completions = list(
-            RouteCompletion.objects.select_for_update().filter(pk__in=completion_ids).order_by("pk")
+            RouteCompletion.objects.select_for_update()
+            .filter(pk__in=[completion.pk for completion in completions])
+            .order_by("pk")
         )
         with allow_completion_evidence_erasure():
             RouteCompletionEvidence.objects.filter(activity_id=activity_id).delete()
@@ -124,23 +146,26 @@ def _fence_completion_jobs(completions: list[RouteCompletion]) -> None:
             & subject_filter
         )
     for job in RouteCompletionJob.objects.select_for_update().filter(job_query).order_by("pk"):
-        if job.status == RouteCompletionJob.Status.RUNNING:
-            job.status = RouteCompletionJob.Status.PENDING
-            job.lease_token = ""
-            job.lease_until = None
-            job.dispatch_token = ""
-            job.dispatch_lease_until = None
-            job.next_attempt_at = timezone.now()
-            job.save(
-                update_fields=(
-                    "status",
-                    "lease_token",
-                    "lease_until",
-                    "dispatch_token",
-                    "dispatch_lease_until",
-                    "next_attempt_at",
-                )
+        job.status = RouteCompletionJob.Status.PENDING
+        job.lease_token = ""
+        job.lease_until = None
+        job.dispatch_token = ""
+        job.dispatch_lease_until = None
+        job.next_attempt_at = timezone.now()
+        job.completed_at = None
+        job.error = ""
+        job.save(
+            update_fields=(
+                "status",
+                "lease_token",
+                "lease_until",
+                "dispatch_token",
+                "dispatch_lease_until",
+                "next_attempt_at",
+                "completed_at",
+                "error",
             )
+        )
 
 
 def erase_player_completion_data(player_id: int, competition_ids: Iterable[int] = ()) -> None:

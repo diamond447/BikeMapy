@@ -17,4 +17,4 @@ def erase_activity_completion_evidence(
     del sender, using, kwargs
     from .completion_services import erase_activity_completion_data
 
-    erase_activity_completion_data(instance.pk)
+    erase_activity_completion_data(instance.pk, player_id=instance.player_id)

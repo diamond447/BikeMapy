@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
@@ -34,6 +35,7 @@ from apps.reference_routes.models import (
     RouteCompletionEvidence,
     RouteCompletionJob,
     RouteCompletionMonthly,
+    allow_completion_evidence_erasure,
 )
 from apps.reference_routes.tasks import (
     _claim_completion_dispatch,
@@ -182,6 +184,31 @@ def test_disjoint_union_preserves_multiline_monthly_geometry_and_evidence_is_app
     before = RouteCompletionEvidence.objects.count()
     calculate_completion(version, CompletionSubject.PLAYER, player=player)
     assert RouteCompletionEvidence.objects.count() == before * 2
+
+
+@requires_gis_runtime
+def test_completion_evidence_erasure_context_only_allows_queryset_delete() -> None:
+    version = _version()
+    player = _player(23)
+    _activity(player, "context", [[14, 50], [14.02, 50]], date(2026, 5, 3))
+    calculate_completion(version, CompletionSubject.PLAYER, player=player)
+    evidence = RouteCompletionEvidence.objects.get()
+    with allow_completion_evidence_erasure():
+        with pytest.raises(ValidationError):
+            evidence.save()
+        with pytest.raises(ProtectedError):
+            evidence.delete()
+        with pytest.raises(ValidationError):
+            RouteCompletionEvidence.objects.filter(pk=evidence.pk).update(
+                provider_activity_id="changed"
+            )
+        with pytest.raises(ValidationError):
+            RouteCompletionEvidence.objects.bulk_update([evidence], ["provider_activity_id"])
+        with pytest.raises(ValidationError):
+            RouteCompletionEvidence.objects.bulk_create([evidence])
+        deleted, _ = RouteCompletionEvidence.objects.filter(pk=evidence.pk).delete()
+    assert deleted == 1
+    assert not RouteCompletionEvidence.objects.filter(pk=evidence.pk).exists()
 
 
 @requires_gis_runtime
@@ -415,6 +442,72 @@ def test_concurrent_completion_workers_have_one_effective_claim() -> None:
         results = list(executor.map(lambda _: run_worker(), range(2)))
     assert sorted(str(result["status"]) for result in results) == ["complete", "in_progress"]
     assert RouteCompletionEvidence.objects.filter(completion__route_version=version).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostGIS row locking")
+def test_activity_erasure_fences_worker_after_activity_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = _version()
+    owner = _player(21)
+    member = _player(22)
+    competition, _ = create_competition(owner, name="Erasure race")
+    CompetitionMembership.objects.create(competition=competition, player=member, color="#123456")
+    activity = _activity(owner, "race-delete", [[14, 50], [14.02, 50]], date(2026, 7, 1))
+    player_job = schedule_completion(
+        version, CompletionSubject.PLAYER, player=owner, reason="race-player"
+    )
+    competition_job = schedule_completion(
+        version, CompletionSubject.COMPETITION, competition=competition, reason="race-competition"
+    )
+
+    activity_read = threading.Event()
+    release_worker = threading.Event()
+    original_union = __import__(
+        "apps.reference_routes.completion_services", fromlist=["_union_coverage"]
+    )._union_coverage
+
+    def paused_union(*args: object, **kwargs: object) -> object:
+        result = original_union(*args, **kwargs)
+        activity_read.set()
+        assert release_worker.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr("apps.reference_routes.completion_services._union_coverage", paused_union)
+
+    def run_worker() -> dict[str, object]:
+        close_old_connections()
+        try:
+            return cast(
+                dict[str, object], calculate_route_completion.apply(args=[player_job.pk]).get()
+            )
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(run_worker)
+        assert activity_read.wait(timeout=10)
+        activity_id = activity.pk
+        activity.delete()
+        release_worker.set()
+        result = future.result(timeout=10)
+
+    assert result["status"] == "in_progress"
+    assert not RouteCompletionEvidence.objects.filter(activity_id=activity_id).exists()
+    for completion in RouteCompletion.objects.filter(
+        route_version=version, player=owner
+    ) | RouteCompletion.objects.filter(route_version=version, competition=competition):
+        completion.refresh_from_db()
+        assert completion.status == CompletionStatus.PENDING
+        assert completion.covered_length_meters == Decimal("0")
+        assert completion.completion_percent == Decimal("0")
+        assert completion.evidence_digest == ""
+    for job in (player_job, competition_job):
+        job.refresh_from_db()
+        assert job.status == RouteCompletionJob.Status.PENDING
+        assert job.lease_token == ""
+        assert job.dispatch_token == ""
 
 
 @override_settings(

@@ -907,8 +907,7 @@ class RouteCompletion(models.Model):
 
 class ImmutableCompletionEvidenceQuerySet(models.QuerySet["RouteCompletionEvidence"]):
     def update(self, **kwargs: object) -> int:
-        if _completion_evidence_erasure.get():
-            return super().update(**kwargs)
+        del kwargs
         raise ValidationError("Completion evidence is immutable and append-only.")
 
     def delete(self) -> tuple[int, dict[str, int]]:
@@ -917,8 +916,7 @@ class ImmutableCompletionEvidenceQuerySet(models.QuerySet["RouteCompletionEviden
         raise ProtectedError("Completion evidence is immutable and append-only.", set(self))
 
     def bulk_update(self, objs: Any, fields: Any, batch_size: int | None = None) -> int:
-        if _completion_evidence_erasure.get():
-            return super().bulk_update(objs, fields, batch_size=batch_size)
+        del objs, fields, batch_size
         raise ValidationError("Completion evidence is immutable and append-only.")
 
     def bulk_create(
@@ -930,15 +928,6 @@ class ImmutableCompletionEvidenceQuerySet(models.QuerySet["RouteCompletionEviden
         update_fields: Iterable[str] | None = None,
         unique_fields: Iterable[str] | None = None,
     ) -> list[RouteCompletionEvidence]:
-        if _completion_evidence_erasure.get():
-            return super().bulk_create(
-                objs,
-                batch_size=batch_size,
-                ignore_conflicts=ignore_conflicts,
-                update_conflicts=update_conflicts,
-                update_fields=set(update_fields) if update_fields is not None else None,
-                unique_fields=set(unique_fields) if unique_fields is not None else None,
-            )
         del objs, batch_size, ignore_conflicts, update_conflicts, update_fields, unique_fields
         raise ValidationError("Use the controlled evidence append service.")
 
@@ -980,9 +969,7 @@ class RouteCompletionEvidence(models.Model):
         return f"{self.completion_id}:{self.provider_activity_id}"
 
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
-        if (self.pk and not _completion_evidence_erasure.get()) or (
-            not self.pk and not _completion_evidence_append.get()
-        ):
+        if self.pk or not _completion_evidence_append.get():
             raise ValidationError("Completion evidence is immutable and append-only.")
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
