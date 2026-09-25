@@ -25,11 +25,23 @@ const STORAGE_KEY = 'bikemapy:game-map'
 const TRACE_PAGE_SIZE = 100
 const MAX_MAP_MEMBERS = 100
 export const MAX_RENDER_COORDINATES = 2_400
+export const MAX_ACTIVITY_INDEX_ENTRIES = 100_000
+export const MAX_ACTIVITY_INDEX_ENTRIES_PER_ACTIVITY = 256
+export const MAX_ACTIVITY_INDEX_FALLBACK_ACTIVITIES = 1_200
 const DEFAULT_VIEW = { longitude: 16.6, latitude: 49.2, zoom: 7.5 }
 
 export function normalizeLongitude(longitude: number): number {
   const normalized = ((((longitude + 180) % 360) + 360) % 360) - 180
   return normalized === -180 && longitude > 0 ? 180 : normalized
+}
+
+export function normalizeProjectedWorldX(
+  x: number,
+  referenceX: number,
+  worldWidth: number,
+): number {
+  if (!Number.isFinite(worldWidth) || worldWidth <= 0) return x
+  return x - Math.round((x - referenceX) / worldWidth) * worldWidth
 }
 
 export function normalizeMapBounds(bounds: {
@@ -108,6 +120,7 @@ type ActivitySpatialIndex = {
   cellSize: number
   cells: Map<string, Set<number>>
   activities: MapActivity[]
+  fallbackActivityIndexes: Set<number>
 }
 
 function lineParts(activity: MapActivity): number[][][] {
@@ -170,6 +183,8 @@ export function buildActivitySpatialIndex(
   cellSize = 1,
 ): ActivitySpatialIndex {
   const cells = new Map<string, Set<number>>()
+  const fallbackActivityIndexes = new Set<number>()
+  let indexedEntries = 0
   const longitudeCells = Math.ceil(360 / cellSize)
   const latitudeCells = Math.ceil(180 / cellSize)
   const add = (x: number, y: number, activityIndex: number) => {
@@ -197,12 +212,27 @@ export function buildActivitySpatialIndex(
         maximumLatitude = Math.max(maximumLatitude, latitude)
       }
     }
-    if (!Number.isFinite(minimumLongitude) || !Number.isFinite(minimumLatitude)) return
+    if (!Number.isFinite(minimumLongitude) || !Number.isFinite(minimumLatitude)) {
+      return
+    }
     const firstX = Math.floor((minimumLongitude + 180) / cellSize)
     const lastX = Math.floor((maximumLongitude + 180) / cellSize)
     const firstY = Math.floor((minimumLatitude + 90) / cellSize)
     const lastY = Math.floor((maximumLatitude + 90) / cellSize)
     const xCount = lastX - firstX + 1
+    const yCount = lastY - firstY + 1
+    const activityEntries = xCount * yCount
+    if (
+      activityEntries <= 0 ||
+      activityEntries > MAX_ACTIVITY_INDEX_ENTRIES_PER_ACTIVITY ||
+      indexedEntries + activityEntries > MAX_ACTIVITY_INDEX_ENTRIES
+    ) {
+      if (fallbackActivityIndexes.size < MAX_ACTIVITY_INDEX_FALLBACK_ACTIVITIES) {
+        fallbackActivityIndexes.add(activityIndex)
+      }
+      return
+    }
+    indexedEntries += activityEntries
     if (xCount >= longitudeCells) {
       for (let x = 0; x < longitudeCells; x += 1) {
         for (let y = firstY; y <= lastY; y += 1) add(x, y, activityIndex)
@@ -213,7 +243,7 @@ export function buildActivitySpatialIndex(
       }
     }
   })
-  return { cellSize, cells, activities }
+  return { cellSize, cells, activities, fallbackActivityIndexes }
 }
 
 export function nearestIndexedActivityId(
@@ -229,6 +259,7 @@ export function nearestIndexedActivityId(
   const centerY = Math.floor((point.lat + 90) / index.cellSize)
   const longitudeCells = Math.ceil(360 / index.cellSize)
   const candidates = new Set<number>()
+  for (const activityIndex of index.fallbackActivityIndexes) candidates.add(activityIndex)
   for (let xOffset = -radius; xOffset <= radius; xOffset += 1) {
     for (let yOffset = -radius; yOffset <= radius; yOffset += 1) {
       const key = `${(((centerX + xOffset) % longitudeCells) + longitudeCells) % longitudeCells}:${Math.max(
@@ -826,6 +857,10 @@ export default function GameApp() {
         }
         const context = overlay.getContext('2d')
         if (!context) return
+        const worldWidth = Math.abs(
+          instance.project({ lng: 180, lat: 0 }).x - instance.project({ lng: -180, lat: 0 }).x,
+        )
+        const viewportCenter = width / 2
         context.setTransform(scale, 0, 0, scale, 0, 0)
         context.clearRect(0, 0, width, height)
         const visible = new Set(visibleMemberIdsRef.current)
@@ -841,7 +876,16 @@ export default function GameApp() {
             drawWrappedLine(
               context,
               line.map((coordinate) =>
-                instance.project({ lng: coordinate[0] ?? 0, lat: coordinate[1] ?? 0 }),
+                (() => {
+                  const projected = instance.project({
+                    lng: coordinate[0] ?? 0,
+                    lat: coordinate[1] ?? 0,
+                  })
+                  return {
+                    x: normalizeProjectedWorldX(projected.x, viewportCenter, worldWidth),
+                    y: projected.y,
+                  }
+                })(),
               ),
               width,
             )

@@ -16,6 +16,7 @@ from rest_framework.throttling import BaseThrottle
 from apps.api.throttling import CompetitionInviteThrottle, PlayerSessionThrottle
 
 from .competition_services import (
+    MAX_COMPETITION_MEMBERS,
     CompetitionError,
     competition_member_label,
     create_competition,
@@ -170,9 +171,9 @@ class CompetitionApi(GameEndpoint):
                 competition.memberships.select_related("player")
                 .filter(sharing_consent_at__isnull=False)
                 .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
-                .order_by("joined_at", "pk")[:101]
+                .order_by("joined_at", "pk")[: MAX_COMPETITION_MEMBERS + 1]
             )
-            members_truncated = len(member_rows) > 100
+            members_truncated = len(member_rows) > MAX_COMPETITION_MEMBERS
             members = [
                 {
                     "player_id": member.player_id,
@@ -181,7 +182,7 @@ class CompetitionApi(GameEndpoint):
                     "color": member.color,
                     "is_owner": member.player_id == competition.owner_id,
                 }
-                for member in member_rows[:100]
+                for member in member_rows[:MAX_COMPETITION_MEMBERS]
             ]
         else:
             members = []

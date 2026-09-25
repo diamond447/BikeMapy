@@ -262,6 +262,48 @@ def test_map_caps_dense_activity_results_deterministically() -> None:
 
 
 @override_settings(**SETTINGS)
+def test_map_fairly_reserves_candidate_budget_for_each_member() -> None:
+    owner = make_player(110)
+    member = make_player(111)
+    competition, owner_membership = create_competition(owner, name="Fair dense map")
+    _, member_membership = join_competition(member, invite_code=competition.invite_code)
+    consent(owner_membership)
+    consent(member_membership)
+    geometry = line_geometry([(14.1, 49.1), (14.2, 49.2)])
+    ImportedActivity.objects.bulk_create(
+        [
+            ImportedActivity(
+                player=owner,
+                provider_activity_id=f"noisy-{index:04d}",
+                calendar_date="2026-09-21",
+                geometry=geometry,
+            )
+            for index in range(1_300)
+        ]
+        + [
+            ImportedActivity(
+                player=member,
+                provider_activity_id="quiet-member",
+                calendar_date="2026-09-21",
+                geometry=geometry,
+            )
+        ],
+        batch_size=500,
+    )
+
+    payload = (
+        session_client(owner)
+        .get(reverse("game-competition-map", args=[competition.pk]), viewport())
+        .json()
+    )
+    by_player: dict[int, int] = {}
+    for activity in payload["activities"]:
+        by_player[activity["player_id"]] = by_player.get(activity["player_id"], 0) + 1
+    assert by_player[owner.pk] == competition_map_api.MAX_FEATURES_PER_MEMBER
+    assert by_player[member.pk] == 1
+
+
+@override_settings(**SETTINGS)
 def test_map_caps_member_ids_and_metadata_before_activity_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

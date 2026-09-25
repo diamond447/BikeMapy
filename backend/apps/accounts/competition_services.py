@@ -41,6 +41,7 @@ DEFAULT_COLORS = (
 MIN_COLOR_DELTA_E = 18.0
 MAX_DISPATCH_ATTEMPTS = 5
 MAX_INVITE_ATTEMPTS = 5
+MAX_COMPETITION_MEMBERS = 100
 DISPATCH_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
 SHARING_SCOPES = frozenset(
     {
@@ -559,6 +560,14 @@ def join_competition(
         raise CompetitionError("That invite code is not valid.", code="invalid_invite") from exc
     if CompetitionMembership.objects.filter(competition=competition, player=player).exists():
         raise CompetitionError("You already belong to this competition.", code="already_member")
+    has_reached_member_limit = competition.memberships.values("pk")[
+        MAX_COMPETITION_MEMBERS - 1 : MAX_COMPETITION_MEMBERS
+    ].exists()
+    if has_reached_member_limit:
+        raise CompetitionError(
+            "This competition already has the maximum number of members.",
+            code="member_limit",
+        )
     colors = list(competition.memberships.values_list("color", flat=True))
     selected_color = normalize_color(color) if color is not None else available_color(colors)
     ensure_distinguishable(selected_color, colors)

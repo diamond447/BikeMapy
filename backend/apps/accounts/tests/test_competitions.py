@@ -150,6 +150,30 @@ def test_competition_list_caps_legacy_consenting_members() -> None:
 
 
 @override_settings(**SETTINGS)
+def test_join_rejects_the_101st_member_without_breaking_legacy_rosters() -> None:
+    owner = player(21_000)
+    competition, _ = create_competition(owner, name="Capped roster")
+    existing_players = [player(21_001 + index) for index in range(99)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=member,
+                color="#123456",
+            )
+            for member in existing_players
+        ]
+    )
+    candidate = player(21_100)
+
+    with pytest.raises(CompetitionError, match="maximum number") as error:
+        join_competition(candidate, invite_code=competition.invite_code)
+
+    assert error.value.code == "member_limit"
+    assert CompetitionMembership.objects.filter(competition=competition).count() == 100
+
+
+@override_settings(**SETTINGS)
 def test_sharing_consent_is_explicit_and_member_metadata_is_pseudonymous() -> None:
     owner = player(301)
     member = player(302)

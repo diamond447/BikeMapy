@@ -98,12 +98,14 @@ import {
   buildActivitySpatialIndex,
   featureCollection,
   drawWrappedLine,
+  MAX_ACTIVITY_INDEX_ENTRIES,
   MAX_RENDER_COORDINATES,
   memberFeatureCollection,
   memberFilter,
   nearestActivityId,
   nearestIndexedActivityId,
   normalizeMapBounds,
+  normalizeProjectedWorldX,
   visibleMapData,
 } from './GameApp'
 import { apiClient } from './api/client'
@@ -361,6 +363,8 @@ describe('private game map presentation', () => {
     expect(
       normalizeMapBounds({ west: 179.5, south: 48, east: 180.5, north: 50, zoom: 8 }),
     ).toMatchObject({ west: 179.5, east: -179.5 })
+    expect(normalizeProjectedWorldX(-499, 400, 1_000)).toBe(501)
+    expect(normalizeProjectedWorldX(501, 400, 1_000)).toBe(501)
     const bounded = normalizeMapBounds({ west: -200, south: 48, east: 200, north: 50, zoom: 8 })
     expect((bounded.east - bounded.west + 360) % 360).toBeLessThanOrEqual(120)
     const calls: string[] = []
@@ -388,6 +392,39 @@ describe('private game map presentation', () => {
       'line:1:20',
       'stroke',
     ])
+    calls.length = 0
+    drawWrappedLine(
+      context,
+      [
+        { x: normalizeProjectedWorldX(-499, 400, 1_000), y: 10 },
+        { x: 503, y: 20 },
+      ],
+      800,
+    )
+    expect(calls).toEqual(['begin', 'move:501:10', 'line:503:20', 'stroke'])
+  })
+
+  it('bounds adversarial wide-trace index construction and keeps fallback clicks exact', () => {
+    const activities = Array.from({ length: 1_200 }, (_, index) => ({
+      id: `wide-${index}`,
+      player_id: 7,
+      calendar_date: '2026-09-21',
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: [
+          [-60 + index * 0.0001, -45],
+          [60 + index * 0.0001, 45],
+        ],
+      },
+    }))
+    const index = buildActivitySpatialIndex(activities)
+    const cellEntries = [...index.cells.values()].reduce(
+      (total, cellSet) => total + cellSet.size,
+      0,
+    )
+    expect(cellEntries).toBeLessThanOrEqual(MAX_ACTIVITY_INDEX_ENTRIES)
+    expect(index.fallbackActivityIndexes.size).toBe(activities.length)
+    expect(nearestIndexedActivityId(index, [7], { lng: 0, lat: 0 }, 1)).toBe('wide-0')
   })
 
   it('loads, filters, and clears the private map through the visible controls', async () => {

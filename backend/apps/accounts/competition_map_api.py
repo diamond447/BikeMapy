@@ -13,7 +13,8 @@ from uuid import UUID
 
 from django.core.exceptions import ValidationError
 from django.db import connection
-from django.db.models import Q
+from django.db.models import F, Q, Window
+from django.db.models.functions import RowNumber
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
@@ -22,6 +23,7 @@ from rest_framework.response import Response
 
 from .activity_services import geometry_payload
 from .competition_services import (
+    MAX_COMPETITION_MEMBERS,
     authorized_activity_queryset,
     competition_member_label,
     sharing_is_active,
@@ -35,7 +37,7 @@ MAX_FEATURES_PER_MEMBER = 240
 MAX_COORDINATES = 120_000
 MAX_SOURCE_COORDINATES = 4_000
 MAX_RESPONSE_BYTES = 4_000_000
-MAX_MEMBERS = 100
+MAX_MEMBERS = MAX_COMPETITION_MEMBERS
 MAX_MEMBER_METADATA_BYTES = 64_000
 MIN_ZOOM = 0
 MAX_ZOOM = 22
@@ -363,6 +365,26 @@ def _member_payload(membership: CompetitionMembership, competition: Competition)
     }
 
 
+def _ranked_candidate_queryset(queryset: Any) -> Any:
+    return queryset.annotate(
+        member_rank=Window(
+            expression=RowNumber(),
+            partition_by=[F("player_id")],
+            order_by=[F("calendar_date").asc(nulls_last=True), F("pk").asc()],
+        )
+    )
+
+
+def _fair_candidate_queryset(queryset: Any, member_limit: int) -> Any:
+    """Bound each member before the global activity cap is applied."""
+
+    return (
+        _ranked_candidate_queryset(queryset)
+        .filter(member_rank__lte=member_limit)
+        .order_by("calendar_date", "pk")
+    )
+
+
 @extend_schema(
     parameters=MAP_PARAMETERS,
     responses={200: CompetitionMapResponseSerializer},
@@ -439,6 +461,10 @@ class CompetitionMapView(GameEndpoint):
         selected_memberships = [
             membership for membership in memberships if membership.player_id in selected_ids
         ]
+        candidate_member_limit = min(
+            MAX_FEATURES_PER_MEMBER,
+            math.ceil(MAX_FEATURES / max(1, len(selected_ids))),
+        )
         queryset = authorized_activity_queryset(
             ImportedActivity.objects.all(), selected_memberships
         ).order_by("calendar_date", "pk")
@@ -460,7 +486,15 @@ class CompetitionMapView(GameEndpoint):
                 .annotate(source_points=NumPoints("geometry"))
                 .filter(source_points__lte=MAX_SOURCE_COORDINATES)
             )
-            candidate_ids = set(clipped_candidates.values_list("pk", flat=True)[: MAX_FEATURES + 1])
+            ranked_candidates = _ranked_candidate_queryset(clipped_candidates)
+            candidate_overflow = ranked_candidates.filter(
+                member_rank=candidate_member_limit + 1
+            ).exists()
+            candidate_ids = set(
+                ranked_candidates.filter(member_rank__lte=candidate_member_limit).values_list(
+                    "pk", flat=True
+                )[: MAX_FEATURES + 1]
+            )
             candidate_count = len(candidate_ids)
             candidates: list[ImportedActivity] = []
             tolerance = max(0.5, 156543.03392804097 / (2**zoom) * 0.5)
@@ -476,7 +510,15 @@ class CompetitionMapView(GameEndpoint):
                     )[: MAX_FEATURES + 1]
                 )
         else:
-            candidates = list(queryset[: MAX_FEATURES + 1])
+            ranked_candidates = _ranked_candidate_queryset(queryset)
+            candidate_overflow = ranked_candidates.filter(
+                member_rank=candidate_member_limit + 1
+            ).exists()
+            candidates = list(
+                ranked_candidates.filter(member_rank__lte=candidate_member_limit).order_by(
+                    "calendar_date", "pk"
+                )[: MAX_FEATURES + 1]
+            )
             candidate_count = len(candidates)
         candidate_geometries: dict[UUID, tuple[ImportedActivity, list[Any]]] = {}
         for candidate in candidates:
@@ -488,7 +530,11 @@ class CompetitionMapView(GameEndpoint):
         activities: list[dict[str, Any]] = []
         member_feature_counts: dict[int, int] = {}
         coordinate_count = 0
-        truncated = candidate_count > MAX_FEATURES or len(candidate_geometries) > MAX_FEATURES
+        truncated = (
+            candidate_overflow
+            or candidate_count > MAX_FEATURES
+            or len(candidate_geometries) > MAX_FEATURES
+        )
         for activity, geometries in candidate_geometries.values():
             if len(activities) >= MAX_FEATURES:
                 truncated = True
