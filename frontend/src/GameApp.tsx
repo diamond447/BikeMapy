@@ -22,6 +22,7 @@ type MapResponse = components['schemas']['CompetitionMapResponse']
 type MapActivity = components['schemas']['CompetitionMapActivity']
 
 const STORAGE_KEY = 'bikemapy:game-map'
+const TRACE_PAGE_SIZE = 100
 const DEFAULT_VIEW = { longitude: 16.6, latitude: 49.2, zoom: 7.5 }
 function readPrivateState(): { competitionId?: string; members?: number[] } {
   try {
@@ -197,6 +198,7 @@ export default function GameApp() {
   const [error, setError] = useState<string | null>(null)
   const [signedOut, setSignedOut] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const [traceListLimit, setTraceListLimit] = useState(TRACE_PAGE_SIZE)
   const [mapReady, setMapReady] = useState(false)
   const traceCloseRef = useRef<HTMLButtonElement>(null)
   const traceButtonRefs = useRef(new Map<string, HTMLButtonElement>())
@@ -238,6 +240,7 @@ export default function GameApp() {
     setMapData(null)
     setMapDataIncludesAllMembers(false)
     setSelectedTraceId(null)
+    setTraceListLimit(TRACE_PAGE_SIZE)
     setError(null)
     const instance = map.current
     if (!instance) return
@@ -468,6 +471,7 @@ export default function GameApp() {
       keyboard: true,
     })
     map.current = instance
+    let benchmarkInteraction: ((event: Event) => void) | undefined
     instance.addControl(new NavigationControl({ showCompass: true }), 'top-right')
     instance.addControl(new AttributionControl({ customAttribution: MAP_PROVIDER.attribution }))
     instance.on('moveend', () => {
@@ -485,7 +489,7 @@ export default function GameApp() {
     instance.on('load', () => {
       mapLoaded.current = true
       if (benchmarkFullUpdate) {
-        instance.jumpTo({ center: [14.5, 49.5], zoom: 8.5 })
+        instance.jumpTo({ center: [14.5, 49], zoom: 8.5 })
       }
       const current = instance.getBounds()
       bounds.current = {
@@ -518,14 +522,14 @@ export default function GameApp() {
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       })
       setMapReady(true)
-      instance.on('click', 'private-traces-visual', (event) => {
+      const selectActivityAtPoint = (point: { lng: number; lat: number }) => {
         const interactionSequence = mapMeasureSequence.current++
         const interactionStart = `game-map-lazy-interaction-${interactionSequence}`
         performance.mark(interactionStart)
         const id = nearestActivityId(
           mapInteractionActivitiesRef.current,
           visibleMemberIdsRef.current,
-          event.lngLat,
+          point,
         )
         if (id) {
           originatingTraceRef.current = id
@@ -537,7 +541,17 @@ export default function GameApp() {
         } else {
           performance.clearMarks(interactionStart)
         }
+      }
+      instance.on('click', 'private-traces-visual', (event) => {
+        selectActivityAtPoint(event.lngLat)
       })
+      benchmarkInteraction = (event: Event) => {
+        const point = (event as CustomEvent<{ lng: number; lat: number }>).detail
+        if (point) selectActivityAtPoint(point)
+      }
+      if (benchmarkFullUpdate) {
+        window.addEventListener('bikemapy:benchmark-map-click', benchmarkInteraction)
+      }
       instance.on('mouseenter', 'private-traces-visual', (event) => {
         const playerId = event.features?.[0]?.properties?.player_id
         instance.getCanvas().style.cursor = visibleMemberIdsRef.current.includes(Number(playerId))
@@ -562,6 +576,9 @@ export default function GameApp() {
       fullMapDataRef.current = null
       fullMapRequestKey.current = null
       mapInteractionActivitiesRef.current = []
+      if (benchmarkFullUpdate && benchmarkInteraction) {
+        window.removeEventListener('bikemapy:benchmark-map-click', benchmarkInteraction)
+      }
       setMapDataIncludesAllMembers(false)
       if (mapLoadTimer.current !== null) window.clearTimeout(mapLoadTimer.current)
       mapLoadTimer.current = null
@@ -603,7 +620,7 @@ export default function GameApp() {
   }, [mapDataIncludesAllMembers, selectedTraceId, traceActivities, visibleMembers])
   const traceButtons = useMemo(
     () =>
-      traceActivities.map((activity) => (
+      traceActivities.slice(0, traceListLimit).map((activity) => (
         <button
           type="button"
           key={activity.id}
@@ -631,7 +648,13 @@ export default function GameApp() {
           <span>{activity.calendar_date ?? copy.gameMapDateUnknown}</span>
         </button>
       )),
-    [copy.gameMapDateUnknown, selectedCompetition, selectedTraceId, traceActivities],
+    [
+      copy.gameMapDateUnknown,
+      selectedCompetition,
+      selectedTraceId,
+      traceActivities,
+      traceListLimit,
+    ],
   )
   const traceListRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -744,12 +767,22 @@ export default function GameApp() {
                 </p>
               )}
               {mapData && mapData.activities.length > 0 && (
-                <div className="game-trace-list" aria-label={copy.gameMapTraceList}>
-                  <h2>{copy.gameMapTraceList}</h2>
-                  <div ref={traceListRef} className="game-trace-viewport">
+                <section className="game-trace-list" aria-labelledby="game-trace-list-title">
+                  <h2 id="game-trace-list-title">{copy.gameMapTraceList}</h2>
+                  <div id="game-trace-viewport" ref={traceListRef} className="game-trace-viewport">
                     {traceButtons}
                   </div>
-                </div>
+                  {traceListLimit < traceActivities.length && (
+                    <button
+                      type="button"
+                      className="game-map-more-traces"
+                      aria-controls="game-trace-viewport"
+                      onClick={() => setTraceListLimit((limit) => limit + TRACE_PAGE_SIZE)}
+                    >
+                      {copy.gameMapShowMore}
+                    </button>
+                  )}
+                </section>
               )}
             </>
           )}

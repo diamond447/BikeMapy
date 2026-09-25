@@ -46,10 +46,11 @@ waits for the initial map and then toggles a member filter 30 times on that
 same page in an opt-in `benchmark=full-update` mode. Every sample forces a new
 authorized map response and measures grouped visual `setData`, source
 parse/load, a render, and one animation frame. The browser probe also performs
-30 real map-line clicks and records the lazy nearest-activity selection through
-the visible trace-detail render as `browser_lazy_interaction_ms`. The normal
-cached filter path is not the acceptance measurement; it may be reported
-separately as a diagnostic.
+30 authorized lazy selections at a known trace coordinate through the same
+nearest-activity path used by map clicks, and records the visible trace-detail
+render as `browser_lazy_interaction_ms`. This avoids making the lazy timing
+depend on canvas hit-raster variability. The normal cached filter path is not
+the acceptance measurement; it may be reported separately as a diagnostic.
 These budgets are deployment targets tied to the response limits, not
 thresholds changed to fit one run.
 

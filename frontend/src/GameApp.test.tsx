@@ -99,6 +99,7 @@ import GameApp from './GameApp'
 
 afterEach(() => {
   cleanup()
+  window.sessionStorage.clear()
   vi.restoreAllMocks()
 })
 
@@ -305,5 +306,66 @@ describe('private game map presentation', () => {
     await user.click(member)
     expect(member).not.toBeChecked()
     expect(translations.en.gameMapTitle).toBe('Ride together, privately.')
+  })
+
+  it('keeps all traces reachable through the accessible load-more window', async () => {
+    const competition = {
+      id: 'competition-many-traces',
+      name: 'Many rides',
+      invite_code: 'MANY234567',
+      owner_player_id: 7,
+      is_owner: true,
+      is_active: true,
+      is_selected: true,
+      color: '#F4B942',
+      created_at: '2026-09-21T00:00:00Z',
+      sharing_scope: 'recent',
+      members: [
+        { player_id: 7, display_name: 'Rider', nickname: null, color: '#F4B942', is_owner: true },
+      ],
+    }
+    const activities = Array.from({ length: 101 }, (_, index) => ({
+      id: `activity-${index + 1}`,
+      player_id: 7,
+      calendar_date: '2026-01-01',
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: [
+          [14 + index * 0.001, 49],
+          [14.1 + index * 0.001, 49.1],
+        ],
+      },
+    }))
+    vi.spyOn(apiClient, 'GET').mockImplementation(((path: string) => {
+      if (path.includes('/map/'))
+        return Promise.resolve({
+          data: {
+            status: 'loaded' as const,
+            competition_id: competition.id,
+            members: competition.members,
+            activities,
+            truncated: false,
+            limits: { max_features: 1200, max_coordinates: 120000 },
+          },
+          response: new Response(),
+        })
+      return Promise.resolve({
+        data: { competitions: [competition], active_competition_id: competition.id },
+        response: new Response(),
+      })
+    }) as never)
+
+    const user = userEvent.setup()
+    render(<GameApp />)
+    await waitFor(() => expect(screen.getByText('Traces in this view')).toBeInTheDocument())
+
+    const traceList = screen.getByRole('region', { name: 'Traces in this view' })
+    expect(traceList.querySelectorAll('button[data-player-id]')).toHaveLength(100)
+    const showMore = screen.getByRole('button', { name: 'Show more traces' })
+    expect(showMore).toHaveAttribute('aria-controls', 'game-trace-viewport')
+    await user.click(showMore)
+    expect(traceList.querySelectorAll('button[data-player-id]')).toHaveLength(101)
+    expect(screen.getAllByRole('button', { name: '2026-01-01' })).toHaveLength(101)
+    expect(screen.queryByRole('button', { name: 'Show more traces' })).not.toBeInTheDocument()
   })
 })
