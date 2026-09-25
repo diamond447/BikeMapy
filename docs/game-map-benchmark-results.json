@@ -1,6 +1,6 @@
 {
-  "measured_at_utc": "2026-09-25T14:45:33.090203+00:00",
-  "revision": "d4e837c95d654c9bdcc418504dc049addc41995e",
+  "measured_at_utc": "2026-09-25T16:24:50.877107+00:00",
+  "revision": "6a1e2ca81fde1d265aa2bb9b5bbecb42e705bffc",
   "environment": {
     "database": "postgresql",
     "database_name": "bikemapy",
@@ -14,15 +14,15 @@
     "in_viewport_activities": 1200
   },
   "api_ms": {
-    "median": 906.1316595002609,
-    "p95": 1179.627645000437
+    "median": 920.2817139999979,
+    "p95": 1299.869266999849
   },
   "budgets_ms": {
     "api_p95": 1500.0,
     "browser_p95": 100.0
   },
   "browser_response_to_render_ms": {
-    "median": 196.6999999997206,
-    "p95": 227.09999999962747
+    "median": 194.70000000006985,
+    "p95": 260.0999999998603
   }
 }
