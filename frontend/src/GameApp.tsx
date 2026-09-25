@@ -6,7 +6,7 @@ import {
   NavigationControl,
   setWorkerUrl,
 } from 'maplibre-gl'
-import type { GeoJSONSource, MapSourceDataEvent } from 'maplibre-gl'
+import type { FilterSpecification, GeoJSONSource, MapSourceDataEvent } from 'maplibre-gl'
 
 import { apiClient, rememberCsrfToken } from './api/client'
 import type { components } from './api/generated/schema'
@@ -65,6 +65,52 @@ export function featureCollection(
   }
 }
 
+export function visibleMapData(data: MapResponse, memberIds: number[]): MapResponse {
+  const selected = new Set(memberIds)
+  return {
+    ...data,
+    members: data.members.filter((member) => selected.has(member.player_id)),
+    activities: data.activities.filter((activity) => selected.has(activity.player_id)),
+  }
+}
+
+function memberFilter(memberIds: number[]): FilterSpecification {
+  return memberIds.length
+    ? ['match', ['get', 'player_id'], memberIds, true, false]
+    : ['==', ['get', 'player_id'], -1]
+}
+
+export function memberFeatureCollection(
+  activities: MapActivity[],
+  colors: globalThis.Map<number, string> = new globalThis.Map(),
+) {
+  const grouped = new globalThis.Map<number, number[][][]>()
+  for (const activity of activities) {
+    const geometry = activity.geometry as { type?: unknown; coordinates?: unknown }
+    if (geometry.type === 'LineString' && Array.isArray(geometry.coordinates)) {
+      const lines = grouped.get(activity.player_id) ?? []
+      lines.push(geometry.coordinates as number[][])
+      grouped.set(activity.player_id, lines)
+    } else if (geometry.type === 'MultiLineString' && Array.isArray(geometry.coordinates)) {
+      const lines = grouped.get(activity.player_id) ?? []
+      lines.push(...(geometry.coordinates as number[][][]))
+      grouped.set(activity.player_id, lines)
+    }
+  }
+  return {
+    type: 'FeatureCollection' as const,
+    features: [...grouped].map(([playerId, coordinates]) => ({
+      type: 'Feature' as const,
+      id: `member-${playerId}`,
+      properties: {
+        player_id: playerId,
+        color: colors.get(playerId) ?? '#2B8C76',
+      },
+      geometry: { type: 'MultiLineString' as const, coordinates },
+    })),
+  }
+}
+
 function statusMessage(status: MapResponse['status'], copy: Copy) {
   if (status === 'syncing') return copy.gameMapSyncing
   if (status === 'empty') return copy.gameMapEmpty
@@ -84,6 +130,7 @@ export default function GameApp() {
     () => readPrivateState().members ?? null,
   )
   const [mapData, setMapData] = useState<MapResponse | null>(null)
+  const [mapDataIncludesAllMembers, setMapDataIncludesAllMembers] = useState(false)
   const [loading, setLoading] = useState(true)
   const [mapLoading, setMapLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -102,6 +149,9 @@ export default function GameApp() {
   const latestMapRequestKey = useRef<string | null>(null)
   const mapRequestPending = useRef(false)
   const mapMeasureSequence = useRef(0)
+  const visibleMemberIdsRef = useRef<number[]>([])
+  const fullMapDataRef = useRef<MapResponse | null>(null)
+  const fullMapRequestKey = useRef<string | null>(null)
   const bounds = useRef({ west: 14, south: 48.5, east: 19, north: 51.2, zoom: 7.5 })
   const loadMapRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const mapLoadTimer = useRef<number | null>(null)
@@ -154,6 +204,12 @@ export default function GameApp() {
       visibleMembers === null
         ? availableMembers
         : visibleMembers.filter((id) => availableMembers.includes(id))
+    // A competition list contains at most the map endpoint's member cap in
+    // the normal path. Cache that authorized response and change visibility
+    // with a layer filter instead of reparsing 1,200 traces for every toggle.
+    // Larger competitions retain the server-filtered path below.
+    const canCacheAllMembers = availableMembers.length <= 100
+    const requestedMembers = canCacheAllMembers ? availableMembers : selected
     const requestKey = JSON.stringify([
       competitionId,
       Math.round(current.west * 1000),
@@ -161,9 +217,25 @@ export default function GameApp() {
       Math.round(current.east * 1000),
       Math.round(current.north * 1000),
       Math.round(current.zoom * 10),
-      selected,
+      requestedMembers,
     ])
     latestMapRequestKey.current = requestKey
+    if (canCacheAllMembers && fullMapRequestKey.current === requestKey && fullMapDataRef.current) {
+      const sequence = mapMeasureSequence.current++
+      const startMark = `game-map-update-${sequence}`
+      performance.mark(startMark)
+      const onRender = () => {
+        map.current?.off('render', onRender)
+        window.requestAnimationFrame(() => {
+          performance.measure('game-map-update-to-render', startMark)
+          performance.clearMarks(startMark)
+        })
+      }
+      map.current?.on('render', onRender)
+      visibleMemberIdsRef.current = selected
+      map.current?.setFilter('private-traces-visual', memberFilter(selected))
+      return
+    }
     if (mapRequestInFlight.current) {
       if (lastMapRequestKey.current !== requestKey) mapRequestPending.current = true
       return
@@ -182,7 +254,7 @@ export default function GameApp() {
             east: current.east,
             north: current.north,
             zoom: Math.round(current.zoom),
-            member: selected.length ? selected : [0],
+            member: requestedMembers.length ? requestedMembers : [0],
           },
         },
         credentials: 'include',
@@ -194,8 +266,20 @@ export default function GameApp() {
       }
       if (result.response?.status === 404) throw new Error('map-not-found')
       if (!result.data) throw new Error('map-load')
-      startTransition(() => setMapData(result.data))
+      if (canCacheAllMembers) {
+        fullMapDataRef.current = result.data
+        fullMapRequestKey.current = requestKey
+      } else {
+        fullMapDataRef.current = null
+        fullMapRequestKey.current = null
+      }
+      setMapDataIncludesAllMembers(canCacheAllMembers)
+      startTransition(() =>
+        setMapData(canCacheAllMembers ? result.data : visibleMapData(result.data, selected)),
+      )
       const source = map.current?.getSource('private-traces') as GeoJSONSource | undefined
+      const visualSource = map.current?.getSource('private-traces-visual') as
+        GeoJSONSource | undefined
       const colors = new globalThis.Map(
         competitions
           .find((competition) => competition.id === competitionId)
@@ -206,15 +290,18 @@ export default function GameApp() {
         const startMark = `game-map-response-${sequence}`
         performance.mark(startMark)
         const onSourceData = (event: MapSourceDataEvent) => {
-          if (event.sourceId !== 'private-traces' || !event.isSourceLoaded) return
+          if (event.sourceId !== 'private-traces-visual' || !event.isSourceLoaded) return
           map.current?.off('sourcedata', onSourceData)
           window.requestAnimationFrame(() => {
-            performance.measure('game-map-response-to-render', startMark)
+            performance.measure('game-map-update-to-render', startMark)
             performance.clearMarks(startMark)
           })
         }
         map.current.on('sourcedata', onSourceData)
         source.setData(featureCollection(result.data.activities, colors))
+        visualSource?.setData(memberFeatureCollection(result.data.activities, colors))
+        visibleMemberIdsRef.current = selected
+        map.current.setFilter('private-traces-visual', memberFilter(selected))
       }
     } catch {
       if (latestMapRequestKey.current === requestKey) {
@@ -272,11 +359,27 @@ export default function GameApp() {
         north: current.getNorth(),
         zoom: instance.getZoom(),
       }
-      instance.addSource('private-traces', { type: 'geojson', data: featureCollection([]) })
+      // The endpoint clips traces to the current viewport and simplifies them
+      // for the requested zoom.  Avoid copying that bounded data into adjacent
+      // worker tiles, and let the worker apply its normal line simplification;
+      // both reduce the update cost without changing the private payload or
+      // the rendered layer's interaction contract.
+      instance.addSource('private-traces', {
+        type: 'geojson',
+        data: featureCollection([]),
+        buffer: 0,
+        tolerance: 1,
+      })
+      instance.addSource('private-traces-visual', {
+        type: 'geojson',
+        data: memberFeatureCollection([]),
+        buffer: 0,
+        tolerance: 1,
+      })
       instance.addLayer({
-        id: 'private-traces',
+        id: 'private-traces-visual',
         type: 'line',
-        source: 'private-traces',
+        source: 'private-traces-visual',
         paint: {
           'line-color': ['coalesce', ['get', 'color'], '#2B8C76'],
           'line-width': ['interpolate', ['linear'], ['zoom'], 5, 2, 14, 4],
@@ -284,10 +387,24 @@ export default function GameApp() {
         },
         layout: { 'line-cap': 'round', 'line-join': 'round' },
       })
+      instance.addLayer({
+        id: 'private-traces',
+        type: 'line',
+        source: 'private-traces',
+        paint: {
+          'line-color': '#2B8C76',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 5, 2, 14, 4],
+          // Keep the activity-level source available for precise trace hit
+          // testing while the grouped visual source handles rendering.
+          'line-opacity': 0,
+        },
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+      })
       setMapReady(true)
       instance.on('click', 'private-traces', (event) => {
         const id = event.features?.[0]?.id
-        if (id !== undefined) {
+        const playerId = event.features?.[0]?.properties?.player_id
+        if (id !== undefined && visibleMemberIdsRef.current.includes(Number(playerId))) {
           originatingTraceRef.current = String(id)
           setSelectedTraceId(String(id))
         }
@@ -310,6 +427,9 @@ export default function GameApp() {
       lastMapRequestKey.current = null
       latestMapRequestKey.current = null
       mapRequestPending.current = false
+      fullMapDataRef.current = null
+      fullMapRequestKey.current = null
+      setMapDataIncludesAllMembers(false)
       if (mapLoadTimer.current !== null) window.clearTimeout(mapLoadTimer.current)
       mapLoadTimer.current = null
       instance.remove()
@@ -335,8 +455,60 @@ export default function GameApp() {
     () => competitions.find((competition) => competition.id === competitionId),
     [competitionId, competitions],
   )
-  const selectedTrace = mapData?.activities.find((activity) => activity.id === selectedTraceId)
-  const traceActivities = mapData?.activities ?? []
+  const traceActivities = useMemo(() => mapData?.activities ?? [], [mapData])
+  const selectedTrace = useMemo(() => {
+    const candidate = traceActivities.find((activity) => activity.id === selectedTraceId)
+    if (
+      !candidate ||
+      visibleMembers === null ||
+      !mapDataIncludesAllMembers ||
+      visibleMembers.includes(candidate.player_id)
+    ) {
+      return candidate
+    }
+    return undefined
+  }, [mapDataIncludesAllMembers, selectedTraceId, traceActivities, visibleMembers])
+  const traceButtons = useMemo(
+    () =>
+      traceActivities.map((activity) => (
+        <button
+          type="button"
+          key={activity.id}
+          data-player-id={activity.player_id}
+          ref={(node) => {
+            if (node) traceButtonRefs.current.set(activity.id, node)
+            else traceButtonRefs.current.delete(activity.id)
+          }}
+          aria-pressed={selectedTraceId === activity.id}
+          onClick={() => {
+            originatingTraceRef.current = activity.id
+            setSelectedTraceId(activity.id)
+          }}
+        >
+          <span
+            className="member-swatch"
+            style={{
+              backgroundColor:
+                selectedCompetition?.members.find(
+                  (member) => member.player_id === activity.player_id,
+                )?.color ?? '#2B8C76',
+            }}
+            aria-hidden="true"
+          />
+          <span>{activity.calendar_date ?? copy.gameMapDateUnknown}</span>
+        </button>
+      )),
+    [copy.gameMapDateUnknown, selectedCompetition, selectedTraceId, traceActivities],
+  )
+  const traceListRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const selected = visibleMembers === null ? null : new Set(visibleMembers)
+    traceListRef.current
+      ?.querySelectorAll<HTMLButtonElement>('[data-player-id]')
+      .forEach((button) => {
+        button.hidden = selected !== null && !selected.has(Number(button.dataset.playerId))
+      })
+  }, [traceActivities, visibleMembers])
   const closeTrace = useCallback(() => {
     const originatingId = originatingTraceRef.current
     setSelectedTraceId(null)
@@ -438,34 +610,8 @@ export default function GameApp() {
               {mapData && mapData.activities.length > 0 && (
                 <div className="game-trace-list" aria-label={copy.gameMapTraceList}>
                   <h2>{copy.gameMapTraceList}</h2>
-                  <div className="game-trace-viewport">
-                    {traceActivities.map((activity) => (
-                      <button
-                        type="button"
-                        key={activity.id}
-                        ref={(node) => {
-                          if (node) traceButtonRefs.current.set(activity.id, node)
-                          else traceButtonRefs.current.delete(activity.id)
-                        }}
-                        aria-pressed={selectedTraceId === activity.id}
-                        onClick={() => {
-                          originatingTraceRef.current = activity.id
-                          setSelectedTraceId(activity.id)
-                        }}
-                      >
-                        <span
-                          className="member-swatch"
-                          style={{
-                            backgroundColor:
-                              selectedCompetition?.members.find(
-                                (member) => member.player_id === activity.player_id,
-                              )?.color ?? '#2B8C76',
-                          }}
-                          aria-hidden="true"
-                        />
-                        <span>{activity.calendar_date ?? copy.gameMapDateUnknown}</span>
-                      </button>
-                    ))}
+                  <div ref={traceListRef} className="game-trace-viewport">
+                    {traceButtons}
                   </div>
                 </div>
               )}

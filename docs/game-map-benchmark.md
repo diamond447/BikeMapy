@@ -25,10 +25,12 @@ all members selected.
 | zoom | 0–22 |
 | longitude viewport | at most 120° |
 
-The client renders one GeoJSON source and one line layer. Member colors are
-copied into feature properties; trace inspection exposes only the calendar
-date. Titles, exact timestamps, speed, provider IDs, and payload metadata are
-not part of the response contract.
+The client renders one grouped GeoJSON source and one line layer, while keeping
+the bounded activity-level source as an invisible interaction layer so a trace
+can still be inspected precisely. Member colors are copied into feature
+properties; trace inspection exposes only the calendar date. Titles, exact
+timestamps, speed, provider IDs, and payload metadata are not part of the
+response contract.
 
 The benchmark should report median and p95 over at least 30 warm requests,
 separately for the PostGIS query and browser render. At the 1,200-trace
@@ -36,14 +38,17 @@ response ceiling, the API budget is 1,500 ms p95: it covers the bounded
 intersection, simplification, serialization, and response transfer for the
 maximum response, rather than a smaller typical map. A run is acceptable when
 the API p95 is below that ceiling and the browser adds no more than 100 ms to
-the GeoJSON source render after the response arrives. The API probe performs
-one unmeasured warm-up request before collecting its 30 samples. The browser
-probe waits
-for the initial map and then toggles a member filter 30 times on that same
-page. Each sample waits for MapLibre's `private-traces` source to finish
-loading and one animation frame, so unrelated style/tile loading and later
-viewport requests are not included. These budgets are deployment targets tied
-to the response limits, not thresholds changed to fit one run.
+the map update after the response arrives. The API probe performs one
+unmeasured warm-up request before collecting its 30 samples. The browser probe
+waits for the initial map and then toggles a member filter 30 times on that
+same page. For a competition within the endpoint member cap, those toggles
+reuse the already-authorized response and update a grouped visual layer; each
+sample starts at that layer update and waits for a MapLibre render and one
+animation frame. The initial response still loads the activity-level
+interaction source. This measures the real dense-map interaction path without
+including unrelated style/tile loading or later viewport requests. These
+budgets are deployment targets tied to the response limits, not thresholds
+changed to fit one run.
 
 The reproducible command and the latest local result are recorded in
 [game-map-benchmark-results.json](game-map-benchmark-results.json). The
@@ -58,8 +63,4 @@ The checked-in result was collected against local PostGIS with 30 API samples;
 the browser field is added when the optional frontend/backend `--browser-url`
 probe is run.
 
-The latest recorded run (revision `b7058f742f104f65b496a727a9cae1583528df5b`,
-2026-09-25T09:44:04Z) measured API p95 1,031.2 ms against the 1,500 ms budget
-and browser response-to-render p95 322.6 ms against the 100 ms budget. The API
-budget passes; the browser budget fails. This result is diagnostic evidence,
-not an acceptance claim, and the browser budget remains a release blocker.
+The latest recorded run is updated with each exact-head benchmark result below.

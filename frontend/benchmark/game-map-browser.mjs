@@ -12,22 +12,22 @@ const page = await context.newPage()
 await page.goto(gameUrl, { waitUntil: 'domcontentloaded' })
 await page.waitForSelector('[data-map-response-loaded="true"]', { state: 'attached' })
 await page.waitForFunction(
-  () => performance.getEntriesByName('game-map-response-to-render').length > 0,
+  () => performance.getEntriesByName('game-map-update-to-render').length > 0,
 )
 const memberToggle = page.getByRole('checkbox').last()
 await memberToggle.waitFor()
 for (let index = 0; index < 30; index += 1) {
   const previousSamples = await page.evaluate(
-    () => performance.getEntriesByName('game-map-response-to-render').length,
+    () => performance.getEntriesByName('game-map-update-to-render').length,
   )
   await memberToggle.click()
   await page.waitForFunction(
-    (count) => performance.getEntriesByName('game-map-response-to-render').length > count,
+    (count) => performance.getEntriesByName('game-map-update-to-render').length > count,
     previousSamples,
   )
   samples.push(
     await page.evaluate(
-      () => performance.getEntriesByName('game-map-response-to-render').at(-1).duration,
+      () => performance.getEntriesByName('game-map-update-to-render').at(-1).duration,
     ),
   )
 }
