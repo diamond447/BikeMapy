@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Barrier, Event
 from time import monotonic
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.db import close_old_connections, connection
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from apps.accounts import services
 from apps.accounts.competition_services import (
     CompetitionError,
     create_competition,
@@ -20,6 +25,7 @@ from apps.accounts.competition_services import (
     remove_member,
     schedule_recomputation,
     set_member_color,
+    switch_competition,
     transfer_ownership,
 )
 from apps.accounts.models import (
@@ -30,6 +36,7 @@ from apps.accounts.models import (
     ImportedActivity,
     Player,
 )
+from apps.accounts.services import delete_player
 from apps.accounts.tasks import (
     dispatch_competition_recomputations_task,
     recompute_competition_results_task,
@@ -40,11 +47,17 @@ pytestmark = pytest.mark.django_db
 
 SETTINGS = {
     "GAME_ENABLED": True,
+    "COMPETITION_GAME_ENABLED": True,
     "STRAVA_OAUTH_CLIENT_ID": "client-id",
     "STRAVA_OAUTH_CLIENT_SECRET": "client-secret",
     "STRAVA_TOKEN_ENCRYPTION_KEY": "test-key",
     "STRAVA_IDENTITY_GUARD_KEY": "test-identity-key",
 }
+
+
+@pytest.fixture(autouse=True)
+def clear_throttle_cache() -> None:
+    cache.clear()
 
 
 def player(athlete_id: int) -> Player:
@@ -98,6 +111,194 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
 
     switched = member_client.post(reverse("game-competition-switch", args=[identifier]))
     assert switched.status_code == 200
+
+
+@override_settings(**{**SETTINGS, "COMPETITION_GAME_ENABLED": False})
+def test_competition_gate_does_not_disable_player_account_endpoints() -> None:
+    current = player(4)
+    client = authenticated_client(current)
+    assert client.get(reverse("game-player-account")).status_code == 200
+    assert client.get(reverse("game-competition-list")).status_code == 404
+
+
+@override_settings(**SETTINGS, GAME_PLAYER_RATE="1/minute", COMPETITION_INVITE_RATE="1/minute")
+def test_player_throttle_is_per_session_but_invite_guessing_is_per_ip() -> None:
+    owner = player(5)
+    first = player(6)
+    second = player(7)
+    competition, _ = create_competition(owner, name="Throttle")
+    first_client = authenticated_client(first)
+    second_client = authenticated_client(second)
+    assert first_client.get(reverse("game-competition-list")).status_code == 200
+    assert second_client.get(reverse("game-competition-list")).status_code == 200
+    cache.clear()
+    assert (
+        first_client.post(
+            reverse("game-competition-join"), {"invite_code": competition.invite_code}
+        ).status_code
+        == 200
+    )
+    assert (
+        second_client.post(
+            reverse("game-competition-join"), {"invite_code": competition.invite_code}
+        ).status_code
+        == 429
+    )
+
+
+@override_settings(**SETTINGS, COMPETITION_INVITE_RATE="1/minute")
+def test_invite_throttle_applies_with_authenticated_user_and_player_session() -> None:
+    owner = player(8)
+    member = player(9)
+    first, _ = create_competition(owner, name="First invite")
+    second, _ = create_competition(owner, name="Second invite")
+    client = authenticated_client(member)
+    client.force_login(member.user)
+
+    assert (
+        client.post(
+            reverse("game-competition-join"), {"invite_code": first.invite_code}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            reverse("game-competition-join"), {"invite_code": second.invite_code}
+        ).status_code
+        == 429
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locks")
+@pytest.mark.parametrize("operation", ("switch", "transfer"))
+@override_settings(**SETTINGS)
+def test_player_deletion_serializes_with_competition_player_operations(operation: str) -> None:
+    owner = player(80)
+    member = player(81)
+    competition, _ = create_competition(owner, name=f"Concurrent {operation}")
+    join_competition(member, invite_code=competition.invite_code)
+    barrier = Barrier(2)
+
+    def delete_owner() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=10)
+            delete_player(owner)
+        finally:
+            close_old_connections()
+
+    def change_competition() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=10)
+            if operation == "switch":
+                switch_competition(member, competition)
+            else:
+                transfer_ownership(owner, competition, member)
+        except (Competition.DoesNotExist, CompetitionError, Player.DoesNotExist, StopIteration):
+            # Either transaction may win; a deleted competition or owner is a
+            # valid outcome, while a database deadlock must still fail loudly.
+            pass
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(delete_owner), executor.submit(change_competition)]
+        for future in futures:
+            future.result(timeout=15)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locks")
+@pytest.mark.parametrize("operation", ("switch", "transfer"))
+@override_settings(**SETTINGS)
+def test_player_deletion_rechecks_membership_after_a_concurrent_join(
+    operation: str,
+) -> None:
+    owner = player(90)
+    target = player(91)
+    new_owner = player(92) if operation == "transfer" else None
+    competition, _ = create_competition(owner, name="Join during deletion")
+    if new_owner is not None:
+        join_competition(new_owner, invite_code=competition.invite_code)
+    snapshot_ready = Event()
+    join_finished = Event()
+    contention_started = Event()
+    original_snapshot = services._competition_ids_for_player
+
+    def synchronized_snapshot(player_id: int) -> list[object]:
+        result = original_snapshot(player_id)
+        if player_id == target.pk and not snapshot_ready.is_set():
+            snapshot_ready.set()
+            assert join_finished.wait(timeout=10)
+        return result
+
+    def delete_target() -> None:
+        close_old_connections()
+        try:
+            delete_player(target)
+        finally:
+            close_old_connections()
+
+    def contend() -> None:
+        close_old_connections()
+        try:
+            contention_started.set()
+            if operation == "switch":
+                switch_competition(target, competition)
+            else:
+                assert new_owner is not None
+                transfer_ownership(owner, competition, new_owner)
+        except (Competition.DoesNotExist, CompetitionError, Player.DoesNotExist, StopIteration):
+            pass
+        finally:
+            close_old_connections()
+
+    with patch.object(services, "_competition_ids_for_player", synchronized_snapshot):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future = executor.submit(delete_target)
+            assert snapshot_ready.wait(timeout=10)
+            join_competition(target, invite_code=competition.invite_code)
+            contention = executor.submit(contend)
+            assert contention_started.wait(timeout=10)
+            join_finished.set()
+            future.result(timeout=15)
+            contention.result(timeout=15)
+
+    competition.refresh_from_db()
+    assert not Player.objects.filter(pk=target.pk).exists()
+    assert not CompetitionMembership.objects.filter(competition=competition, player=target).exists()
+    job = CompetitionRecomputation.objects.get(competition=competition)
+    assert job.affected_player_id == target.pk
+    assert competition.revision == job.generation == 1
+
+
+@override_settings(**SETTINGS)
+def test_player_deletion_retry_exhaustion_rolls_back_safely() -> None:
+    owner = player(93)
+    target = player(94)
+    competition, _ = create_competition(owner, name="Retry exhaustion")
+    join_competition(target, invite_code=competition.invite_code)
+
+    snapshot_calls = 0
+
+    def always_changing_snapshot(player_id: int) -> list[object]:
+        nonlocal snapshot_calls
+        if player_id == target.pk:
+            snapshot_calls += 1
+            return [competition.pk] if snapshot_calls % 2 else []
+        return []
+
+    with patch.object(services, "_competition_ids_for_player", always_changing_snapshot):
+        with pytest.raises(RuntimeError, match="conflicted"):
+            delete_player(target)
+
+    assert Player.objects.filter(pk=target.pk).exists()
+    assert CompetitionMembership.objects.filter(competition=competition, player=target).exists()
+    competition.refresh_from_db()
+    assert competition.revision == 0
+    assert not CompetitionRecomputation.objects.filter(competition=competition).exists()
 
 
 @override_settings(**SETTINGS)

@@ -219,23 +219,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/game/competitions/{competition_id}/map/': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /** @description Return only date-labelled traces inside an authenticated viewport. */
-    get: operations['v1_game_competitions_map_retrieve']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/v1/game/competitions/{competition_id}/members/{player_id}/': {
     parameters: {
       query?: never
@@ -326,6 +309,54 @@ export interface paths {
     get?: never
     put?: never
     post: operations['v1_game_competitions_join_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_list']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/{route_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/{route_id}/completion/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_completion_retrieve']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -505,6 +536,15 @@ export interface components {
       /** Format: date-time */
       created_at: string
       members: components['schemas']['CompetitionMember'][]
+      activities: components['schemas']['CompetitionActivity'][]
+    }
+    CompetitionActivity: {
+      /** Format: uuid */
+      id: string
+      player_id: number
+      /** Format: date */
+      calendar_date: string
+      geometry: unknown
     }
     CompetitionCreate: {
       name: string
@@ -520,35 +560,6 @@ export interface components {
     CompetitionJoin: {
       invite_code: string
       color?: string
-    }
-    CompetitionMapActivity: {
-      /** Format: uuid */
-      id: string
-      player_id: number
-      /** Format: date */
-      calendar_date: string | null
-      geometry: unknown
-    }
-    CompetitionMapMember: {
-      player_id: number
-      display_name: string
-      nickname: string | null
-      color: string
-      is_owner: boolean
-    }
-    CompetitionMapResponse: {
-      status: components['schemas']['StatusEnum']
-      /** Format: uuid */
-      competition_id: string
-      members: components['schemas']['CompetitionMapMember'][]
-      activities: components['schemas']['CompetitionMapActivity'][]
-      truncated: boolean
-      limits: {
-        [key: string]: number
-      }
-      bounds: {
-        [key: string]: number
-      }
     }
     CompetitionMember: {
       player_id: number
@@ -567,6 +578,18 @@ export interface components {
       competitions: components['schemas']['Competition'][]
       /** Format: uuid */
       active_competition_id: string | null
+    }
+    CompletionProjection: {
+      status: string
+      /** Format: decimal */
+      total_length_meters: string
+      /** Format: decimal */
+      covered_length_meters: string
+      /** Format: decimal */
+      completion_percent: string
+      /** Format: date-time */
+      calculated_at: string | null
+      error: string
     }
     ElevationProfilePoint: {
       /** Format: double */
@@ -603,6 +626,19 @@ export interface components {
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
+    PaginatedReferenceRouteListList: {
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cD00ODY%3D"
+       */
+      next?: string | null
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+       */
+      previous?: string | null
+      results: components['schemas']['ReferenceRouteList'][]
+    }
     PaginatedRouteList: {
       /** @example 123 */
       count: number
@@ -637,10 +673,18 @@ export interface components {
       lifecycle: string
       /** Format: date-time */
       connected_at: string
+      competition_game_enabled: boolean
     }
     PlayerResponse: {
       player: components['schemas']['Player']
     }
+    /**
+     * @description * `pending` - Pending publication review
+     *     * `approved` - Approved
+     *     * `rejected` - Rejected
+     * @enum {string}
+     */
+    PublicationStatusEnum: 'pending' | 'approved' | 'rejected'
     /**
      * @description * `incorrect_route` - Incorrect route
      *     * `source_attribution` - Source or attribution
@@ -651,6 +695,59 @@ export interface components {
      */
     ReasonEnum:
       'incorrect_route' | 'source_attribution' | 'author_removal' | 'rights_holder' | 'other'
+    ReferenceCompletion: {
+      /** Format: uuid */
+      route_id: string
+      version: number
+      player: components['schemas']['CompletionProjection'] | null
+      competition: components['schemas']['CompletionProjection'] | null
+      stages: {
+        [key: string]: unknown
+      }[]
+    }
+    ReferenceRoute: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+      readonly version: number
+      readonly version_attribution_metadata: {
+        [key: string]: unknown
+      }
+      readonly geometry: unknown
+      readonly stages: components['schemas']['ReferenceStage'][]
+    }
+    ReferenceRouteList: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+    }
+    ReferenceStage: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      readonly geometry: unknown
+      readonly attribution: {
+        [key: string]: unknown
+      }
+    }
     ReportSubmission: {
       reason: components['schemas']['ReasonEnum']
       message: string
@@ -713,13 +810,6 @@ export interface components {
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
     }
-    /**
-     * @description * `loaded` - loaded
-     *     * `empty` - empty
-     *     * `syncing` - syncing
-     * @enum {string}
-     */
-    StatusEnum: 'loaded' | 'empty' | 'syncing'
     StravaWebhookPayload: {
       object_type: string
       object_id: number
@@ -1527,34 +1617,6 @@ export interface operations {
       }
     }
   }
-  v1_game_competitions_map_retrieve: {
-    parameters: {
-      query: {
-        east: number
-        member?: number[]
-        north: number
-        south: number
-        west: number
-        zoom: number
-      }
-      header?: never
-      path: {
-        competition_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CompetitionMapResponse']
-        }
-      }
-    }
-  }
   v1_game_competitions_members_destroy: {
     parameters: {
       query?: never
@@ -1937,6 +1999,86 @@ export interface operations {
       }
     }
   }
+  v1_game_reference_routes_list: {
+    parameters: {
+      query?: {
+        cursor?: string
+        page_size?: number
+        route_number?: string
+        source?: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PaginatedReferenceRouteListList']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceRoute']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_completion_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceCompletion']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Reference route not found. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
   v1_game_webhooks_strava_retrieve: {
     parameters: {
       query?: never
@@ -1993,13 +2135,6 @@ export interface operations {
       }
       /** @description Invalid Strava event. */
       400: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Unknown Strava athlete. */
-      404: {
         headers: {
           [name: string]: unknown
         }

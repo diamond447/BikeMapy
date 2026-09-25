@@ -254,6 +254,11 @@ def schedule_recomputation(
         generation=competition.revision,
         defaults={"affected_player_id": affected_player_id},
     )
+    from apps.reference_routes.completion_services import schedule_competition_completions
+
+    schedule_competition_completions(
+        competition, reason="competition-membership-or-activity-change"
+    )
     return job
 
 
@@ -267,6 +272,9 @@ def create_competition(
     membership = CompetitionMembership.objects.create(
         competition=competition, player=player, color=selected_color
     )
+    from apps.reference_routes.completion_services import schedule_competition_completions
+
+    schedule_competition_completions(competition, reason="competition-created")
     if player.active_competition_id is None:
         Player.objects.filter(pk=player.pk).update(active_competition=competition)
         player.active_competition = competition
@@ -291,6 +299,9 @@ def join_competition(
     membership = CompetitionMembership.objects.create(
         competition=competition, player=player, color=selected_color
     )
+    from apps.reference_routes.completion_services import schedule_competition_completions
+
+    schedule_competition_completions(competition, reason="competition-member-joined")
     if player.active_competition_id is None:
         Player.objects.filter(pk=player.pk).update(active_competition=competition)
         player.active_competition = competition

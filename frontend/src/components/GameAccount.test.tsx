@@ -14,6 +14,7 @@ const player = {
   nickname: 'Ada',
   lifecycle: 'connected',
   connected_at: '2026-09-20T09:00:00Z',
+  competition_game_enabled: false,
 } as const
 
 function response(status: number, headers?: Record<string, string>) {
@@ -104,6 +105,19 @@ describe('GameAccount', () => {
     )
     expect(await screen.findByText(/you are logged out/i)).toBeInTheDocument()
     expect(get).toHaveBeenCalledWith('/api/v1/game/auth/session/', expect.anything())
+  })
+
+  it('does not render competition controls when the server gate is closed', async () => {
+    vi.spyOn(apiClient, 'GET').mockResolvedValue({
+      data: { player },
+      error: undefined,
+      response: response(200),
+    } as never)
+
+    render(<GameAccount copy={translations.en} initialOpen />)
+
+    await screen.findByLabelText(/bikemapy nickname/i)
+    expect(screen.queryByRole('heading', { name: /^competitions$/i })).not.toBeInTheDocument()
   })
 
   it('requires confirmation before deleting an account and handles refresh loss', async () => {
