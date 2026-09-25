@@ -94,13 +94,15 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
             )
             job.save(update_fields=("lease_until",))
             active_memberships = list(
-                competition.memberships.filter(sharing_consent_at__isnull=False)
-                .exclude(sharing_scope="none")
+                competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
+                    sharing_scope="none"
+                )
             )
             active_players = {membership.player_id for membership in active_memberships}
             activities = list(
-                authorized_activity_queryset(ImportedActivity.objects.all(), active_memberships)
-                .order_by("pk")
+                authorized_activity_queryset(
+                    ImportedActivity.objects.all(), active_memberships
+                ).order_by("pk")
             )
             activity_ids = {activity.pk for activity in activities}
             CompetitionResult.objects.filter(competition=competition).exclude(

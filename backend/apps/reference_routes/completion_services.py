@@ -181,9 +181,7 @@ def reset_competition_completion_data(
     """
 
     with transaction.atomic():
-        completions = list(
-            RouteCompletion.objects.filter(competition=competition).order_by("pk")
-        )
+        completions = list(RouteCompletion.objects.filter(competition=competition).order_by("pk"))
         _fence_completion_jobs(completions)
         locked_completions = list(
             RouteCompletion.objects.select_for_update()
@@ -315,8 +313,9 @@ def _subject_activities(
         if competition is None:
             raise CompletionCalculationError("Competition completion subject is missing.")
         memberships = list(
-            competition.memberships.filter(sharing_consent_at__isnull=False)
-            .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
+            competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
+                sharing_scope=CompetitionMembership.SharingScope.NONE
+            )
         )
         query = authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
     if query.count() > limit:
