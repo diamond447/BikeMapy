@@ -20,6 +20,7 @@ import statistics
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -201,6 +202,8 @@ def main() -> None:
     session.save()
     api_samples = api_runs(client, competition)
     result: dict[str, object] = {
+        "measured_at_utc": datetime.now(UTC).isoformat(),
+        "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "environment": {
             "database": connection.vendor,
             "database_name": connection.settings_dict.get("NAME"),
@@ -226,6 +229,7 @@ def main() -> None:
             "in_viewport_activities": args.members * args.in_viewport_per_member,
         },
         "api_ms": {"median": statistics.median(api_samples), "p95": percentile(api_samples, 0.95)},
+        "budgets_ms": {"api_p95": API_BUDGET_MS, "browser_p95": BROWSER_BUDGET_MS},
     }
     if args.browser_url:
         browser_samples = browser_runs(
