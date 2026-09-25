@@ -10,7 +10,7 @@ await context.addCookies([{ name: 'sessionid', value: sessionKey, url: apiUrl }]
 const samples = []
 const page = await context.newPage()
 await page.goto(gameUrl, { waitUntil: 'domcontentloaded' })
-await page.waitForSelector('[data-map-response-loaded="true"]')
+await page.waitForSelector('[data-map-response-loaded="true"]', { state: 'attached' })
 await page.waitForFunction(
   () => performance.getEntriesByName('game-map-response-to-render').length > 0,
 )
