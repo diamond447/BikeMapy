@@ -63,4 +63,7 @@ The checked-in result was collected against local PostGIS with 30 API samples;
 the browser field is added when the optional frontend/backend `--browser-url`
 probe is run.
 
-The latest recorded run is updated with each exact-head benchmark result below.
+The exact-head run at revision `12de3b848e1482f63b0f3fa424e6ffb81c62b280`
+(2026-09-25T14:13:02Z) measured API p95 1,253.2 ms against the 1,500 ms
+budget and browser map-update-to-render p95 35.5 ms against the 100 ms budget.
+Both budgets pass for the 1,200-trace fixture.
