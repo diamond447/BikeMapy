@@ -147,6 +147,7 @@ class CompetitionMembership(models.Model):
         max_length=16, choices=SharingScope.choices, default=SharingScope.NONE
     )
     sharing_consent_at = models.DateTimeField(null=True, blank=True)
+    sharing_disclosure_version = models.CharField(max_length=32, blank=True)
     joined_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -161,6 +162,29 @@ class CompetitionMembership(models.Model):
 
     def __str__(self) -> str:
         return f"{self.player_id} in {self.competition_id}"
+
+
+class CompetitionSharingConsentAudit(models.Model):
+    """Durable, non-PII record of each competition sharing decision."""
+
+    class Action(models.TextChoices):
+        GRANTED = "granted", "Granted"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+
+    membership = models.ForeignKey(
+        CompetitionMembership, on_delete=models.CASCADE, related_name="sharing_audits"
+    )
+    action = models.CharField(max_length=16, choices=Action.choices)
+    scope = models.CharField(max_length=16, choices=CompetitionMembership.SharingScope.choices)
+    disclosure_version = models.CharField(max_length=32)
+    recorded_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ("-recorded_at", "-pk")
+        indexes = [models.Index(fields=("membership", "recorded_at"))]
+
+    def __str__(self) -> str:
+        return f"sharing-consent:{self.membership_id}:{self.action}:{self.recorded_at.isoformat()}"
 
 
 class ImportedActivity(models.Model):

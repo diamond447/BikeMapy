@@ -17,6 +17,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.accounts.competition_services import authorized_activity_queryset
 from apps.accounts.models import Competition, CompetitionMembership, ImportedActivity, Player
 
 from .models import (
@@ -168,6 +169,45 @@ def _fence_completion_jobs(completions: list[RouteCompletion]) -> None:
         )
 
 
+def reset_competition_completion_data(
+    competition: Competition, *, player_id: int | None = None
+) -> None:
+    """Synchronously erase competition evidence and fence in-flight workers.
+
+    A scope transition invalidates the entire union projection. Evidence from
+    the affected player is erased immediately; the queued rebuild recreates
+    only activities authorized by the new scope. Resetting the projection
+    before returning prevents stale completion values from being observable.
+    """
+
+    with transaction.atomic():
+        completions = list(
+            RouteCompletion.objects.filter(competition=competition).order_by("pk")
+        )
+        _fence_completion_jobs(completions)
+        locked_completions = list(
+            RouteCompletion.objects.select_for_update()
+            .filter(pk__in=[completion.pk for completion in completions])
+            .order_by("pk")
+        )
+        if player_id is None:
+            evidence_filter = Q(completion__in=locked_completions)
+        else:
+            evidence_filter = Q(
+                completion__in=locked_completions,
+                activity_player_id=player_id,
+            )
+        with allow_completion_evidence_erasure():
+            RouteCompletionEvidence.objects.filter(evidence_filter).delete()
+        for completion in locked_completions:
+            RouteCompletionMonthly.objects.filter(
+                route_version_id=completion.route_version_id,
+                subject_type=completion.subject_type,
+                competition_id=competition.pk,
+            ).delete()
+            _reset_completion_projection(completion)
+
+
 def erase_player_completion_data(player_id: int, competition_ids: Iterable[int] = ()) -> None:
     """Erase all derived completion values tied to a player before account deletion."""
 
@@ -274,15 +314,11 @@ def _subject_activities(
     else:
         if competition is None:
             raise CompletionCalculationError("Competition completion subject is missing.")
-        member_ids = (
+        memberships = list(
             competition.memberships.filter(sharing_consent_at__isnull=False)
-            .exclude(sharing_scope="none")
-            .values_list("player_id", flat=True)
+            .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
         )
-        query = ImportedActivity.objects.filter(
-            player_id__in=member_ids,
-            removed_at__isnull=True,
-        ).exclude(geometry__isnull=True)
+        query = authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
     if query.count() > limit:
         raise CompletionCalculationError(
             "Completion activity workload exceeds the configured limit."

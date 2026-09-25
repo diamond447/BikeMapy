@@ -11,8 +11,11 @@ from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 
+from apps.accounts.competition_services import sharing_is_active
 from apps.accounts.game_api import GameEndpoint, _private
-from apps.accounts.services import game_is_available
+from apps.accounts.models import CompetitionMembership
+from apps.accounts.services import competition_is_available
+from apps.api.reference_authorization import active_competition_for_player
 from apps.reference_routes.completion_services import PUBLIC_COMPLETION_ERROR_CODE
 from apps.reference_routes.models import (
     ReferencePublicationStatus,
@@ -70,11 +73,20 @@ def _projection(value: RouteCompletion | None) -> dict[str, Any]:
 )
 class ReferenceRouteCompletionView(GameEndpoint):
     def get(self, request: Any, route_id: UUID) -> Response:
-        if not game_is_available():
+        if not competition_is_available():
             return _private(Response({"detail": "The private game is unavailable."}, status=404))
         player = self.player_or_401(request)
         if isinstance(player, Response):
             return player
+        competition = active_competition_for_player(player)
+        if competition is None:
+            return _private(Response({"detail": "Reference route not found."}, status=404))
+        membership = CompetitionMembership.objects.filter(
+            competition=competition, player=player
+        ).first()
+        if membership is None:
+            return _private(Response({"detail": "Reference route not found."}, status=404))
+        sharing_active = sharing_is_active(membership)
         route = (
             ReferenceRoute.objects.filter(
                 pk=route_id,
@@ -97,7 +109,6 @@ class ReferenceRouteCompletionView(GameEndpoint):
             )
         ):
             return _private(Response({"detail": "Reference route not found."}, status=404))
-        competition = player.active_competition
         player_result = RouteCompletion.objects.filter(
             route_version=route.current_version, player=player
         ).first()
@@ -105,7 +116,7 @@ class ReferenceRouteCompletionView(GameEndpoint):
             RouteCompletion.objects.filter(
                 route_version=route.current_version, competition=competition
             ).first()
-            if competition is not None
+            if sharing_active
             else None
         )
         stages = []
@@ -118,7 +129,7 @@ class ReferenceRouteCompletionView(GameEndpoint):
             collection__active=True,
             collection__permission_granted=True,
         ).select_related("collection", "current_version", "current_version__source_import")
-        for stage in stages_query.order_by("route_number", "pk"):
+        for stage in stages_query.order_by("route_number", "pk") if sharing_active else ():
             version = stage.current_version
             if version is None or not has_publishable_reference_source(
                 stage.collection, version.source_import

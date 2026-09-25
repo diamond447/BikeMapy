@@ -21,7 +21,11 @@ from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
 
 from .activity_services import geometry_payload
-from .competition_services import competition_member_label, sharing_is_active
+from .competition_services import (
+    authorized_activity_queryset,
+    competition_member_label,
+    sharing_is_active,
+)
 from .game_api import GameEndpoint, _private
 from .models import Competition, CompetitionMembership, ImportedActivity, Player
 from .services import competition_is_available
@@ -432,10 +436,11 @@ class CompetitionMapView(GameEndpoint):
                     status=413,
                 )
             )
-        queryset = ImportedActivity.objects.filter(
-            player_id__in=selected_ids,
-            removed_at__isnull=True,
-            geometry__isnull=False,
+        selected_memberships = [
+            membership for membership in memberships if membership.player_id in selected_ids
+        ]
+        queryset = authorized_activity_queryset(
+            ImportedActivity.objects.all(), selected_memberships
         ).order_by("calendar_date", "pk")
         if connection.vendor == "postgresql":
             from django.contrib.gis.db.models.functions import (

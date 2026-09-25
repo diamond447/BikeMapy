@@ -22,6 +22,8 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
   const [newColor, setNewColor] = useState('#E45756')
   const [renameId, setRenameId] = useState<string | null>(null)
   const [rename, setRename] = useState('')
+  const [sharingScope, setSharingScope] = useState<'recent' | 'full_history'>('recent')
+  const [sharingConfirmed, setSharingConfirmed] = useState(false)
 
   const load = useCallback(async (): Promise<boolean> => {
     setLoading(true)
@@ -51,6 +53,12 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
     const timer = window.setTimeout(() => void load(), 0)
     return () => window.clearTimeout(timer)
   }, [load])
+
+  useEffect(() => {
+    const scope = competitions.find((competition) => competition.is_selected)?.sharing_scope
+    if (scope === 'recent' || scope === 'full_history') setSharingScope(scope)
+    setSharingConfirmed(false)
+  }, [competitions])
 
   const action = async (
     run: () => Promise<{ response?: Response; data?: unknown; error?: unknown }>,
@@ -206,36 +214,74 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
                 ? copy.gameCompetitionSharingOff
                 : copy.gameCompetitionSharingOn}
             </span>
+            <p className="game-competition-sharing-disclosure">
+              {copy.gameCompetitionSharingDisclosure}
+            </p>
+            <label htmlFor="game-competition-sharing-scope">
+              {copy.gameCompetitionSharingScope}
+              <select
+                id="game-competition-sharing-scope"
+                value={sharingScope}
+                onChange={(event) =>
+                  setSharingScope(event.target.value as 'recent' | 'full_history')
+                }
+                disabled={busy}
+              >
+                <option value="recent">{copy.gameCompetitionSharingRecent}</option>
+                <option value="full_history">{copy.gameCompetitionSharingFullHistory}</option>
+              </select>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={sharingConfirmed}
+                onChange={(event) => setSharingConfirmed(event.target.checked)}
+                disabled={busy}
+              />
+              {copy.gameCompetitionSharingConfirm}
+            </label>
             <button
               type="button"
               onClick={() =>
                 void action(() =>
-                  current.sharing_scope === 'none'
-                    ? apiClient.POST(
-                        '/api/v1/game/competitions/{competition_id}/sharing-consent/',
-                        {
-                          params: { path: { competition_id: current.id } },
-                          body: { scope: 'recent' },
-                          credentials: 'include',
-                          headers: csrfHeaders(),
-                        },
-                      )
-                    : apiClient.DELETE(
-                        '/api/v1/game/competitions/{competition_id}/sharing-consent/',
-                        {
-                          params: { path: { competition_id: current.id } },
-                          credentials: 'include',
-                          headers: csrfHeaders(),
-                        },
-                      ),
+                  apiClient.POST('/api/v1/game/competitions/{competition_id}/sharing-consent/', {
+                    params: { path: { competition_id: current.id } },
+                    body: {
+                      scope: sharingScope,
+                      disclosure_version: '2026-09-25',
+                      confirmed: sharingConfirmed,
+                    },
+                    credentials: 'include',
+                    headers: csrfHeaders(),
+                  }),
                 )
               }
-              disabled={busy}
+              disabled={busy || !sharingConfirmed}
             >
               {current.sharing_scope === 'none'
                 ? copy.gameCompetitionSharingEnable
-                : copy.gameCompetitionSharingWithdraw}
+                : copy.gameCompetitionSharingUpdate}
             </button>
+            {current.sharing_scope !== 'none' && (
+              <button
+                type="button"
+                onClick={() =>
+                  void action(() =>
+                    apiClient.DELETE(
+                      '/api/v1/game/competitions/{competition_id}/sharing-consent/',
+                      {
+                        params: { path: { competition_id: current.id } },
+                        credentials: 'include',
+                        headers: csrfHeaders(),
+                      },
+                    ),
+                  )
+                }
+                disabled={busy}
+              >
+                {copy.gameCompetitionSharingWithdraw}
+              </button>
+            )}
           </div>
           <div className="game-competition-code">
             <span>{copy.gameCompetitionInviteCode}</span>

@@ -627,6 +627,10 @@ export interface components {
     }
     CompetitionSharingConsent: {
       scope: components['schemas']['ScopeEnum']
+      /** @default 2026-09-25 */
+      disclosure_version: string
+      /** @default true */
+      confirmed: boolean
     }
     CompetitionTransfer: {
       player_id: number
