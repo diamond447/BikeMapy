@@ -17,6 +17,18 @@ def env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name: str, default: int = 0) -> int:
+    """Parse optional integer settings while treating blank env values as unset."""
+
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ImproperlyConfigured(f"{name} must be an integer") from exc
+
+
 LOCAL_DEVELOPMENT_SECRET_KEY = "local-development-key-do-not-use-in-production"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", LOCAL_DEVELOPMENT_SECRET_KEY)
 DEPLOYMENT_MODE = os.getenv("BIKEMAPY_DEPLOYMENT_MODE", "local").lower()
@@ -61,6 +73,10 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
 GAME_ENABLED = env_bool("GAME_ENABLED", False)
+# Account authentication and competition/cross-member features have separate
+# rollout and legal gates. Competition endpoints remain unavailable unless
+# both flags are explicitly enabled.
+COMPETITION_GAME_ENABLED = env_bool("COMPETITION_GAME_ENABLED", False)
 REFERENCE_ROUTE_AUTHORIZER = os.getenv(
     "REFERENCE_ROUTE_AUTHORIZER",
     "apps.api.reference_authorization.default_reference_route_authorizer",
@@ -154,13 +170,12 @@ if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
         "secret": GITHUB_OAUTH_CLIENT_SECRET,
     }
 
-GAME_ENABLED = env_bool("GAME_ENABLED", False)
 STRAVA_OAUTH_CLIENT_ID = os.getenv("STRAVA_OAUTH_CLIENT_ID", "")
 STRAVA_OAUTH_CLIENT_SECRET = os.getenv("STRAVA_OAUTH_CLIENT_SECRET", "")
 STRAVA_TOKEN_ENCRYPTION_KEY = os.getenv("STRAVA_TOKEN_ENCRYPTION_KEY", "")
 STRAVA_IDENTITY_GUARD_KEY = os.getenv("STRAVA_IDENTITY_GUARD_KEY", "")
 STRAVA_WEBHOOK_VERIFY_TOKEN = os.getenv("STRAVA_WEBHOOK_VERIFY_TOKEN", "")
-STRAVA_WEBHOOK_SUBSCRIPTION_ID = int(os.getenv("STRAVA_WEBHOOK_SUBSCRIPTION_ID", "0"))
+STRAVA_WEBHOOK_SUBSCRIPTION_ID = env_int("STRAVA_WEBHOOK_SUBSCRIPTION_ID")
 STRAVA_API_TIMEOUT = float(os.getenv("STRAVA_API_TIMEOUT", "10"))
 STRAVA_SYNC_PAGE_SIZE = int(os.getenv("STRAVA_SYNC_PAGE_SIZE", "100"))
 STRAVA_SYNC_PAGES_PER_RUN = int(os.getenv("STRAVA_SYNC_PAGES_PER_RUN", "5"))
@@ -174,6 +189,10 @@ ROUTE_COMPLETION_DISPATCH_LEASE_SECONDS = int(
 )
 ROUTE_COMPLETION_MAX_ACTIVITIES = int(os.getenv("ROUTE_COMPLETION_MAX_ACTIVITIES", "10000"))
 REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = env_bool("REFERENCE_ROUTE_VIA_CZECHIA_ENABLED", False)
+STRAVA_SYNC_MAX_DISPATCH_PER_RUN = env_int("STRAVA_SYNC_MAX_DISPATCH_PER_RUN", 10)
+STRAVA_QUOTA_SHORT_LIMIT = env_int("STRAVA_QUOTA_SHORT_LIMIT", 100)
+STRAVA_QUOTA_DAILY_LIMIT = env_int("STRAVA_QUOTA_DAILY_LIMIT", 1000)
+STRAVA_QUOTA_SAFETY_MARGIN = env_int("STRAVA_QUOTA_SAFETY_MARGIN", 1)
 STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "STRAVA_OAUTH_REDIRECT_URI",
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
@@ -370,6 +389,8 @@ REST_FRAMEWORK = {
         "user": os.getenv("API_USER_RATE", "600/minute"),
     },
 }
+GAME_PLAYER_RATE = os.getenv("GAME_PLAYER_RATE", "600/minute")
+COMPETITION_INVITE_RATE = os.getenv("COMPETITION_INVITE_RATE", "10/minute")
 # Analytics is deliberately protected by one coarse, non-identifying bucket;
 # unlike the generic API throttle it never derives a cache key from an IP.
 ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")

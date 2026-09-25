@@ -11,6 +11,9 @@ from uuid import UUID
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.throttling import BaseThrottle
+
+from apps.api.throttling import CompetitionInviteThrottle, PlayerSessionThrottle
 
 from .activity_api import activity_payload
 from .competition_services import (
@@ -28,7 +31,7 @@ from .competition_services import (
 )
 from .game_api import GameEndpoint, _private
 from .models import Competition, CompetitionMembership, ImportedActivity, Player
-from .services import game_is_available
+from .services import competition_is_available
 
 
 class CompetitionMemberSerializer(serializers.Serializer[dict[str, Any]]):
@@ -110,6 +113,8 @@ COMPETITION_ERROR_RESPONSES = {
 
 @extend_schema(auth=[{"cookieAuth": []}])  # type: ignore[list-item]
 class CompetitionApi(GameEndpoint):
+    throttle_classes: tuple[type[BaseThrottle], ...] = (PlayerSessionThrottle,)
+
     def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Response:
         return _private(super().dispatch(request, *args, **kwargs))
 
@@ -124,7 +129,7 @@ class CompetitionApi(GameEndpoint):
         return _private(response)
 
     def _enabled(self) -> Response | None:
-        return None if game_is_available() else self.unavailable()
+        return None if competition_is_available() else self.unavailable()
 
     @staticmethod
     def _error(error: CompetitionError) -> Response:
@@ -228,6 +233,11 @@ class CompetitionListView(CompetitionApi):
 
 
 class CompetitionJoinView(CompetitionApi):
+    throttle_classes: tuple[type[BaseThrottle], ...] = (
+        PlayerSessionThrottle,
+        CompetitionInviteThrottle,
+    )
+
     @extend_schema(
         request=CompetitionJoinSerializer,
         responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},

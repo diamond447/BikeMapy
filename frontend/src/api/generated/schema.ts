@@ -673,6 +673,7 @@ export interface components {
       lifecycle: string
       /** Format: date-time */
       connected_at: string
+      competition_game_enabled: boolean
     }
     PlayerResponse: {
       player: components['schemas']['Player']
@@ -2134,13 +2135,6 @@ export interface operations {
       }
       /** @description Invalid Strava event. */
       400: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Unknown Strava athlete. */
-      404: {
         headers: {
           [name: string]: unknown
         }
