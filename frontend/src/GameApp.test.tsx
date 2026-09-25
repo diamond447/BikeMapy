@@ -679,8 +679,12 @@ describe('private game map presentation', () => {
     const user = userEvent.setup()
     render(<GameApp />)
     await user.click(await screen.findByRole('tab', { name: 'Completion' }))
-    expect(await screen.findByRole('heading', { name: 'Ride the reference lines.' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Ride the reference lines.' }),
+    ).toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Activity' }))
-    expect(await screen.findByRole('heading', { name: 'Ride together, privately.' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Ride together, privately.' }),
+    ).toBeInTheDocument()
   })
 })
