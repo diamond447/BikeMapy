@@ -12,9 +12,10 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_sche
 from rest_framework import serializers
 from rest_framework.response import Response
 
+from apps.accounts.competition_services import sharing_is_active
 from apps.accounts.game_api import GameEndpoint, _private
 from apps.accounts.models import CompetitionMembership, StravaSyncState
-from apps.accounts.services import game_is_available
+from apps.accounts.services import competition_is_available, game_is_available
 from apps.reference_routes.models import (
     ReferencePublicationStatus,
     ReferenceRoute,
@@ -169,21 +170,29 @@ class ReferenceRouteCompletionView(GameEndpoint):
         competition = membership.competition if membership is not None else None
         if competition is None:
             return _private(Response({"detail": "Reference route not found."}, status=404))
+        competition_allowed = bool(
+            competition_is_available() and membership is not None and sharing_is_active(membership)
+        )
+        visible_competition = competition if competition_allowed else None
         player_partial = StravaSyncState.objects.filter(
             player=player, status__in=PARTIAL_SYNC_STATUSES
         ).exists()
-        competition_partial = CompetitionMembership.objects.filter(
-            competition=competition,
-            player__strava_sync_state__status__in=PARTIAL_SYNC_STATUSES,
-        ).exists()
+        competition_partial = (
+            CompetitionMembership.objects.filter(
+                competition=visible_competition,
+                player__strava_sync_state__status__in=PARTIAL_SYNC_STATUSES,
+            ).exists()
+            if visible_competition is not None
+            else False
+        )
         player_result = RouteCompletion.objects.filter(
             route_version=route.current_version, player=player
         ).first()
         competition_result = (
             RouteCompletion.objects.filter(
-                route_version=route.current_version, competition=competition
+                route_version=route.current_version, competition=visible_competition
             ).first()
-            if competition is not None
+            if visible_competition is not None
             else None
         )
         attribution = dict(ReferenceAttributionSerializer(route.collection).data)
@@ -228,18 +237,18 @@ class ReferenceRouteCompletionView(GameEndpoint):
                         ).first(),
                         version=version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=player_partial,
                     ),
                     "competition": _projection(
                         RouteCompletion.objects.filter(
-                            route_version=version, competition=competition
+                            route_version=version, competition=visible_competition
                         ).first()
-                        if competition is not None
+                        if visible_competition is not None
                         else None,
                         version=version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=competition_partial,
                     ),
                 }
@@ -254,14 +263,14 @@ class ReferenceRouteCompletionView(GameEndpoint):
                         player_result,
                         version=route.current_version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=player_partial,
                     ),
                     "competition": _projection(
                         competition_result,
                         version=route.current_version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=competition_partial,
                     ),
                     "stages": stages,

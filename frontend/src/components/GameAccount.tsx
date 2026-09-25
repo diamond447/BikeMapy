@@ -4,6 +4,7 @@ import { apiBaseUrl, apiClient, csrfHeaders, rememberCsrfToken } from '../api/cl
 import type { components } from '../api/generated/schema'
 import type { Copy } from '../i18n/types'
 import { GameCompetitions } from './GameCompetitions'
+import { notifyGameDataRefresh, notifyGameMapReset } from '../gameState'
 
 type Player = components['schemas']['Player']
 type PlayerResponse = components['schemas']['PlayerResponse']
@@ -56,22 +57,34 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
 
   const loadSession = useCallback(async () => {
     setStatus('checking')
-    const result = await apiClient.GET('/api/v1/game/auth/session/', {
-      credentials: 'include',
-    })
+    let result: { data?: unknown; response?: Response }
+    try {
+      result = await apiClient.GET('/api/v1/game/auth/session/', {
+        credentials: 'include',
+      })
+    } catch {
+      notifyGameMapReset('auth-loss')
+      setPlayer(null)
+      setStatus('error')
+      setMessage(copy.gameSessionError)
+      return
+    }
     rememberCsrfToken(result.response)
     if (result.response?.status === 404) {
+      notifyGameMapReset('auth-loss')
       setPlayer(null)
       setStatus('unavailable')
       return
     }
     if (result.response?.status === 401 || !result.data) {
+      notifyGameMapReset('auth-loss')
       setPlayer(null)
       setStatus(result.response?.status === 401 ? 'signed-out' : 'error')
       if (result.response?.status !== 401) setMessage(copy.gameSessionError)
       return
     }
     if (!isPlayerResponse(result.data)) {
+      notifyGameMapReset('auth-loss')
       setPlayer(null)
       setStatus('signed-out')
       return
@@ -79,10 +92,15 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     setPlayer(result.data.player)
     setNickname(result.data.player.nickname ?? '')
     setStatus('authenticated')
-    const syncResult = await apiClient.GET('/api/v1/game/account/activities/', {
-      credentials: 'include',
-    })
-    if (syncResult.data && 'sync' in syncResult.data) setSync(syncResult.data.sync)
+    notifyGameDataRefresh()
+    try {
+      const syncResult = await apiClient.GET('/api/v1/game/account/activities/', {
+        credentials: 'include',
+      })
+      if (syncResult.data && 'sync' in syncResult.data) setSync(syncResult.data.sync)
+    } catch {
+      // The authenticated session is still usable; activity status can be retried separately.
+    }
   }, [copy.gameSessionError])
 
   useEffect(() => {
@@ -121,6 +139,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     )
     if (!result) return
     if (result.response?.status === 401) {
+      notifyGameMapReset('auth-loss')
       setPlayer(null)
       setStatus('signed-out')
       setMessage(copy.gameRefreshFailure)
@@ -143,6 +162,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     )
     if (!result) return
     if (result.response?.status === 401) {
+      notifyGameMapReset('auth-loss')
       setPlayer(null)
       setStatus('signed-out')
       setMessage(copy.gameRefreshFailure)
@@ -165,6 +185,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     )
     if (!result) return
     if (result.response?.status === 401) {
+      notifyGameMapReset('auth-loss')
       setPlayer(null)
       setStatus('signed-out')
       setMessage(copy.gameRefreshFailure)
@@ -172,6 +193,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
       setStatus(result.response?.status === 404 ? 'unavailable' : 'error')
       setMessage(errorDetail(result.error) ?? copy.gameSessionError)
     } else {
+      notifyGameMapReset('strava-disconnect')
       setPlayer(null)
       setStatus('signed-out')
       setMessage(copy.gameDisconnected)
@@ -187,6 +209,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     )
     if (!result) return
     setPlayer(null)
+    notifyGameMapReset('logout')
     setStatus('signed-out')
     setMessage(copy.gameLoggedOut)
   }
@@ -201,6 +224,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     )
     if (!result) return
     if (result.response?.status === 401) {
+      notifyGameMapReset('auth-loss')
       setPlayer(null)
       setStatus('signed-out')
       setMessage(copy.gameRefreshFailure)
@@ -212,6 +236,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
       return
     }
     setPlayer(null)
+    notifyGameMapReset('account-deleted')
     setStatus('signed-out')
     setMessage(copy.gameDeleted)
   }
@@ -336,7 +361,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
             {copy.gameActivityFullHistory}
           </button>
         </section>
-        <GameCompetitions copy={copy} />
+        {player.competition_game_enabled && <GameCompetitions copy={copy} />}
         <div className="game-account-actions">
           <button type="button" onClick={() => void refresh()} disabled={busy}>
             {busy ? copy.gameRefreshing : copy.gameRefresh}

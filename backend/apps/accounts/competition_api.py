@@ -8,26 +8,38 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from django.core import signing
+from django.db.models import Q
+from django.utils.dateparse import parse_datetime
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers, status
 from rest_framework.response import Response
+from rest_framework.throttling import BaseThrottle
+
+from apps.api.throttling import CompetitionInviteThrottle, PlayerSessionThrottle
 
 from .competition_services import (
+    MAX_COMPETITION_MEMBERS,
     CompetitionError,
+    competition_member_label,
     create_competition,
     delete_competition,
+    grant_sharing_consent,
     join_competition,
     leave_competition,
     remove_member,
     rename_competition,
     rotate_invite_code,
     set_member_color,
+    sharing_is_active,
     switch_competition,
     transfer_ownership,
+    withdraw_sharing_consent,
 )
 from .game_api import GameEndpoint, _private
 from .models import Competition, CompetitionMembership, Player
-from .services import game_is_available
+from .services import competition_is_available
 
 
 class CompetitionMemberSerializer(serializers.Serializer[dict[str, Any]]):
@@ -36,6 +48,16 @@ class CompetitionMemberSerializer(serializers.Serializer[dict[str, Any]]):
     nickname = serializers.CharField(allow_null=True)
     color = serializers.CharField()
     is_owner = serializers.BooleanField()
+
+
+class CompetitionRosterMemberSerializer(CompetitionMemberSerializer):
+    sharing_active = serializers.BooleanField()
+
+
+class CompetitionRosterResponseSerializer(serializers.Serializer[dict[str, Any]]):
+    members = CompetitionRosterMemberSerializer(many=True)
+    next_cursor = serializers.CharField(allow_null=True)
+    has_more = serializers.BooleanField()
 
 
 class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -49,6 +71,12 @@ class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
     color = serializers.CharField()
     created_at = serializers.DateTimeField()
     members = CompetitionMemberSerializer(many=True)
+    members_truncated = serializers.BooleanField()
+    roster_count = serializers.IntegerField()
+    roster_truncated = serializers.BooleanField()
+    sharing_scope = serializers.ChoiceField(
+        choices=tuple(CompetitionMembership.SharingScope.values)
+    )
 
 
 class CompetitionsResponseSerializer(serializers.Serializer[dict[str, Any]]):
@@ -68,6 +96,17 @@ class CompetitionCreateSerializer(serializers.Serializer[dict[str, Any]]):
 class CompetitionJoinSerializer(serializers.Serializer[dict[str, Any]]):
     invite_code = serializers.CharField(max_length=32)
     color = serializers.CharField(max_length=7, required=False)
+
+
+class CompetitionSharingConsentSerializer(serializers.Serializer[dict[str, Any]]):
+    scope = serializers.ChoiceField(
+        choices=(
+            CompetitionMembership.SharingScope.RECENT,
+            CompetitionMembership.SharingScope.FULL_HISTORY,
+        )
+    )
+    disclosure_version = serializers.CharField(max_length=32, required=True)
+    confirmed = serializers.BooleanField(required=True)
 
 
 class CompetitionRenameSerializer(serializers.Serializer[dict[str, Any]]):
@@ -101,6 +140,8 @@ COMPETITION_ERROR_RESPONSES = {
 
 @extend_schema(auth=[{"cookieAuth": []}])  # type: ignore[list-item]
 class CompetitionApi(GameEndpoint):
+    throttle_classes: tuple[type[BaseThrottle], ...] = (PlayerSessionThrottle,)
+
     def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Response:
         return _private(super().dispatch(request, *args, **kwargs))
 
@@ -115,7 +156,7 @@ class CompetitionApi(GameEndpoint):
         return _private(response)
 
     def _enabled(self) -> Response | None:
-        return None if game_is_available() else self.unavailable()
+        return None if competition_is_available() else self.unavailable()
 
     @staticmethod
     def _error(error: CompetitionError) -> Response:
@@ -140,18 +181,28 @@ class CompetitionApi(GameEndpoint):
     @staticmethod
     def _payload(competition: Competition, player: Player) -> dict[str, Any]:
         membership = CompetitionMembership.objects.get(competition=competition, player=player)
-        members = [
-            {
-                "player_id": member.player_id,
-                "display_name": member.player.strava_display_name,
-                "nickname": member.player.nickname or None,
-                "color": member.color,
-                "is_owner": member.player_id == competition.owner_id,
-            }
-            for member in competition.memberships.select_related("player").order_by(
-                "joined_at", "pk"
+        roster_count = competition.memberships.count()
+        members_truncated = False
+        if sharing_is_active(membership):
+            member_rows = list(
+                competition.memberships.select_related("player")
+                .filter(sharing_consent_at__isnull=False)
+                .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
+                .order_by("joined_at", "pk")[: MAX_COMPETITION_MEMBERS + 1]
             )
-        ]
+            members_truncated = len(member_rows) > MAX_COMPETITION_MEMBERS
+            members = [
+                {
+                    "player_id": member.player_id,
+                    "display_name": competition_member_label(member),
+                    "nickname": None,
+                    "color": member.color,
+                    "is_owner": member.player_id == competition.owner_id,
+                }
+                for member in member_rows[:MAX_COMPETITION_MEMBERS]
+            ]
+        else:
+            members = []
         return {
             "id": competition.pk,
             "name": competition.name,
@@ -163,6 +214,10 @@ class CompetitionApi(GameEndpoint):
             "color": membership.color,
             "created_at": competition.created_at,
             "members": members,
+            "members_truncated": members_truncated,
+            "roster_count": roster_count,
+            "roster_truncated": roster_count > MAX_COMPETITION_MEMBERS,
+            "sharing_scope": membership.sharing_scope,
         }
 
     def _response(self, competition: Competition, player: Player, *, code: int = 200) -> Response:
@@ -210,6 +265,11 @@ class CompetitionListView(CompetitionApi):
 
 
 class CompetitionJoinView(CompetitionApi):
+    throttle_classes: tuple[type[BaseThrottle], ...] = (
+        PlayerSessionThrottle,
+        CompetitionInviteThrottle,
+    )
+
     @extend_schema(
         request=CompetitionJoinSerializer,
         responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
@@ -225,6 +285,49 @@ class CompetitionJoinView(CompetitionApi):
         serializer.is_valid(raise_exception=True)
         try:
             competition, _ = join_competition(player, **serializer.validated_data)
+        except CompetitionError as error:
+            return self._error(error)
+        return self._response(competition, player)
+
+
+class CompetitionSharingConsentView(CompetitionApi):
+    @extend_schema(
+        request=CompetitionSharingConsentSerializer,
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
+        tags=["game-competitions"],
+    )
+    def post(self, request: Any, competition_id: UUID) -> Response:
+        if (response := self._enabled()) is not None:
+            return response
+        player = self.player_or_401(request)
+        if isinstance(player, Response):
+            return player
+        competition = self._competition_or_none(competition_id)
+        if competition is None:
+            return Response({"detail": "Competition not found."}, status=404)
+        serializer = CompetitionSharingConsentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            grant_sharing_consent(player, competition, **serializer.validated_data)
+        except CompetitionError as error:
+            return self._error(error)
+        return self._response(competition, player)
+
+    @extend_schema(
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionResponseSerializer},
+        tags=["game-competitions"],
+    )
+    def delete(self, request: Any, competition_id: UUID) -> Response:
+        if (response := self._enabled()) is not None:
+            return response
+        player = self.player_or_401(request)
+        if isinstance(player, Response):
+            return player
+        competition = self._competition_or_none(competition_id)
+        if competition is None:
+            return Response({"detail": "Competition not found."}, status=404)
+        try:
+            withdraw_sharing_consent(player, competition)
         except CompetitionError as error:
             return self._error(error)
         return self._response(competition, player)
@@ -390,6 +493,92 @@ class CompetitionMemberColorView(CompetitionApi):
         except CompetitionError as error:
             return self._error(error)
         return self._response(competition, player)
+
+
+class CompetitionRosterView(CompetitionApi):
+    """Return a bounded, pseudonymous, cursor-paginated member roster."""
+
+    page_size = 100
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter("cursor", OpenApiTypes.STR, required=False),
+            OpenApiParameter("search", OpenApiTypes.STR, required=False),
+        ],
+        responses={**COMPETITION_ERROR_RESPONSES, 200: CompetitionRosterResponseSerializer},
+        tags=["game-competitions"],
+    )
+    def get(self, request: Any, competition_id: UUID) -> Response:
+        if (response := self._enabled()) is not None:
+            return response
+        player = self.player_or_401(request)
+        if isinstance(player, Response):
+            return player
+        competition = Competition.objects.filter(
+            pk=competition_id, is_active=True, memberships__player=player
+        ).first()
+        # Keep missing competitions and unauthorized competitions indistinguishable.
+        if competition is None:
+            return Response({"detail": "Competition not found."}, status=404)
+
+        cursor = request.query_params.get("cursor")
+        cursor_joined_at = None
+        cursor_pk = None
+        if cursor:
+            try:
+                decoded = signing.loads(cursor)
+                cursor_joined_at = parse_datetime(str(decoded["joined_at"]))
+                cursor_pk = int(decoded["pk"])
+            except (TypeError, ValueError, KeyError, signing.BadSignature):
+                return Response({"detail": "Invalid roster cursor."}, status=400)
+            if cursor_joined_at is None or cursor_pk < 1:
+                return Response({"detail": "Invalid roster cursor."}, status=400)
+
+        search = str(request.query_params.get("search", "")).strip()
+        if len(search) > 64:
+            return Response({"detail": "Search is too long."}, status=400)
+        memberships = CompetitionMembership.objects.filter(competition=competition)
+        # Player IDs are the only searchable identifier. Display names remain
+        # competition-scoped pseudonyms and are never backed by PII search.
+        if search:
+            try:
+                player_id = int(search)
+            except ValueError:
+                memberships = memberships.filter(pk__in=[])
+            else:
+                memberships = memberships.filter(player_id=player_id)
+        if cursor_joined_at is not None and cursor_pk is not None:
+            memberships = memberships.filter(
+                Q(joined_at__gt=cursor_joined_at) | Q(joined_at=cursor_joined_at, pk__gt=cursor_pk)
+            )
+        rows = list(
+            memberships.order_by("joined_at", "pk").select_related("player")[: self.page_size + 1]
+        )
+        has_more = len(rows) > self.page_size
+        rows = rows[: self.page_size]
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = signing.dumps(
+                {"joined_at": last.joined_at.isoformat(), "pk": last.pk}, compress=True
+            )
+        return Response(
+            {
+                "members": [
+                    {
+                        "player_id": membership.player_id,
+                        "display_name": competition_member_label(membership),
+                        "nickname": None,
+                        "color": membership.color,
+                        "is_owner": membership.player_id == competition.owner_id,
+                        "sharing_active": sharing_is_active(membership),
+                    }
+                    for membership in rows
+                ],
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+            }
+        )
 
 
 class CompetitionRemoveMemberView(CompetitionApi):

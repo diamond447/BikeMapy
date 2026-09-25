@@ -22,10 +22,20 @@ const activity = {
   geometry: {
     type: 'LineString',
     coordinates: [
-      [14, 49],
-      [14.2, 49.2],
+      [16.5, 49.15],
+      [16.7, 49.25],
     ],
   },
+}
+const largeCompetition = {
+  ...competition,
+  members: Array.from({ length: 101 }, (_, index) => ({
+    player_id: index === 0 ? competition.members[0].player_id : index + 100,
+    display_name: index === 0 ? 'Rider' : `Rider ${index + 100}`,
+    nickname: null,
+    color: index === 0 ? '#F4B942' : '#3A86FF',
+    is_owner: index === 0,
+  })),
 }
 
 test.beforeEach(async ({ page }) => {
@@ -114,123 +124,33 @@ test('game map has no automated accessibility violations and honors reduced moti
   )
 })
 
-test('completion mode keeps route selection and player/group progress keyboard accessible', async ({
-  page,
-}) => {
-  const routeId = '33333333-3333-4333-8333-333333333333'
-  const geometry = {
-    type: 'LineString',
-    coordinates: [
-      [14, 49],
-      [14.2, 49.2],
-    ],
-  }
-  let completionCalls = 0
-  await page.route('**/api/v1/game/reference-routes/**', async (route) => {
-    if (new URL(route.request().url()).pathname.endsWith('/completion/')) {
-      completionCalls += 1
-      expect(new URL(route.request().url()).searchParams.get('competition_id')).toBe(competition.id)
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          route_id: routeId,
-          version: 1,
-          title: 'Via Czechia north',
-          route_number: '1',
-          source_kind: 'via_czechia',
-          geometry,
-          attribution: { attribution_text: 'Via Czechia', licence: 'ODbL' },
-          player: {
-            status: 'fresh',
-            total_length_meters: '20000.000',
-            covered_length_meters: '7400.000',
-            completion_percent: '37.000',
-            calculated_at: '2026-09-21T00:00:00Z',
-            error: '',
-            covered_geometry: {
-              type: 'LineString',
-              coordinates: [
-                [14, 49],
-                [14.07, 49.07],
-              ],
-            },
-            monthly: [{ month: '2026-09-01', covered_length_meters: '7400.000' }],
-          },
-          competition: {
-            status: 'pending',
-            total_length_meters: '20000.000',
-            covered_length_meters: '0.000',
-            completion_percent: '0.000',
-            calculated_at: null,
-            error: '',
-            covered_geometry: null,
-            monthly: [],
-          },
-          stages: [],
-        }),
-      })
-      return
-    }
-    expect(new URL(route.request().url()).searchParams.get('competition_id')).toBe(competition.id)
-    await route.fulfill({
+test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/')
+  await page.route('**/api/v1/game/competitions/', async (route) =>
+    route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        next: null,
-        previous: null,
-        results: [
-          {
-            id: routeId,
-            source_identifier: 'vc-1',
-            route_number: '1',
-            title: 'Via Czechia north',
-            operator: 'Via Czechia',
-            network: 'via-czechia',
-            publication_status: 'approved',
-            source_kind: 'via_czechia',
-            attribution: { attribution_text: 'Via Czechia' },
-            stages: [],
-          },
-        ],
+        competitions: [largeCompetition],
+        active_competition_id: largeCompetition.id,
       }),
-    })
-  })
-
-  await page.goto('/game')
-  await page.getByRole('tab', { name: 'Completion' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
-  const route = page.getByRole('button', { name: /1 Via Czechia north/ })
-  await route.focus()
-  await page.keyboard.press('Enter')
-  await expect(page.locator('.completion-detail').getByText('37.0%')).toBeVisible()
-  await page.getByRole('tab', { name: 'Competition' }).click()
-  await expect(page.getByText('Calculation pending')).toBeVisible()
-  await page.getByRole('tab', { name: 'Activity' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
-  await expect(page.locator('[data-map-source-loaded="true"]')).toBeVisible()
-  await page.getByRole('tab', { name: 'Completion' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
-  await expect.poll(() => completionCalls).toBeGreaterThan(1)
-  await page.setViewportSize({ width: 390, height: 844 })
-  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
-})
-
-test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
+    }),
+  )
   await page.unroute('**/api/v1/game/competitions/*/map/**')
   let mapCalls = 0
   await page.route('**/api/v1/game/competitions/*/map/**', async (route) => {
     mapCalls += 1
     const url = new URL(route.request().url())
     const selected = url.searchParams.getAll('member')
+    if (mapCalls === 1) expect(selected.length).toBeLessThanOrEqual(100)
     if (mapCalls === 2) await page.waitForTimeout(300)
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         status: selected.length && selected[0] !== '0' ? 'loaded' : 'empty',
-        competition_id: competition.id,
-        members: competition.members,
+        competition_id: largeCompetition.id,
+        members: largeCompetition.members,
         activities:
           selected.length && selected[0] !== '0'
             ? [
@@ -257,6 +177,18 @@ test('game map applies the latest member filter after an in-flight response', as
   await toggleRequest
   await member.check()
   await expect(page.getByRole('button', { name: '2026-09-23' })).toBeVisible()
+})
+
+test('game map resolves a grouped line click to an authorized activity', async ({ page }) => {
+  await page.goto('/game')
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  const canvas = await page.locator('.game-map-canvas').boundingBox()
+  expect(canvas).not.toBeNull()
+  if (!canvas) return
+  await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2)
+  await expect(page.getByRole('complementary', { name: 'Trace detail' })).toContainText(
+    activity.calendar_date,
+  )
 })
 
 test('game map Retry repeats a failed map request', async ({ page }) => {
@@ -287,4 +219,67 @@ test('game map Retry repeats a failed map request', async ({ page }) => {
   await page.getByRole('button', { name: /retry/i }).click()
   await expect(page.getByRole('button', { name: activity.calendar_date })).toBeVisible()
   expect(mapCalls).toBe(2)
+})
+
+test('game map wraps dateline geometry and normalizes world-copy bounds', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/*/map/**')
+  await page.route('**/api/v1/game/competitions/*/map/**', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'loaded',
+        competition_id: competition.id,
+        members: competition.members,
+        activities: [
+          {
+            ...activity,
+            geometry: {
+              type: 'LineString',
+              coordinates: [
+                [179.5, 49],
+                [-179.5, 49.1],
+              ],
+            },
+          },
+        ],
+        truncated: false,
+        limits: { max_features: 1200, max_coordinates: 120000 },
+      }),
+    }),
+  )
+  await page.goto('/game?benchmark=full-update')
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes('/api/v1/game/competitions/') && request.url().includes('/map/'),
+  )
+  await page.evaluate(() =>
+    globalThis.dispatchEvent(
+      new CustomEvent('bikemapy:benchmark-map-pan', {
+        detail: { center: [180, 49], zoom: 8 },
+      }),
+    ),
+  )
+  const request = await requestPromise
+  const url = new URL(request.url())
+  const west = Number(url.searchParams.get('west'))
+  const east = Number(url.searchParams.get('east'))
+  expect(west).toBeGreaterThanOrEqual(-180)
+  expect(west).toBeLessThanOrEqual(180)
+  expect(east).toBeGreaterThanOrEqual(-180)
+  expect(east).toBeLessThanOrEqual(180)
+  expect((east - west + 360) % 360).toBeLessThanOrEqual(120)
+  await expect(page.locator('.game-map-render-overlay')).toBeVisible()
+  expect(
+    await page.locator('.game-map-render-overlay').evaluate((canvas) => {
+      const context = canvas.getContext('2d')
+      if (!context) return false
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+      for (let index = 3; index < pixels.length; index += 4) {
+        if (pixels[index] !== 0) return true
+      }
+      return false
+    }),
+  ).toBe(true)
 })

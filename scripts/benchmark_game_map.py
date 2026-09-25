@@ -20,6 +20,7 @@ import statistics
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from django.contrib.gis.geos import LineString  # noqa: E402
 from django.db import connection  # noqa: E402
 from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
+from django.utils import timezone  # noqa: E402
 
 from apps.accounts.models import (  # noqa: E402
     Competition,
@@ -53,6 +55,7 @@ BENCHMARK_ENVIRONMENT = (
     "POSTGRES_PASSWORD=bikemapy-local-only",
     "DJANGO_CACHE_URL=redis://127.0.0.1:6379/1",
     "GAME_ENABLED=true",
+    "COMPETITION_GAME_ENABLED=true",
     "STRAVA_OAUTH_CLIENT_ID=benchmark-client",
     "STRAVA_OAUTH_CLIENT_SECRET=benchmark-secret",
     "STRAVA_TOKEN_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -113,6 +116,8 @@ def fixture(
                 competition=competition,
                 player=player,
                 color=f"#{(0x24 + member_index * 97) % 0xFFFFFF:06X}",
+                sharing_scope="recent",
+                sharing_consent_at=timezone.now(),
             )
             for member_index, player in enumerate(all_players)
         ]
@@ -150,7 +155,9 @@ def api_runs(client: Client, competition: Competition) -> list[float]:
     return samples
 
 
-def browser_runs(url: str, api_url: str, session_key: str) -> list[float]:
+def browser_runs(
+    url: str, api_url: str, session_key: str
+) -> tuple[list[float], list[float], dict[str, list[float]]]:
     output = subprocess.check_output(
         [
             "corepack",
@@ -167,9 +174,42 @@ def browser_runs(url: str, api_url: str, session_key: str) -> list[float]:
         text=True,
     )
     samples = json.loads(output)
-    if not isinstance(samples, list) or len(samples) != RUNS:
+    if not isinstance(samples, dict):
+        raise RuntimeError("browser benchmark did not return named samples")
+    update_samples = samples.get("updateSamples")
+    lazy_samples = samples.get("lazySamples")
+    stage_samples = samples.get("stageSamples")
+    if (
+        not isinstance(update_samples, list)
+        or len(update_samples) != RUNS
+        or not isinstance(lazy_samples, list)
+        or len(lazy_samples) != RUNS
+        or not isinstance(stage_samples, list)
+        or len(stage_samples) != RUNS
+    ):
         raise RuntimeError("browser benchmark did not return 30 samples")
-    return [float(sample) for sample in samples]
+    stages: dict[str, list[float]] = {
+        "response_to_source": [],
+        "overlay_update": [],
+        "render_to_visible": [],
+    }
+    for sample in stage_samples:
+        if not isinstance(sample, dict):
+            raise RuntimeError("browser benchmark returned an invalid stage sample")
+        for source_key, result_key in (
+            ("responseToSource", "response_to_source"),
+            ("overlayUpdate", "overlay_update"),
+            ("updateToRender", "render_to_visible"),
+        ):
+            value = sample.get(source_key)
+            if not isinstance(value, (float, int)):
+                raise RuntimeError("browser benchmark returned an invalid stage value")
+            stages[result_key].append(float(value))
+    return (
+        [float(sample) for sample in update_samples],
+        [float(sample) for sample in lazy_samples],
+        stages,
+    )
 
 
 def main() -> None:
@@ -197,6 +237,8 @@ def main() -> None:
     session.save()
     api_samples = api_runs(client, competition)
     result: dict[str, object] = {
+        "measured_at_utc": datetime.now(UTC).isoformat(),
+        "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "environment": {
             "database": connection.vendor,
             "database_name": connection.settings_dict.get("NAME"),
@@ -222,14 +264,23 @@ def main() -> None:
             "in_viewport_activities": args.members * args.in_viewport_per_member,
         },
         "api_ms": {"median": statistics.median(api_samples), "p95": percentile(api_samples, 0.95)},
+        "budgets_ms": {"api_p95": API_BUDGET_MS, "browser_p95": BROWSER_BUDGET_MS},
     }
     if args.browser_url:
-        browser_samples = browser_runs(
+        browser_samples, lazy_samples, stage_samples = browser_runs(
             args.browser_url, args.browser_api_url, session.session_key or ""
         )
         result["browser_response_to_render_ms"] = {
             "median": statistics.median(browser_samples),
             "p95": percentile(browser_samples, 0.95),
+        }
+        result["browser_lazy_interaction_ms"] = {
+            "median": statistics.median(lazy_samples),
+            "p95": percentile(lazy_samples, 0.95),
+        }
+        result["browser_stages_ms"] = {
+            stage: {"median": statistics.median(values), "p95": percentile(values, 0.95)}
+            for stage, values in stage_samples.items()
         }
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     api_p95 = result["api_ms"]["p95"]  # type: ignore[index]

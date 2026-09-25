@@ -943,233 +943,54 @@ h1 {
   }
 }
 
-/* The authenticated game uses a quiet map field and vivid member traces. */
+/* Private game shell: keep the map as a real, visible interaction surface. */
 .game-shell {
-  min-height: 100dvh;
-  background: #e8f0ec;
-  color: #10232a;
+  background: var(--atlas-paper);
+  color: var(--atlas-ink);
+  min-height: 100vh;
 }
 
 .game-topbar {
   align-items: center;
-  background: #f8fbf8;
-  border-bottom: 1px solid rgba(16, 35, 42, 0.12);
+  background: var(--atlas-paper-strong);
+  border-bottom: 1px solid var(--atlas-line);
   display: flex;
   justify-content: space-between;
-  min-height: 74px;
-  padding: 12px 28px;
+  min-height: 64px;
+  padding: 12px 26px;
+  position: relative;
+  z-index: 5;
 }
 
 .game-topbar-actions {
   align-items: center;
   display: flex;
-  gap: 16px;
+  gap: 12px;
 }
 
 .game-view-switch {
   align-items: center;
-  background: #f8fbf8;
+  background: var(--atlas-paper-strong, #f8fbf8);
   border-bottom: 1px solid rgba(16, 35, 42, 0.12);
   display: flex;
   gap: 4px;
   padding: 8px 28px;
 }
+
 .game-view-switch button,
 .completion-mode button {
   background: transparent;
   border: 0;
   color: rgba(16, 35, 42, 0.64);
   cursor: pointer;
-  font:
-    700 0.68rem 'DM Mono',
-    monospace;
+  font: 700 0.68rem 'DM Mono', monospace;
   letter-spacing: 0.04em;
   padding: 9px 12px;
 }
-.game-view-switch button.is-active,
-.completion-mode button.is-active {
+
+.game-view-switch button.is-active {
   background: #10232a;
   color: #f8fbf8;
-}
-
-.language-toggle {
-  background: transparent;
-  border: 1px solid rgba(16, 35, 42, 0.25);
-  border-radius: 999px;
-  color: #10232a;
-  cursor: pointer;
-  font:
-    700 0.7rem 'DM Mono',
-    monospace;
-  padding: 7px 10px;
-}
-
-.game-map-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 340px) 1fr;
-  min-height: calc(100dvh - 74px);
-}
-
-.game-map-controls {
-  background: #f8fbf8;
-  border-right: 1px solid rgba(16, 35, 42, 0.12);
-  padding: 42px 28px;
-  z-index: 1;
-}
-
-.game-map-controls h1 {
-  font-size: clamp(2rem, 3vw, 3rem);
-  letter-spacing: -0.045em;
-  line-height: 0.98;
-  margin: 10px 0 14px;
-}
-
-.game-map-controls > p,
-.game-map-state p {
-  color: rgba(16, 35, 42, 0.72);
-  line-height: 1.55;
-}
-
-.game-map-label,
-.game-member-list legend {
-  color: rgba(16, 35, 42, 0.65);
-  display: block;
-  font:
-    700 0.7rem 'DM Mono',
-    monospace;
-  letter-spacing: 0.06em;
-  margin: 26px 0 8px;
-  text-transform: uppercase;
-}
-
-.game-map-controls select {
-  background: #fff;
-  border: 1px solid rgba(16, 35, 42, 0.25);
-  border-radius: 7px;
-  color: #10232a;
-  font: inherit;
-  padding: 11px 12px;
-  width: 100%;
-}
-
-.game-member-list {
-  border: 0;
-  margin: 20px 0 0;
-  padding: 0;
-}
-
-.game-member-list legend {
-  margin: 0 0 10px;
-}
-.game-member-list label {
-  align-items: center;
-  display: flex;
-  gap: 9px;
-  padding: 8px 0;
-}
-.game-member-list input {
-  accent-color: #2b8c76;
-}
-.member-swatch {
-  border-radius: 50%;
-  height: 10px;
-  width: 10px;
-}
-.game-map-status {
-  font-size: 0.85rem;
-  margin-top: 28px;
-}
-.game-trace-list {
-  margin-top: 26px;
-}
-.game-trace-list h2 {
-  font:
-    700 0.7rem 'DM Mono',
-    monospace;
-  letter-spacing: 0.06em;
-  margin: 0 0 8px;
-  text-transform: uppercase;
-}
-.game-trace-viewport {
-  max-height: 220px;
-  overflow: auto;
-}
-.game-trace-list button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid rgba(16, 35, 42, 0.1);
-  box-sizing: border-box;
-  color: #10232a;
-  cursor: pointer;
-  display: flex;
-  gap: 9px;
-  height: 40px;
-  padding: 9px 3px;
-  text-align: left;
-  width: 100%;
-}
-.game-trace-list button[aria-pressed='true'] {
-  background: rgba(244, 185, 66, 0.18);
-}
-.game-map-state button {
-  background: #2b8c76;
-  border: 0;
-  border-radius: 6px;
-  color: #fff;
-  cursor: pointer;
-  font: inherit;
-  padding: 10px 13px;
-}
-
-.game-map-stage {
-  min-height: 0;
-  position: relative;
-}
-.game-map-canvas {
-  height: 100%;
-  min-height: 520px;
-  width: 100%;
-}
-.game-map-loading {
-  background: #f8fbf8;
-  border-radius: 999px;
-  box-shadow: 0 4px 18px rgba(16, 35, 42, 0.14);
-  left: 20px;
-  padding: 8px 12px;
-  position: absolute;
-  top: 20px;
-}
-
-.game-trace-detail {
-  background: #f8fbf8;
-  border-left: 4px solid #f4b942;
-  bottom: 24px;
-  box-shadow: 0 8px 28px rgba(16, 35, 42, 0.18);
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  max-width: 250px;
-  padding: 18px 42px 18px 18px;
-  position: absolute;
-  right: 24px;
-}
-.game-trace-detail time {
-  font:
-    700 1.05rem 'DM Mono',
-    monospace;
-}
-.game-trace-close {
-  background: transparent;
-  border: 0;
-  color: #10232a;
-  cursor: pointer;
-  font-size: 1.4rem;
-  line-height: 1;
-  padding: 3px;
-  position: absolute;
-  right: 10px;
-  top: 10px;
 }
 
 .completion-layout {
@@ -1185,294 +1006,290 @@ h1 {
   padding: 28px;
   z-index: 1;
 }
-.completion-header h1 {
-  color: #10232a;
-  font-size: clamp(1.8rem, 3vw, 2.65rem);
-  letter-spacing: -0.055em;
-  line-height: 1;
-  margin: 12px 0;
+.completion-header h1 { font-size: clamp(1.8rem, 3vw, 2.65rem); letter-spacing: -0.055em; line-height: 1; margin: 12px 0; }
+.completion-header p { color: rgba(16, 35, 42, 0.72); line-height: 1.5; margin: 0 0 17px; }
+.completion-mode { display: flex; margin: -4px -8px 25px; }
+.completion-mode button { border-bottom: 2px solid transparent; padding-inline: 8px; }
+.completion-mode button.is-active { background: transparent; border-bottom-color: #2b8c76; color: #10232a; }
+.completion-header .game-map-label select { display: block; margin-top: 8px; }
+.completion-list { margin-top: 24px; }
+.completion-list > small { color: rgba(16, 35, 42, 0.54); display: block; font: 0.58rem 'DM Mono', monospace; margin-top: 18px; }
+.completion-group + .completion-group { margin-top: 24px; }
+.completion-group h2, .completion-stages > span { color: rgba(16, 35, 42, 0.57); font: 700 0.64rem 'DM Mono', monospace; letter-spacing: .06em; margin: 0 0 8px; text-transform: uppercase; }
+.completion-route, .completion-stages button { align-items: center; background: transparent; border: 0; border-bottom: 1px solid rgba(16,35,42,.1); color: #10232a; cursor: pointer; display: flex; font: inherit; gap: 10px; justify-content: space-between; padding: 11px 4px; text-align: left; width: 100%; }
+.completion-route > span, .completion-stages button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.completion-route b, .completion-stages button span:first-child { color: #2b8c76; font: 700 .66rem 'DM Mono', monospace; margin-right: 8px; }
+.completion-route strong, .completion-stages button strong { flex: 0 0 auto; font: 500 .68rem 'DM Mono', monospace; }
+.completion-route:hover, .completion-route.is-selected, .completion-stages button:hover, .completion-stages button.is-selected { background: rgba(244,185,66,.2); }
+.completion-stages { border-left: 2px solid #d7e3dc; margin: 0 0 5px 10px; padding: 8px 0 2px 12px; }
+.completion-stages > span { display: block; font-size: .55rem; }
+.completion-stages button { border-bottom: 0; font-size: .68rem; padding: 7px 3px; }
+.completion-state, .completion-empty { color: rgba(16,35,42,.72); padding: 22px 0; }
+.completion-state button { background: #2b8c76; border: 0; color: #fff; cursor: pointer; padding: 9px 12px; }
+.completion-map-stage { min-height: 0; position: relative; }
+.completion-detail { background: #f8fbf8; border-left: 4px solid #2b8c76; bottom: 24px; box-shadow: 0 8px 28px rgba(16,35,42,.18); max-width: 360px; padding: 18px 21px; position: absolute; right: 24px; width: min(38vw,360px); }
+.completion-detail h2 { font-size: 1.25rem; line-height: 1.12; margin: 7px 0 13px; }
+.completion-percent { align-items: baseline; display: flex; gap: 9px; }
+.completion-percent strong { color: #2b8c76; font: 500 2rem 'DM Mono', monospace; }
+.completion-percent span, .completion-status, .completion-attribution { color: rgba(16,35,42,.66); font-size: .68rem; }
+.completion-status { background: rgba(244,185,66,.2); margin: 10px 0; padding: 8px; }
+.completion-stats { border-bottom: 1px solid rgba(16,35,42,.12); border-top: 1px solid rgba(16,35,42,.12); display: flex; gap: 20px; margin: 13px 0; padding: 11px 0; }
+.completion-stats dt { color: rgba(16,35,42,.58); font: .57rem 'DM Mono', monospace; }
+.completion-stats dd { color: #10232a; font: 500 .82rem 'DM Mono', monospace; margin: 4px 0 0; }
+.completion-legend { display: grid; gap: 6px; font: .57rem 'DM Mono', monospace; }
+.completion-legend span { align-items: center; display: flex; gap: 7px; }
+.completion-line { display: inline-block; height: 3px; width: 22px; }
+.completion-line.covered { background: #2b8c76; }
+.completion-line.incomplete { background: #8499a7; }
+.completion-attribution { border-top: 1px solid rgba(16,35,42,.12); line-height: 1.45; margin: 14px 0 0; padding-top: 11px; }
+
+@media (max-width: 700px) {
+  .game-view-switch { justify-content: center; padding: 7px 16px; }
+  .completion-layout { display: flex; flex-direction: column-reverse; min-height: calc(100dvh - 112px); }
+  .completion-map-stage { min-height: 61dvh; }
+  .completion-ledger { border-right: 0; border-top: 1px solid rgba(16,35,42,.12); padding: 22px 18px 32px; }
+  .completion-detail { bottom: 52px; left: 15px; max-width: none; right: 15px; width: auto; }
 }
-.completion-header p {
-  color: rgba(16, 35, 42, 0.72);
-  line-height: 1.5;
-  margin: 0 0 17px;
-}
-.completion-mode {
-  display: flex;
-  margin: -4px -8px 25px;
-}
-.completion-mode button {
-  border-bottom: 2px solid transparent;
-  padding-inline: 8px;
-}
-.completion-mode button.is-active {
-  background: transparent;
-  border-bottom-color: #2b8c76;
-  color: #10232a;
-}
-.completion-header .game-map-label select {
-  display: block;
-  margin-top: 8px;
-}
-.completion-list {
-  margin-top: 24px;
-}
-.completion-list > small {
-  color: rgba(16, 35, 42, 0.54);
-  display: block;
-  font:
-    0.58rem 'DM Mono',
-    monospace;
-  margin-top: 18px;
-}
-.completion-group + .completion-group {
-  margin-top: 24px;
-}
-.completion-group h2,
-.completion-stages > span {
-  color: rgba(16, 35, 42, 0.57);
-  font:
-    700 0.64rem 'DM Mono',
-    monospace;
-  letter-spacing: 0.06em;
-  margin: 0 0 8px;
-  text-transform: uppercase;
-}
-.completion-route,
-.completion-stages button {
-  align-items: center;
+
+.language-toggle {
   background: transparent;
   border: 0;
-  border-bottom: 1px solid rgba(16, 35, 42, 0.1);
-  color: #10232a;
+  color: var(--atlas-moss);
   cursor: pointer;
-  display: flex;
-  font: inherit;
-  gap: 10px;
-  justify-content: space-between;
-  padding: 11px 4px;
-  text-align: left;
+  font:
+    0.62rem 'DM Mono',
+    monospace;
+  letter-spacing: 0.08em;
+  padding: 7px;
+}
+
+.game-map-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  min-height: calc(100vh - 64px);
+}
+
+.game-map-controls {
+  background: var(--atlas-paper-strong);
+  border-right: 1px solid var(--atlas-line);
+  overflow: auto;
+  padding: 28px 24px;
+  position: relative;
+  z-index: 2;
+}
+
+.game-map-controls h1 {
+  font-size: clamp(1.8rem, 3vw, 2.55rem);
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+  margin: 8px 0 14px;
+}
+
+.game-map-controls > p {
+  color: var(--atlas-moss);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  margin: 0 0 22px;
+}
+
+.game-map-label,
+.game-member-list legend {
+  color: var(--atlas-moss);
+  font:
+    0.59rem 'DM Mono',
+    monospace;
+}
+
+.game-map-controls select {
+  background: #f0f3ed;
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-ink);
+  display: block;
+  font-size: 0.76rem;
+  margin: 6px 0 18px;
+  padding: 8px;
   width: 100%;
 }
-.completion-route > span,
-.completion-stages button > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.completion-route b,
-.completion-stages button span:first-child {
-  color: #2b8c76;
-  font:
-    700 0.66rem 'DM Mono',
-    monospace;
-  margin-right: 8px;
-}
-.completion-route strong,
-.completion-stages button strong {
-  flex: 0 0 auto;
-  font:
-    500 0.68rem 'DM Mono',
-    monospace;
-}
-.completion-route:hover,
-.completion-route.is-selected,
-.completion-stages button:hover,
-.completion-stages button.is-selected {
-  background: rgba(244, 185, 66, 0.2);
-}
-.completion-stages {
-  border-left: 2px solid #d7e3dc;
-  margin: 0 0 5px 10px;
-  padding: 8px 0 2px 12px;
-}
-.completion-stages > span {
-  display: block;
-  font-size: 0.55rem;
-}
-.completion-stages button {
-  border-bottom: 0;
-  font-size: 0.68rem;
-  padding: 7px 3px;
-}
-.completion-state,
-.completion-empty {
-  color: rgba(16, 35, 42, 0.72);
-  padding: 22px 0;
-}
-.completion-state button {
-  background: #2b8c76;
-  border: 0;
-  color: #fff;
-  cursor: pointer;
-  padding: 9px 12px;
-}
-.completion-map-stage {
-  min-height: 0;
-  position: relative;
-}
-.completion-detail {
-  background: #f8fbf8;
-  border-left: 4px solid #2b8c76;
-  bottom: 24px;
-  box-shadow: 0 8px 28px rgba(16, 35, 42, 0.18);
-  max-width: 360px;
-  padding: 18px 21px;
-  position: absolute;
-  right: 24px;
-  width: min(38vw, 360px);
-}
-.completion-detail h2 {
-  font-size: 1.25rem;
-  line-height: 1.12;
-  margin: 7px 0 13px;
-}
-.completion-percent {
-  align-items: baseline;
-  display: flex;
-  gap: 9px;
-}
-.completion-percent strong {
-  color: #2b8c76;
-  font:
-    500 2rem 'DM Mono',
-    monospace;
-}
-.completion-percent span,
-.completion-status,
-.completion-attribution {
-  color: rgba(16, 35, 42, 0.66);
-  font-size: 0.68rem;
-}
-.completion-status {
-  background: rgba(244, 185, 66, 0.2);
-  margin: 10px 0;
-  padding: 8px;
-}
-.completion-stats {
-  border-bottom: 1px solid rgba(16, 35, 42, 0.12);
-  border-top: 1px solid rgba(16, 35, 42, 0.12);
-  display: flex;
-  gap: 20px;
-  margin: 13px 0;
-  padding: 11px 0;
-}
-.completion-stats dt {
-  color: rgba(16, 35, 42, 0.58);
-  font:
-    0.57rem 'DM Mono',
-    monospace;
-}
-.completion-stats dd {
-  color: #10232a;
-  font:
-    500 0.82rem 'DM Mono',
-    monospace;
-  margin: 4px 0 0;
-}
-.completion-legend {
+
+.game-member-list {
+  border: 1px solid var(--atlas-line);
   display: grid;
-  gap: 6px;
-  font:
-    0.57rem 'DM Mono',
-    monospace;
+  gap: 7px;
+  margin: 0;
+  padding: 12px;
 }
-.completion-legend span {
+
+.game-member-list label {
   align-items: center;
+  color: var(--atlas-moss);
   display: flex;
+  font-size: 0.7rem;
   gap: 7px;
 }
-.completion-line {
+
+.game-member-list input {
+  accent-color: var(--atlas-orange);
+}
+
+.member-swatch {
+  border: 1px solid rgba(24, 60, 53, 0.18);
   display: inline-block;
-  height: 3px;
-  width: 22px;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
 }
-.completion-line.covered {
-  background: #2b8c76;
+
+.game-map-stage {
+  background: #ceddce;
+  min-height: calc(100vh - 64px);
+  overflow: hidden;
+  position: relative;
 }
-.completion-line.incomplete {
-  background: #8499a7;
+
+.game-map-canvas {
+  height: 100%;
+  inset: 0;
+  position: absolute;
+  width: 100%;
 }
-.completion-attribution {
-  border-top: 1px solid rgba(16, 35, 42, 0.12);
+
+.game-map-loading {
+  background: rgba(255, 253, 247, 0.9);
+  color: var(--atlas-moss);
+  font:
+    0.62rem 'DM Mono',
+    monospace;
+  left: 50%;
+  padding: 8px 10px;
+  position: absolute;
+  top: 20px;
+  transform: translateX(-50%);
+}
+
+.game-map-state {
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-moss);
+  font-size: 0.72rem;
   line-height: 1.45;
-  margin: 14px 0 0;
-  padding-top: 11px;
+  padding: 13px;
 }
 
-.game-shell :focus-visible {
-  outline: 3px solid #f4b942;
-  outline-offset: 3px;
+.game-map-state strong {
+  color: var(--atlas-ink);
+  display: block;
+  margin-bottom: 4px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .game-shell *,
-  .game-shell *::before,
-  .game-shell *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-  }
+.game-map-state p {
+  margin: 0 0 10px;
+}
+
+.game-map-state button,
+.game-map-controls button {
+  cursor: pointer;
+}
+
+.game-map-status {
+  color: var(--atlas-moss);
+  font:
+    0.61rem 'DM Mono',
+    monospace;
+  margin: 12px 0;
+}
+
+.game-trace-list {
+  border-top: 1px solid var(--atlas-line);
+  margin-top: 18px;
+  padding-top: 13px;
+}
+
+.game-trace-list h2 {
+  color: var(--atlas-moss);
+  font:
+    0.59rem 'DM Mono',
+    monospace;
+  margin: 0 0 8px;
+}
+
+.game-trace-viewport {
+  display: grid;
+  gap: 3px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.game-trace-viewport button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--atlas-moss);
+  display: flex;
+  font-size: 0.68rem;
+  gap: 7px;
+  padding: 6px;
+  text-align: left;
+}
+
+.game-trace-viewport button:hover,
+.game-trace-viewport button:focus-visible {
+  background: #eef1e9;
+  border-color: var(--atlas-line);
+  color: var(--atlas-ink);
+}
+
+.game-trace-detail {
+  background: var(--atlas-paper-strong);
+  border: 1px solid var(--atlas-line);
+  box-shadow: 0 8px 24px rgba(24, 60, 53, 0.16);
+  display: grid;
+  gap: 5px;
+  min-width: 180px;
+  padding: 16px;
+  position: absolute;
+  right: 22px;
+  top: 22px;
+  z-index: 3;
+}
+
+.game-trace-close {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-ink);
+  cursor: pointer;
+  font-size: 1.1rem;
+  justify-self: end;
+  line-height: 1;
+  padding: 0;
+}
+
+.game-trace-detail time {
+  color: var(--atlas-moss);
+  font:
+    0.68rem 'DM Mono',
+    monospace;
 }
 
 @media (max-width: 700px) {
   .game-topbar {
-    min-height: 62px;
-    padding: 10px 16px;
+    padding: 12px 16px;
   }
-  .game-topbar .wordmark {
-    position: static;
-  }
-  .game-topbar .game-account-dock {
-    margin-left: 0;
-  }
-  .game-view-switch {
-    justify-content: center;
-    padding: 7px 16px;
-  }
+
   .game-map-layout {
     display: flex;
-    flex-direction: column-reverse;
-    min-height: calc(100dvh - 62px);
+    flex-direction: column;
   }
-  .game-map-stage {
-    min-height: 62dvh;
-  }
-  .game-map-canvas {
-    min-height: 62dvh;
-  }
+
   .game-map-controls {
+    border-bottom: 1px solid var(--atlas-line);
     border-right: 0;
-    border-top: 1px solid rgba(16, 35, 42, 0.12);
-    padding: 24px 18px 32px;
+    max-height: 46vh;
+    order: 2;
+    padding: 20px 16px;
   }
-  .game-map-controls h1 {
-    font-size: 2rem;
-  }
-  .game-trace-detail {
-    bottom: 16px;
-    left: 16px;
-    right: 16px;
-  }
-  .completion-layout {
-    display: flex;
-    flex-direction: column-reverse;
-    min-height: calc(100dvh - 112px);
-  }
-  .completion-map-stage {
-    min-height: 61dvh;
-  }
-  .completion-ledger {
-    border-right: 0;
-    border-top: 1px solid rgba(16, 35, 42, 0.12);
-    padding: 22px 18px 32px;
-  }
-  .completion-detail {
-    bottom: 52px;
-    left: 15px;
-    max-width: none;
-    right: 15px;
-    width: auto;
+
+  .game-map-stage {
+    min-height: 54vh;
+    order: 1;
   }
 }
 

@@ -12,8 +12,18 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .competition_services import DISPATCH_RETRY_SECONDS, MAX_DISPATCH_ATTEMPTS
-from .models import Competition, CompetitionRecomputation, CompetitionResult, ImportedActivity
+from .competition_services import (
+    DISPATCH_RETRY_SECONDS,
+    MAX_DISPATCH_ATTEMPTS,
+    authorized_activity_queryset,
+)
+from .models import (
+    Competition,
+    CompetitionRecomputation,
+    CompetitionResult,
+    CompetitionSharingConsentAudit,
+    ImportedActivity,
+)
 from .services import cleanup_identity_guards, purge_expired_players, retry_revocations
 
 
@@ -30,6 +40,16 @@ def purge_expired_players_task(limit: int = 100) -> dict[str, Any]:
 @shared_task(name="bikemapy.accounts.retry_revocations")  # type: ignore[untyped-decorator]
 def retry_revocations_task(limit: int = 100) -> dict[str, Any]:
     return retry_revocations(limit=max(1, limit))
+
+
+@shared_task(name="bikemapy.accounts.purge_expired_consent_audits")  # type: ignore[untyped-decorator]
+def purge_expired_consent_audits_task(limit: int = 1000) -> dict[str, Any]:
+    expired = CompetitionSharingConsentAudit.objects.filter(
+        retention_until__lte=timezone.now()
+    ).order_by("retention_until", "pk")[: max(1, limit)]
+    ids = list(expired.values_list("pk", flat=True))
+    deleted, _ = CompetitionSharingConsentAudit.objects.filter(pk__in=ids).delete()
+    return {"purged": deleted}
 
 
 @shared_task(name="bikemapy.accounts.recompute_competition_results")  # type: ignore[untyped-decorator]
@@ -89,9 +109,16 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
                 seconds=settings.GAME_RECOMPUTATION_LEASE_SECONDS
             )
             job.save(update_fields=("lease_until",))
-            active_players = set(competition.memberships.values_list("player_id", flat=True))
+            active_memberships = list(
+                competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
+                    sharing_scope="none"
+                )
+            )
+            active_players = {membership.player_id for membership in active_memberships}
             activities = list(
-                ImportedActivity.objects.filter(player_id__in=active_players).order_by("pk")
+                authorized_activity_queryset(
+                    ImportedActivity.objects.all(), active_memberships
+                ).order_by("pk")
             )
             activity_ids = {activity.pk for activity in activities}
             CompetitionResult.objects.filter(competition=competition).exclude(

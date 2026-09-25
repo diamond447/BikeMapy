@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from collections.abc import Iterable
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, cast
@@ -12,9 +14,11 @@ from uuid import uuid4
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
-from apps.accounts.models import Competition, ImportedActivity, Player
+from apps.accounts.competition_services import authorized_activity_queryset
+from apps.accounts.models import Competition, CompetitionMembership, ImportedActivity, Player
 
 from .models import (
     CompletionStatus,
@@ -25,6 +29,7 @@ from .models import (
     RouteCompletionJob,
     RouteCompletionMonthly,
     allow_completion_evidence_append,
+    allow_completion_evidence_erasure,
 )
 
 DEFAULT_TOLERANCE_METERS = 50
@@ -32,6 +37,16 @@ DEFAULT_MAX_ACTIVITIES = 10_000
 METRIC_SRID = 5514
 ALGORITHM_VERSION = "corridor-v1"
 DECIMAL_QUANTUM = Decimal("0.001")
+PUBLIC_COMPLETION_ERROR_CODE = "completion_unavailable"
+PUBLIC_COMPLETION_ERROR_MESSAGE = "Completion calculation is temporarily unavailable."
+logger = logging.getLogger(__name__)
+
+
+def _completion_subject_filter(completion: RouteCompletion) -> Q:
+    if completion.player_id is not None:
+        return Q(player_id=completion.player_id, competition__isnull=True)
+    assert completion.competition_id is not None
+    return Q(player__isnull=True, competition_id=completion.competition_id)
 
 
 class CompletionCalculationError(RuntimeError):
@@ -40,6 +55,187 @@ class CompletionCalculationError(RuntimeError):
 
 class CompletionLeaseLost(CompletionCalculationError):
     """The durable worker lease was replaced before projection commit."""
+
+
+def _reset_completion_projection(completion: RouteCompletion) -> None:
+    """Remove derived values before a privacy-sensitive recomputation."""
+
+    completion.status = CompletionStatus.PENDING
+    completion.covered_length_meters = 0
+    completion.completion_percent = 0
+    completion.calculated_at = None
+    completion.evidence_digest = ""
+    completion.evidence_generation = uuid4()
+    cast(Any, completion).covered_geometry = None
+    completion.error = ""
+    completion.save(
+        update_fields=(
+            "status",
+            "covered_length_meters",
+            "completion_percent",
+            "calculated_at",
+            "evidence_digest",
+            "evidence_generation",
+            "error",
+            "updated_at",
+        )
+    )
+
+
+def erase_activity_completion_data(activity_id: Any, *, player_id: int | None = None) -> None:
+    """Erase activity-derived evidence and fence projections for privacy removal."""
+
+    with transaction.atomic():
+        if player_id is None:
+            player_id = (
+                ImportedActivity.objects.filter(pk=activity_id)
+                .values_list("player_id", flat=True)
+                .first()
+            )
+        competition_ids = (
+            tuple(
+                CompetitionMembership.objects.filter(player_id=player_id)
+                .order_by("competition_id")
+                .values_list("competition_id", flat=True)
+            )
+            if player_id is not None
+            else ()
+        )
+        completion_ids = list(
+            RouteCompletionEvidence.objects.filter(activity_id=activity_id).values_list(
+                "completion_id", flat=True
+            )
+        )
+        subject_filter = Q(pk__in=completion_ids)
+        if player_id is not None:
+            subject_filter |= Q(player_id=player_id)
+        if competition_ids:
+            subject_filter |= Q(competition_id__in=competition_ids)
+        completions = list(RouteCompletion.objects.filter(subject_filter).order_by("pk"))
+        if not completions:
+            return
+        _fence_completion_jobs(completions)
+        locked_completions = list(
+            RouteCompletion.objects.select_for_update()
+            .filter(pk__in=[completion.pk for completion in completions])
+            .order_by("pk")
+        )
+        with allow_completion_evidence_erasure():
+            RouteCompletionEvidence.objects.filter(activity_id=activity_id).delete()
+        for completion in locked_completions:
+            RouteCompletionMonthly.objects.filter(
+                route_version_id=completion.route_version_id,
+                subject_type=completion.subject_type,
+            ).filter(_completion_subject_filter(completion)).delete()
+            _reset_completion_projection(completion)
+
+
+def _fence_completion_jobs(completions: list[RouteCompletion]) -> None:
+    """Fence workers before deleting the projection data they may be rebuilding."""
+
+    job_query = Q(pk__in=[])
+    for completion in completions:
+        subject_filter = (
+            Q(player_id=completion.player_id, competition__isnull=True)
+            if completion.player_id is not None
+            else Q(player__isnull=True, competition_id=completion.competition_id)
+        )
+        job_query |= (
+            Q(
+                route_version_id=completion.route_version_id,
+                subject_type=completion.subject_type,
+            )
+            & subject_filter
+        )
+    for job in RouteCompletionJob.objects.select_for_update().filter(job_query).order_by("pk"):
+        job.status = RouteCompletionJob.Status.PENDING
+        job.lease_token = ""
+        job.lease_until = None
+        job.dispatch_token = ""
+        job.dispatch_lease_until = None
+        job.next_attempt_at = timezone.now()
+        job.completed_at = None
+        job.error = ""
+        job.save(
+            update_fields=(
+                "status",
+                "lease_token",
+                "lease_until",
+                "dispatch_token",
+                "dispatch_lease_until",
+                "next_attempt_at",
+                "completed_at",
+                "error",
+            )
+        )
+
+
+def reset_competition_completion_data(
+    competition: Competition, *, player_id: int | None = None
+) -> None:
+    """Synchronously erase competition evidence and fence in-flight workers.
+
+    A scope transition invalidates the entire union projection. Evidence from
+    the affected player is erased immediately; the queued rebuild recreates
+    only activities authorized by the new scope. Resetting the projection
+    before returning prevents stale completion values from being observable.
+    """
+
+    with transaction.atomic():
+        completions = list(RouteCompletion.objects.filter(competition=competition).order_by("pk"))
+        _fence_completion_jobs(completions)
+        locked_completions = list(
+            RouteCompletion.objects.select_for_update()
+            .filter(pk__in=[completion.pk for completion in completions])
+            .order_by("pk")
+        )
+        if player_id is None:
+            evidence_filter = Q(completion__in=locked_completions)
+        else:
+            evidence_filter = Q(
+                completion__in=locked_completions,
+                activity_player_id=player_id,
+            )
+        with allow_completion_evidence_erasure():
+            RouteCompletionEvidence.objects.filter(evidence_filter).delete()
+        for completion in locked_completions:
+            RouteCompletionMonthly.objects.filter(
+                route_version_id=completion.route_version_id,
+                subject_type=completion.subject_type,
+                competition_id=competition.pk,
+            ).delete()
+            _reset_completion_projection(completion)
+
+
+def erase_player_completion_data(player_id: int, competition_ids: Iterable[int] = ()) -> None:
+    """Erase all derived completion values tied to a player before account deletion."""
+
+    competition_ids = tuple(competition_ids)
+    completions = list(
+        RouteCompletion.objects.filter(
+            Q(player_id=player_id) | Q(competition_id__in=competition_ids)
+        ).order_by("pk")
+    )
+    if not completions:
+        return
+    with transaction.atomic():
+        _fence_completion_jobs(completions)
+        locked_completions = list(
+            RouteCompletion.objects.select_for_update()
+            .filter(pk__in=[item.pk for item in completions])
+            .order_by("pk")
+        )
+        with allow_completion_evidence_erasure():
+            RouteCompletionEvidence.objects.filter(
+                Q(activity__player_id=player_id)
+                | Q(completion_id__in=[completion.pk for completion in locked_completions])
+            ).delete()
+        for completion in locked_completions:
+            RouteCompletionMonthly.objects.filter(
+                route_version_id=completion.route_version_id,
+                subject_type=completion.subject_type,
+            ).filter(_completion_subject_filter(completion)).delete()
+            _reset_completion_projection(completion)
 
 
 def _geometry(value: Any) -> Any:
@@ -117,11 +313,12 @@ def _subject_activities(
     else:
         if competition is None:
             raise CompletionCalculationError("Competition completion subject is missing.")
-        member_ids = competition.memberships.values_list("player_id", flat=True)
-        query = ImportedActivity.objects.filter(
-            player_id__in=member_ids,
-            removed_at__isnull=True,
-        ).exclude(geometry__isnull=True)
+        memberships = list(
+            competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
+                sharing_scope=CompetitionMembership.SharingScope.NONE
+            )
+        )
+        query = authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
     if query.count() > limit:
         raise CompletionCalculationError(
             "Completion activity workload exceeds the configured limit."
@@ -342,7 +539,7 @@ def schedule_completion(
         completion.requested_at = timezone.now()
         completion.error = ""
         completion.save(update_fields=("status", "requested_at", "error", "updated_at"))
-        job, _ = RouteCompletionJob.objects.get_or_create(
+        job, created = RouteCompletionJob.objects.get_or_create(
             idempotency_key=key,
             defaults={
                 "route_version": version,
@@ -354,6 +551,9 @@ def schedule_completion(
                 "reason": reason[:255],
             },
         )
+        if not created and job.reason != reason[:255]:
+            job.reason = reason[:255]
+            job.save(update_fields=("reason",))
         if job.status == RouteCompletionJob.Status.RUNNING:
             # A new activity or membership revision supersedes work already
             # in flight.  Fencing the worker makes its eventual write
