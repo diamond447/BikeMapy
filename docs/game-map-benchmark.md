@@ -29,7 +29,13 @@ Competition list responses expose at most 100 consenting members and set
 `members_truncated` for legacy competitions that exceed that page. The client
 uses only this bounded page for its initial map request; the map endpoint still
 authorizes an explicitly requested member beyond the page without materializing
-the rest of the competition.
+the rest of the competition. New joins are rejected once the competition has
+100 members, so only explicitly retained legacy rosters can exceed the limit.
+
+Before the global 1,200-activity cap, the API reserves a deterministic
+per-member candidate budget. A dense member therefore cannot starve every
+other selected member; the response still applies the 240-activity per-member
+output cap and reports truncation when that budget omits eligible activities.
 
 The client renders one grouped canvas overlay while MapLibre retains navigation
 and attribution. Activity geometry remains in the already-authorized response,
@@ -41,7 +47,10 @@ are retained. A click on a visible member line resolves the
 nearest activity in that member's authorized geometry. A one-degree,
 antimeridian-safe activity index bounds candidate lookup, and pointer bursts
 are coalesced to one exact lookup per animation frame, so precise trace
-selection is lazy and does not delay the initial render. Member colors are
+selection is lazy and does not delay the initial render. The client index uses
+at most 100,000 cell references and 256 cells per activity; wide or exhausted
+entries use a deterministic fallback over the bounded response instead of
+rasterizing an unbounded rectangle. Member colors are
 copied into feature properties; trace inspection exposes only the calendar
 date. Titles, exact timestamps, speed, provider IDs, and payload metadata are
 not part of the response contract.
