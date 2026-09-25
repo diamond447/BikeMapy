@@ -611,6 +611,8 @@ def validate_webhook_payload(payload: Any) -> dict[str, Any] | None:
 
 
 def _schedule_player_recomputations(player_id: int) -> None:
+    from apps.reference_routes.completion_services import schedule_player_completions
+
     from .competition_services import schedule_recomputation
 
     competition_ids = list(
@@ -624,6 +626,8 @@ def _schedule_player_recomputations(player_id: int) -> None:
     for competition_id in competition_ids:
         competition = Competition.objects.select_for_update().get(pk=competition_id)
         schedule_recomputation(competition)
+    player = Player.objects.get(pk=player_id)
+    schedule_player_completions(player, reason="activity-change")
 
 
 def remove_activity(player: Player, provider_activity_id: str, *, reason: str) -> bool:

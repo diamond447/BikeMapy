@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import json
 import uuid
+from collections.abc import Iterable
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
@@ -17,7 +20,7 @@ from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
-from apps.catalogue.fields import RouteGeometryField
+from apps.catalogue.fields import RouteCoverageGeometryField, RouteGeometryField
 
 OSM_OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
 OSM_DISCOVERY_QUERY = """[out:json][timeout:90];
@@ -29,6 +32,30 @@ out meta;
 out meta geom;"""
 MAX_DISCOVERY_ARTIFACT_BYTES = 5 * 1024 * 1024
 MAX_OVERPASS_FAILURE_LOG_BYTES = 512 * 1024
+_completion_evidence_append = contextvars.ContextVar("completion_evidence_append", default=False)
+_completion_evidence_erasure = contextvars.ContextVar("completion_evidence_erasure", default=False)
+
+
+@contextmanager
+def allow_completion_evidence_append() -> Any:
+    """Permit one controlled append-only evidence write from the calculator."""
+
+    token = _completion_evidence_append.set(True)
+    try:
+        yield
+    finally:
+        _completion_evidence_append.reset(token)
+
+
+@contextmanager
+def allow_completion_evidence_erasure() -> Any:
+    """Permit the privacy erasure service to remove derived evidence."""
+
+    token = _completion_evidence_erasure.set(True)
+    try:
+        yield
+    finally:
+        _completion_evidence_erasure.reset(token)
 
 
 def _is_exact_https_url(value: str, *, hostname: str, path: str) -> bool:
@@ -310,6 +337,27 @@ def has_deployable_derivative_offer(
             return False
     offer = getattr(source_import, "alteration_offer", None)
     return bool(offer and offer.is_complete_for(source_import, configured))
+
+
+def has_publishable_reference_source(
+    collection: ReferenceCollection, source_import: Any | None = None
+) -> bool:
+    """Apply the source-specific publication gate shared by route/version saves."""
+
+    if collection.source_kind == ReferenceSourceKind.OSM_NUMBERED:
+        return bool(
+            collection.permission_granted
+            and has_deployable_derivative_offer(collection, source_import)
+        )
+    if collection.source_kind == ReferenceSourceKind.VIA_CZECHIA:
+        return bool(
+            getattr(settings, "REFERENCE_ROUTE_VIA_CZECHIA_ENABLED", False)
+            and collection.permission_granted
+            and collection.active
+            and source_import is not None
+            and source_import.response_metadata.get("source_available") is True
+        )
+    return False
 
 
 class ReferenceSourceKind(models.TextChoices):
@@ -629,11 +677,7 @@ class ReferenceRoute(models.Model):
                 current_version = self.current_version
                 if current_version is not None:
                     source_import = current_version.source_import
-            if (
-                collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
-                or not collection.permission_granted
-                or not has_deployable_derivative_offer(collection, source_import)
-            ):
+            if not has_publishable_reference_source(collection, source_import):
                 raise ValidationError(
                     "A blocked reference source or incomplete alteration offer "
                     "cannot be published or activated."
@@ -694,11 +738,7 @@ class ReferenceRouteVersion(models.Model):
     def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
         if self.active:
             collection = ReferenceCollection.objects.get(pk=self.route.collection_id)
-            if (
-                collection.source_kind != ReferenceSourceKind.OSM_NUMBERED
-                or not collection.permission_granted
-                or not has_deployable_derivative_offer(collection, self.source_import)
-            ):
+            if not has_publishable_reference_source(collection, self.source_import):
                 raise ValidationError(
                     "A blocked reference source or incomplete alteration offer "
                     "cannot activate a version."
@@ -774,3 +814,248 @@ class ReferenceRecomputation(models.Model):
 
     def __str__(self) -> str:
         return f"{self.route_version} ({self.status})"
+
+
+class CompletionSubject(models.TextChoices):
+    PLAYER = "player", "Player"
+    COMPETITION = "competition", "Competition"
+
+
+class CompletionStatus(models.TextChoices):
+    FRESH = "fresh", "Fresh"
+    PENDING = "pending", "Pending"
+    FAILED = "failed", "Failed"
+
+
+class RouteCompletion(models.Model):
+    """A version-pinned, spatially unioned completion projection."""
+
+    route_version = models.ForeignKey(
+        ReferenceRouteVersion, on_delete=models.PROTECT, related_name="completion_results"
+    )
+    subject_type = models.CharField(max_length=16, choices=CompletionSubject.choices)
+    player = models.ForeignKey(
+        "accounts.Player",
+        on_delete=models.CASCADE,
+        related_name="route_completions",
+        blank=True,
+        null=True,
+    )
+    competition = models.ForeignKey(
+        "accounts.Competition",
+        on_delete=models.CASCADE,
+        related_name="route_completions",
+        blank=True,
+        null=True,
+    )
+    status = models.CharField(
+        max_length=16, choices=CompletionStatus.choices, default=CompletionStatus.PENDING
+    )
+    tolerance_meters = models.DecimalField(max_digits=8, decimal_places=3, default=50)
+    total_length_meters = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    covered_length_meters = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    completion_percent = models.DecimalField(max_digits=7, decimal_places=3, default=0)
+    calculated_at = models.DateTimeField(blank=True, null=True)
+    requested_at = models.DateTimeField(default=timezone.now)
+    algorithm_version = models.CharField(max_length=32, default="corridor-v1")
+    route_checksum = models.CharField(max_length=64, blank=True)
+    membership_revision = models.PositiveBigIntegerField(blank=True, null=True)
+    evidence_digest = models.CharField(max_length=64, blank=True)
+    evidence_generation = models.UUIDField(default=uuid.uuid4, editable=False)
+    error = models.TextField(blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("route_version", "player"),
+                condition=Q(player__isnull=False),
+                name="completion_route_player_unique",
+            ),
+            models.UniqueConstraint(
+                fields=("route_version", "competition"),
+                condition=Q(competition__isnull=False),
+                name="completion_route_competition_unique",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        subject_type=CompletionSubject.PLAYER,
+                        player__isnull=False,
+                        competition__isnull=True,
+                    )
+                    | Q(
+                        subject_type=CompletionSubject.COMPETITION,
+                        player__isnull=True,
+                        competition__isnull=False,
+                    )
+                ),
+                name="completion_subject_matches_type",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("status", "requested_at"), name="completion_status_req_idx"),
+            models.Index(
+                fields=("route_version", "subject_type"), name="completion_version_subject_idx"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        subject = self.player_id or self.competition_id
+        return f"completion:{self.route_version_id}:{self.subject_type}:{subject}"
+
+
+class ImmutableCompletionEvidenceQuerySet(models.QuerySet["RouteCompletionEvidence"]):
+    def update(self, **kwargs: object) -> int:
+        del kwargs
+        raise ValidationError("Completion evidence is immutable and append-only.")
+
+    def delete(self) -> tuple[int, dict[str, int]]:
+        if _completion_evidence_erasure.get():
+            return super().delete()
+        raise ProtectedError("Completion evidence is immutable and append-only.", set(self))
+
+    def bulk_update(self, objs: Any, fields: Any, batch_size: int | None = None) -> int:
+        del objs, fields, batch_size
+        raise ValidationError("Completion evidence is immutable and append-only.")
+
+    def bulk_create(
+        self,
+        objs: Iterable[RouteCompletionEvidence],
+        batch_size: int | None = None,
+        ignore_conflicts: bool = False,
+        update_conflicts: bool = False,
+        update_fields: Iterable[str] | None = None,
+        unique_fields: Iterable[str] | None = None,
+    ) -> list[RouteCompletionEvidence]:
+        del objs, batch_size, ignore_conflicts, update_conflicts, update_fields, unique_fields
+        raise ValidationError("Use the controlled evidence append service.")
+
+
+class RouteCompletionEvidence(models.Model):
+    """Traceable contribution of one imported activity to one projection."""
+
+    completion = models.ForeignKey(
+        RouteCompletion, on_delete=models.CASCADE, related_name="evidence"
+    )
+    activity = models.ForeignKey(
+        "accounts.ImportedActivity",
+        on_delete=models.SET_NULL,
+        related_name="route_completion_evidence",
+        blank=True,
+        null=True,
+    )
+    provider_activity_id = models.CharField(max_length=80)
+    activity_player_id = models.PositiveBigIntegerField()
+    evidence_generation = models.UUIDField(default=uuid.uuid4, editable=False)
+    covered_length_meters = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    covered_geometry = RouteCoverageGeometryField(blank=True, null=True)
+    activity_geometry_hash = models.CharField(max_length=64, blank=True)
+    membership_revision = models.PositiveBigIntegerField(blank=True, null=True)
+    evidence = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    objects = ImmutableCompletionEvidenceQuerySet.as_manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("completion", "evidence_generation", "provider_activity_id"),
+                name="completion_evidence_activity_unique",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.completion_id}:{self.provider_activity_id}"
+
+    def save(self, *args: object, **kwargs: object) -> None:  # noqa: DJ012
+        if self.pk or not _completion_evidence_append.get():
+            raise ValidationError("Completion evidence is immutable and append-only.")
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def delete(self, *args: object, **kwargs: object) -> tuple[int, dict[str, int]]:
+        raise ProtectedError("Completion evidence is immutable and append-only.", {self})
+
+
+class RouteCompletionMonthly(models.Model):
+    """Unique newly covered distance for a subject and calendar month."""
+
+    route_version = models.ForeignKey(
+        ReferenceRouteVersion, on_delete=models.PROTECT, related_name="monthly_completions"
+    )
+    subject_type = models.CharField(max_length=16, choices=CompletionSubject.choices)
+    player = models.ForeignKey(
+        "accounts.Player",
+        on_delete=models.CASCADE,
+        related_name="monthly_route_completions",
+        blank=True,
+        null=True,
+    )
+    competition = models.ForeignKey(
+        "accounts.Competition",
+        on_delete=models.CASCADE,
+        related_name="monthly_route_completions",
+        blank=True,
+        null=True,
+    )
+    month = models.DateField()
+    covered_length_meters = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    covered_geometry = RouteCoverageGeometryField(blank=True, null=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("route_version", "player", "month"),
+                condition=Q(player__isnull=False),
+                name="completion_month_player_unique",
+            ),
+            models.UniqueConstraint(
+                fields=("route_version", "competition", "month"),
+                condition=Q(competition__isnull=False),
+                name="completion_month_competition_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"monthly:{self.route_version_id}:{self.month}:{self.subject_type}"
+
+
+class RouteCompletionJob(models.Model):
+    """Idempotent durable queue row for player/competition calculations."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETE = "complete", "Complete"
+        FAILED = "failed", "Failed"
+
+    idempotency_key = models.CharField(max_length=255, unique=True)
+    route_version = models.ForeignKey(
+        ReferenceRouteVersion, on_delete=models.PROTECT, related_name="completion_jobs"
+    )
+    subject_type = models.CharField(max_length=16, choices=CompletionSubject.choices)
+    player = models.ForeignKey("accounts.Player", on_delete=models.CASCADE, blank=True, null=True)
+    competition = models.ForeignKey(
+        "accounts.Competition", on_delete=models.CASCADE, blank=True, null=True
+    )
+    reason = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    lease_token = models.CharField(max_length=64, blank=True)
+    lease_until = models.DateTimeField(blank=True, null=True)
+    dispatch_token = models.CharField(max_length=64, blank=True)
+    dispatch_lease_until = models.DateTimeField(blank=True, null=True)
+    dispatched_at = models.DateTimeField(blank=True, null=True)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=("status", "next_attempt_at"), name="completion_job_due_idx")
+        ]
+
+    def __str__(self) -> str:
+        return f"completion-job:{self.idempotency_key}"

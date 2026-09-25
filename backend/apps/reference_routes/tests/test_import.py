@@ -38,6 +38,7 @@ from apps.reference_routes.services import (
     _validate_retrieved_at,
     approve_reference_route,
     blocked_via_czechia_import,
+    import_via_czechia_snapshot,
     link_stage,
     record_alteration_offer,
     store_pending_snapshot,
@@ -213,8 +214,81 @@ def test_via_czechia_is_blocked_without_request() -> None:
         source_url="https://viaczechia.cz",
         attribution="Via Czechia",
         licence="CC BY-NC-SA 4.0",
+        attribution_text="Via Czechia contributors",
+        attribution_url="https://viaczechia.cz/attribution",
+        licence_uri="https://viaczechia.cz/licence",
+        derivative_offer_url="https://viaczechia.cz/offer",
+        rightsholder="Via Czechia",
+        contact_url="https://viaczechia.cz/contact",
     )
     assert blocked_via_czechia_import(collection=item)["status"] == "blocked"
+
+
+@override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
+def test_via_czechia_import_requires_source_availability_and_keeps_route_stages_together() -> None:
+    item = ReferenceCollection.objects.create(
+        slug="via-available",
+        name="Via Czechia",
+        source_kind=ReferenceSourceKind.VIA_CZECHIA,
+        source_url="https://viaczechia.cz",
+        attribution="Via Czechia",
+        licence="CC BY-NC-SA 4.0",
+        permission_granted=True,
+        active=True,
+        attribution_text="Via Czechia contributors",
+        attribution_url="https://viaczechia.cz/attribution",
+        licence_uri="https://viaczechia.cz/licence",
+        derivative_offer_url="https://viaczechia.cz/offer",
+        rightsholder="Via Czechia",
+        contact_url="https://viaczechia.cz/contact",
+    )
+    payload = {
+        "source_available": True,
+        "route": {
+            "source_identifier": "via-main",
+            "title": "Via Czechia",
+            "geometry": {"type": "LineString", "coordinates": [[14, 50], [14.1, 50]]},
+        },
+        "stages": [
+            {
+                "source_identifier": "via-stage-1",
+                "title": "Stage 1",
+                "geometry": {"type": "LineString", "coordinates": [[14, 50], [14.05, 50]]},
+            }
+        ],
+    }
+    blocked = import_via_czechia_snapshot(
+        collection=item, payload={**payload, "source_available": False}
+    )
+    assert blocked["status"] == "blocked"
+    imported = import_via_czechia_snapshot(collection=item, payload=payload)
+    assert imported["created"] == 2
+    parent = ReferenceRoute.objects.get(collection=item, parent__isnull=True)
+    assert parent.stages.count() == 1
+    assert parent.current_version is not None
+    changed = json.loads(json.dumps(payload))
+    changed["route"]["title"] = "Via Czechia updated"
+    changed["route"]["geometry"]["coordinates"] = [[14, 50], [14.12, 50]]
+    changed["stages"][0]["geometry"]["coordinates"] = [[14, 50], [14.06, 50]]
+    assert import_via_czechia_snapshot(collection=item, payload=changed)["created"] == 2
+    parent.refresh_from_db()
+    assert parent.versions.count() == 2
+    assert parent.current_version is not None
+    assert parent.current_version.version_number == 2
+    player = Player.objects.create(
+        user=get_user_model().objects.create_user(username="via-completion-player"),
+        strava_athlete_id=991,
+    )
+    approve_reference_route(parent, reviewer="via-reviewer")
+    parent.refresh_from_db()
+    assert parent.active
+    stage = parent.stages.get()
+    assert stage.active
+    assert stage.current_version is not None
+    assert stage.current_version.version_number == 2
+    assert parent.current_version is not None
+    assert parent.current_version.completion_jobs.filter(player=player).exists()
+    assert stage.current_version.completion_jobs.filter(player=player).exists()
 
 
 def test_source_gate_blocks_import_and_activation() -> None:
@@ -228,6 +302,41 @@ def test_source_gate_blocks_import_and_activation() -> None:
     )
     with pytest.raises(ValidationError):
         route.save()
+
+
+@pytest.mark.parametrize(
+    "coordinates",
+    [
+        [[14.0, 50.0], [14.0, 50.0]],
+        [[11.9, 50.0], [14.0, 50.0]],
+        [[14.0, 50.0], [14.05, 50.05], [14.0, 50.05], [14.05, 50.0]],
+        [[14.0, 50.0], [float("nan"), 50.0]],
+    ],
+)
+@override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
+def test_via_czechia_rejects_unbounded_or_invalid_geometry(coordinates: list[list[float]]) -> None:
+    item = ReferenceCollection.objects.create(
+        slug=f"via-invalid-{abs(hash(repr(coordinates)))}",
+        name="Via Czechia invalid",
+        source_kind=ReferenceSourceKind.VIA_CZECHIA,
+        source_url="https://viaczechia.cz",
+        attribution="Via Czechia",
+        licence="CC BY-NC-SA 4.0",
+        permission_granted=True,
+        active=True,
+    )
+    with pytest.raises(ValueError):
+        import_via_czechia_snapshot(
+            collection=item,
+            payload={
+                "source_available": True,
+                "route": {
+                    "source_identifier": "invalid",
+                    "title": "Invalid",
+                    "geometry": {"type": "LineString", "coordinates": coordinates},
+                },
+            },
+        )
 
 
 @override_settings(REFERENCE_ROUTE_DERIVATIVE_OFFER_URL="")
