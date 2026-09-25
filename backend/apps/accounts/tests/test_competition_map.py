@@ -16,6 +16,7 @@ pytestmark = pytest.mark.django_db
 
 SETTINGS = {
     "GAME_ENABLED": True,
+    "COMPETITION_GAME_ENABLED": True,
     "STRAVA_OAUTH_CLIENT_ID": "client-id",
     "STRAVA_OAUTH_CLIENT_SECRET": "client-secret",
     "STRAVA_TOKEN_ENCRYPTION_KEY": "test-key",

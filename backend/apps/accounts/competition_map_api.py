@@ -23,7 +23,7 @@ from rest_framework.response import Response
 from .activity_services import geometry_payload
 from .game_api import GameEndpoint, _private
 from .models import Competition, CompetitionMembership, ImportedActivity, Player
-from .services import game_is_available
+from .services import competition_is_available
 
 MAX_FEATURES = 1_200
 MAX_FEATURES_PER_MEMBER = 240
@@ -374,7 +374,7 @@ class CompetitionMapView(GameEndpoint):
         return _private(super().dispatch(request, *args, **kwargs))
 
     def get(self, request: Any, competition_id: UUID) -> Response:
-        if not game_is_available():
+        if not competition_is_available():
             return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):
