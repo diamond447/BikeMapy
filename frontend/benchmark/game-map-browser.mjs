@@ -9,7 +9,9 @@ const context = await browser.newContext()
 await context.addCookies([{ name: 'sessionid', value: sessionKey, url: apiUrl }])
 const samples = []
 const page = await context.newPage()
-await page.goto(gameUrl, { waitUntil: 'domcontentloaded' })
+const benchmarkUrl = new URL(gameUrl)
+benchmarkUrl.searchParams.set('benchmark', 'full-update')
+await page.goto(benchmarkUrl.toString(), { waitUntil: 'domcontentloaded' })
 await page.waitForSelector('[data-map-response-loaded="true"]', { state: 'attached' })
 await page.waitForFunction(
   () => performance.getEntriesByName('game-map-update-to-render').length > 0,

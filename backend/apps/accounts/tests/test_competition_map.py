@@ -11,6 +11,7 @@ from django.utils import timezone
 
 import apps.accounts.competition_map_api as competition_map_api
 from apps.accounts.competition_services import (
+    CURRENT_SHARING_DISCLOSURE_VERSION,
     create_competition,
     grant_sharing_consent,
     join_competition,
@@ -50,6 +51,8 @@ def consent(membership: CompetitionMembership) -> None:
         membership.player,
         membership.competition,
         scope=CompetitionMembership.SharingScope.RECENT,
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
     )
 
 

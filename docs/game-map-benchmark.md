@@ -41,14 +41,13 @@ the API p95 is below that ceiling and the browser adds no more than 100 ms to
 the map update after the response arrives. The API probe performs one
 unmeasured warm-up request before collecting its 30 samples. The browser probe
 waits for the initial map and then toggles a member filter 30 times on that
-same page. For a competition within the endpoint member cap, those toggles
-reuse the already-authorized response and update a grouped visual layer; each
-sample starts at that layer update and waits for a MapLibre render and one
-animation frame. The initial response still loads the activity-level
-interaction source. This measures the real dense-map interaction path without
-including unrelated style/tile loading or later viewport requests. These
-budgets are deployment targets tied to the response limits, not thresholds
-changed to fit one run.
+same page in an opt-in `benchmark=full-update` mode. Every sample forces a new
+authorized map response and measures both grouped visual `setData` and
+activity-level interaction `setData`, waiting for both MapLibre sources to
+parse/load, a render, and one animation frame. The normal cached filter path is
+not the acceptance measurement; it may be reported separately as a diagnostic.
+These budgets are deployment targets tied to the response limits, not
+thresholds changed to fit one run.
 
 The reproducible command and the latest local result are recorded in
 [game-map-benchmark-results.json](game-map-benchmark-results.json). The
@@ -63,7 +62,6 @@ The checked-in result was collected against local PostGIS with 30 API samples;
 the browser field is added when the optional frontend/backend `--browser-url`
 probe is run.
 
-The exact-head run at revision `12de3b848e1482f63b0f3fa424e6ffb81c62b280`
-(2026-09-25T14:13:02Z) measured API p95 1,253.2 ms against the 1,500 ms
-budget and browser map-update-to-render p95 35.5 ms against the 100 ms budget.
-Both budgets pass for the 1,200-trace fixture.
+The checked-in result must be replaced after the full-response browser probe is
+run at the final implementation head. The browser acceptance value is the
+`browser_response_to_render_ms` p95, with a 100 ms budget.

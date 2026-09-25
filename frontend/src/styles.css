@@ -943,6 +943,273 @@ h1 {
   }
 }
 
+/* Private game shell: keep the map as a real, visible interaction surface. */
+.game-shell {
+  background: var(--atlas-paper);
+  color: var(--atlas-ink);
+  min-height: 100vh;
+}
+
+.game-topbar {
+  align-items: center;
+  background: var(--atlas-paper-strong);
+  border-bottom: 1px solid var(--atlas-line);
+  display: flex;
+  justify-content: space-between;
+  min-height: 64px;
+  padding: 12px 26px;
+  position: relative;
+  z-index: 5;
+}
+
+.game-topbar-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.language-toggle {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-moss);
+  cursor: pointer;
+  font:
+    0.62rem 'DM Mono',
+    monospace;
+  letter-spacing: 0.08em;
+  padding: 7px;
+}
+
+.game-map-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  min-height: calc(100vh - 64px);
+}
+
+.game-map-controls {
+  background: var(--atlas-paper-strong);
+  border-right: 1px solid var(--atlas-line);
+  overflow: auto;
+  padding: 28px 24px;
+  position: relative;
+  z-index: 2;
+}
+
+.game-map-controls h1 {
+  font-size: clamp(1.8rem, 3vw, 2.55rem);
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+  margin: 8px 0 14px;
+}
+
+.game-map-controls > p {
+  color: var(--atlas-moss);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  margin: 0 0 22px;
+}
+
+.game-map-label,
+.game-member-list legend {
+  color: var(--atlas-moss);
+  font:
+    0.59rem 'DM Mono',
+    monospace;
+}
+
+.game-map-controls select {
+  background: #f0f3ed;
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-ink);
+  display: block;
+  font-size: 0.76rem;
+  margin: 6px 0 18px;
+  padding: 8px;
+  width: 100%;
+}
+
+.game-member-list {
+  border: 1px solid var(--atlas-line);
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 12px;
+}
+
+.game-member-list label {
+  align-items: center;
+  color: var(--atlas-moss);
+  display: flex;
+  font-size: 0.7rem;
+  gap: 7px;
+}
+
+.game-member-list input {
+  accent-color: var(--atlas-orange);
+}
+
+.member-swatch {
+  border: 1px solid rgba(24, 60, 53, 0.18);
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
+}
+
+.game-map-stage {
+  background: #ceddce;
+  min-height: calc(100vh - 64px);
+  overflow: hidden;
+  position: relative;
+}
+
+.game-map-canvas {
+  height: 100%;
+  inset: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.game-map-loading {
+  background: rgba(255, 253, 247, 0.9);
+  color: var(--atlas-moss);
+  font:
+    0.62rem 'DM Mono',
+    monospace;
+  left: 50%;
+  padding: 8px 10px;
+  position: absolute;
+  top: 20px;
+  transform: translateX(-50%);
+}
+
+.game-map-state {
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-moss);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  padding: 13px;
+}
+
+.game-map-state strong {
+  color: var(--atlas-ink);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.game-map-state p {
+  margin: 0 0 10px;
+}
+
+.game-map-state button,
+.game-map-controls button {
+  cursor: pointer;
+}
+
+.game-map-status {
+  color: var(--atlas-moss);
+  font:
+    0.61rem 'DM Mono',
+    monospace;
+  margin: 12px 0;
+}
+
+.game-trace-list {
+  border-top: 1px solid var(--atlas-line);
+  margin-top: 18px;
+  padding-top: 13px;
+}
+
+.game-trace-list h2 {
+  color: var(--atlas-moss);
+  font:
+    0.59rem 'DM Mono',
+    monospace;
+  margin: 0 0 8px;
+}
+
+.game-trace-viewport {
+  display: grid;
+  gap: 3px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.game-trace-viewport button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--atlas-moss);
+  display: flex;
+  font-size: 0.68rem;
+  gap: 7px;
+  padding: 6px;
+  text-align: left;
+}
+
+.game-trace-viewport button:hover,
+.game-trace-viewport button:focus-visible {
+  background: #eef1e9;
+  border-color: var(--atlas-line);
+  color: var(--atlas-ink);
+}
+
+.game-trace-detail {
+  background: var(--atlas-paper-strong);
+  border: 1px solid var(--atlas-line);
+  box-shadow: 0 8px 24px rgba(24, 60, 53, 0.16);
+  display: grid;
+  gap: 5px;
+  min-width: 180px;
+  padding: 16px;
+  position: absolute;
+  right: 22px;
+  top: 22px;
+  z-index: 3;
+}
+
+.game-trace-close {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-ink);
+  cursor: pointer;
+  font-size: 1.1rem;
+  justify-self: end;
+  line-height: 1;
+  padding: 0;
+}
+
+.game-trace-detail time {
+  color: var(--atlas-moss);
+  font:
+    0.68rem 'DM Mono',
+    monospace;
+}
+
+@media (max-width: 700px) {
+  .game-topbar {
+    padding: 12px 16px;
+  }
+
+  .game-map-layout {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .game-map-controls {
+    border-bottom: 1px solid var(--atlas-line);
+    border-right: 0;
+    max-height: 46vh;
+    order: 2;
+    padding: 20px 16px;
+  }
+
+  .game-map-stage {
+    min-height: 54vh;
+    order: 1;
+  }
+}
+
 /* Player account dock: a quiet atlas control with a single clear state signal. */
 .game-account-dock {
   position: relative;

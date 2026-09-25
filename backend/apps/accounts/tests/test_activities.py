@@ -30,7 +30,11 @@ from apps.accounts.activity_services import (
     webhook_event_key,
 )
 from apps.accounts.activity_tasks import dispatch_strava_sync_task
-from apps.accounts.competition_services import create_competition, grant_sharing_consent
+from apps.accounts.competition_services import (
+    CURRENT_SHARING_DISCLOSURE_VERSION,
+    create_competition,
+    grant_sharing_consent,
+)
 from apps.accounts.models import (
     CompetitionMembership,
     CompetitionRecomputation,
@@ -105,9 +109,17 @@ def test_activity_eligibility_rejects_private_virtual_and_geometryless_payloads(
 def test_import_is_idempotent_shared_and_privacy_downgrade_removes_results() -> None:
     player = _player()
     competition, _ = create_competition(player, name="Rides")
-    grant_sharing_consent(player, competition, scope="recent")
-    assert import_activity(player, _activity()) == "imported"
-    assert import_activity(player, _activity()) == "updated"
+    grant_sharing_consent(
+        player,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    recent_start = (timezone.now() - timedelta(days=1)).strftime("%Y-%m-%dT12:30:00Z")
+    payload = _activity(start_date=recent_start, updated_at=recent_start)
+    assert import_activity(player, payload) == "imported"
+    assert import_activity(player, payload) == "updated"
     activity = ImportedActivity.objects.get(player=player)
     assert ImportedActivity.objects.filter(player=player).count() == 1
     job = CompetitionRecomputation.objects.latest("pk")

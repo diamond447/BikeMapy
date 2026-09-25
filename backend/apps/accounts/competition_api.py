@@ -16,7 +16,6 @@ from rest_framework.throttling import BaseThrottle
 from apps.api.throttling import CompetitionInviteThrottle, PlayerSessionThrottle
 
 from .competition_services import (
-    CURRENT_SHARING_DISCLOSURE_VERSION,
     CompetitionError,
     competition_member_label,
     create_competition,
@@ -88,10 +87,8 @@ class CompetitionSharingConsentSerializer(serializers.Serializer[dict[str, Any]]
             CompetitionMembership.SharingScope.FULL_HISTORY,
         )
     )
-    disclosure_version = serializers.CharField(
-        max_length=32, required=False, default=CURRENT_SHARING_DISCLOSURE_VERSION
-    )
-    confirmed = serializers.BooleanField(required=False, default=True)
+    disclosure_version = serializers.CharField(max_length=32, required=True)
+    confirmed = serializers.BooleanField(required=True)
 
 
 class CompetitionRenameSerializer(serializers.Serializer[dict[str, Any]]):

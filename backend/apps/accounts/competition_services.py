@@ -257,14 +257,37 @@ def competition_member_label(membership: CompetitionMembership) -> str:
     return f"Rider {digest}"
 
 
+def _consent_audit_key(kind: str, value: Any) -> str:
+    secret = str(getattr(settings, "SECRET_KEY", "bikemapy-local-secret")).encode()
+    message = f"competition-sharing-audit:{kind}:{value}".encode()
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def _record_consent_audit(
+    membership: CompetitionMembership,
+    *,
+    action: CompetitionSharingConsentAudit.Action,
+    scope: str,
+    disclosure_version: str,
+) -> None:
+    CompetitionSharingConsentAudit.objects.create(
+        membership=membership,
+        competition_key=_consent_audit_key("competition", membership.competition_id),
+        player_key=_consent_audit_key("player", membership.player_id),
+        action=action,
+        scope=scope,
+        disclosure_version=disclosure_version,
+    )
+
+
 @transaction.atomic
 def grant_sharing_consent(
     player: Player,
     competition: Competition,
     *,
     scope: Any,
-    disclosure_version: Any = CURRENT_SHARING_DISCLOSURE_VERSION,
-    confirmed: bool = True,
+    disclosure_version: Any,
+    confirmed: bool,
 ) -> CompetitionMembership:
     player = _locked_player(player)
     locked = Competition.objects.select_for_update().get(pk=competition.pk)
@@ -302,8 +325,8 @@ def grant_sharing_consent(
             "updated_at",
         )
     )
-    CompetitionSharingConsentAudit.objects.create(
-        membership=membership,
+    _record_consent_audit(
+        membership,
         action=CompetitionSharingConsentAudit.Action.GRANTED,
         scope=normalized,
         disclosure_version=version,
@@ -338,8 +361,8 @@ def withdraw_sharing_consent(player: Player, competition: Competition) -> Compet
             "updated_at",
         )
     )
-    CompetitionSharingConsentAudit.objects.create(
-        membership=membership,
+    _record_consent_audit(
+        membership,
         action=CompetitionSharingConsentAudit.Action.WITHDRAWN,
         scope=previous_scope,
         disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,

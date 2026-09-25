@@ -27,6 +27,16 @@ const activity = {
     ],
   },
 }
+const largeCompetition = {
+  ...competition,
+  members: Array.from({ length: 101 }, (_, index) => ({
+    player_id: index === 0 ? competition.members[0].player_id : index + 100,
+    display_name: index === 0 ? 'Rider' : `Rider ${index + 100}`,
+    nickname: null,
+    color: index === 0 ? '#F4B942' : '#3A86FF',
+    is_owner: index === 0,
+  })),
+}
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/styles/liberty*', (route) =>
@@ -115,6 +125,17 @@ test('game map has no automated accessibility violations and honors reduced moti
 })
 
 test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/')
+  await page.route('**/api/v1/game/competitions/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        competitions: [largeCompetition],
+        active_competition_id: largeCompetition.id,
+      }),
+    }),
+  )
   await page.unroute('**/api/v1/game/competitions/*/map/**')
   let mapCalls = 0
   await page.route('**/api/v1/game/competitions/*/map/**', async (route) => {
@@ -127,8 +148,8 @@ test('game map applies the latest member filter after an in-flight response', as
       contentType: 'application/json',
       body: JSON.stringify({
         status: selected.length && selected[0] !== '0' ? 'loaded' : 'empty',
-        competition_id: competition.id,
-        members: competition.members,
+        competition_id: largeCompetition.id,
+        members: largeCompetition.members,
         activities:
           selected.length && selected[0] !== '0'
             ? [

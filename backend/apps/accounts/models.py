@@ -22,6 +22,10 @@ def webhook_event_expiry() -> datetime:
     return timezone.now() + timedelta(days=30)
 
 
+def consent_audit_retention_until() -> datetime:
+    return timezone.now() + timedelta(days=730)
+
+
 class Player(models.Model):
     class Lifecycle(models.TextChoices):
         CONNECTED = "connected", "Connected"
@@ -172,12 +176,19 @@ class CompetitionSharingConsentAudit(models.Model):
         WITHDRAWN = "withdrawn", "Withdrawn"
 
     membership = models.ForeignKey(
-        CompetitionMembership, on_delete=models.CASCADE, related_name="sharing_audits"
+        CompetitionMembership,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sharing_audits",
     )
+    competition_key = models.CharField(max_length=64, blank=True)
+    player_key = models.CharField(max_length=64, blank=True)
     action = models.CharField(max_length=16, choices=Action.choices)
     scope = models.CharField(max_length=16, choices=CompetitionMembership.SharingScope.choices)
     disclosure_version = models.CharField(max_length=32)
     recorded_at = models.DateTimeField(default=timezone.now)
+    retention_until = models.DateTimeField(default=consent_audit_retention_until)
 
     class Meta:
         ordering = ("-recorded_at", "-pk")

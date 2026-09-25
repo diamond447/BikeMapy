@@ -11,6 +11,7 @@ import type { FilterSpecification, GeoJSONSource, MapSourceDataEvent } from 'map
 import { apiClient, rememberCsrfToken } from './api/client'
 import type { components } from './api/generated/schema'
 import { GameAccount } from './components/GameAccount'
+import { subscribeToGameDataRefresh, subscribeToGameMapReset } from './gameState'
 import { MAP_PROVIDER } from './mapProvider'
 import { setMapLibreWorker } from './maplibreWorker'
 import { translations } from './i18n/translations'
@@ -65,6 +66,18 @@ export function featureCollection(
   }
 }
 
+export function interactionFeatureCollection(activities: MapActivity[]) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: activities.map((activity) => ({
+      type: 'Feature' as const,
+      id: activity.id,
+      properties: { player_id: activity.player_id },
+      geometry: activity.geometry,
+    })),
+  }
+}
+
 export function visibleMapData(data: MapResponse, memberIds: number[]): MapResponse {
   const selected = new Set(memberIds)
   return {
@@ -74,7 +87,7 @@ export function visibleMapData(data: MapResponse, memberIds: number[]): MapRespo
   }
 }
 
-function memberFilter(memberIds: number[]): FilterSpecification {
+export function memberFilter(memberIds: number[]): FilterSpecification {
   return memberIds.length
     ? ['match', ['get', 'player_id'], memberIds, true, false]
     : ['==', ['get', 'player_id'], -1]
@@ -122,6 +135,11 @@ export default function GameApp() {
     navigator.language.toLowerCase().startsWith('cs') ? 'cs' : 'en',
   )
   const copy = translations[language]
+  // The benchmark exercises the complete response and source parsing path.
+  // It is intentionally opt-in and never changes normal user interaction.
+  const benchmarkFullUpdate =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('benchmark') === 'full-update'
   const [competitions, setCompetitions] = useState<Competition[]>([])
   const [competitionId, setCompetitionId] = useState<string | undefined>(
     () => readPrivateState().competitionId,
@@ -164,13 +182,46 @@ export default function GameApp() {
     }, 250)
   }, [])
 
+  const clearMapData = useCallback(() => {
+    fullMapDataRef.current = null
+    fullMapRequestKey.current = null
+    lastMapRequestKey.current = null
+    latestMapRequestKey.current = null
+    mapRequestPending.current = false
+    mapRequestInFlight.current = false
+    visibleMemberIdsRef.current = []
+    setMapData(null)
+    setMapDataIncludesAllMembers(false)
+    setSelectedTraceId(null)
+    setError(null)
+    const instance = map.current
+    if (!instance) return
+    const source = instance.getSource('private-traces') as GeoJSONSource | undefined
+    const visualSource = instance.getSource('private-traces-visual') as GeoJSONSource | undefined
+    source?.setData(interactionFeatureCollection([]))
+    visualSource?.setData(memberFeatureCollection([]))
+    if (mapLoaded.current) {
+      instance.setFilter('private-traces-visual', memberFilter([]))
+      instance.setFilter('private-traces', memberFilter([]))
+    }
+  }, [])
+
+  const clearSessionState = useCallback(() => {
+    clearMapData()
+    setCompetitions([])
+    setCompetitionId(undefined)
+    setVisibleMembers(null)
+  }, [clearMapData])
+
   const loadCompetitions = useCallback(async () => {
+    clearMapData()
     setLoading(true)
     setError(null)
     try {
       const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
       rememberCsrfToken(result.response)
       if (result.response?.status === 401) {
+        clearSessionState()
         setSignedOut(true)
         setCompetitions([])
         return
@@ -187,12 +238,27 @@ export default function GameApp() {
     } finally {
       setLoading(false)
     }
-  }, [copy.gameMapError])
+  }, [clearMapData, clearSessionState, copy.gameMapError])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadCompetitions(), 0)
     return () => window.clearTimeout(timer)
   }, [loadCompetitions])
+
+  useEffect(() => {
+    const unsubscribeReset = subscribeToGameMapReset((event) => {
+      if (event.detail?.reason === 'logout' || event.detail?.reason === 'auth-loss') {
+        clearSessionState()
+      } else {
+        clearMapData()
+      }
+    })
+    const unsubscribeRefresh = subscribeToGameDataRefresh(() => void loadCompetitions())
+    return () => {
+      unsubscribeReset()
+      unsubscribeRefresh()
+    }
+  }, [clearMapData, clearSessionState, loadCompetitions])
 
   const loadMap = useCallback(async () => {
     if (!competitionId || !map.current || !mapLoaded.current || !mapCanRequest.current) return
@@ -208,7 +274,7 @@ export default function GameApp() {
     // the normal path. Cache that authorized response and change visibility
     // with a layer filter instead of reparsing 1,200 traces for every toggle.
     // Larger competitions retain the server-filtered path below.
-    const canCacheAllMembers = availableMembers.length <= 100
+    const canCacheAllMembers = !benchmarkFullUpdate && availableMembers.length <= 100
     const requestedMembers = canCacheAllMembers ? availableMembers : selected
     const requestKey = JSON.stringify([
       competitionId,
@@ -234,6 +300,7 @@ export default function GameApp() {
       map.current?.on('render', onRender)
       visibleMemberIdsRef.current = selected
       map.current?.setFilter('private-traces-visual', memberFilter(selected))
+      map.current?.setFilter('private-traces', memberFilter(selected))
       return
     }
     if (mapRequestInFlight.current) {
@@ -261,6 +328,7 @@ export default function GameApp() {
       })
       if (latestMapRequestKey.current !== requestKey) return
       if (result.response?.status === 401) {
+        clearSessionState()
         setSignedOut(true)
         return
       }
@@ -289,25 +357,46 @@ export default function GameApp() {
         const sequence = mapMeasureSequence.current++
         const startMark = `game-map-response-${sequence}`
         performance.mark(startMark)
-        const onSourceData = (event: MapSourceDataEvent) => {
-          if (event.sourceId !== 'private-traces-visual' || !event.isSourceLoaded) return
+        const loadedSources = new Set<string>()
+        let rendered = false
+        let finished = false
+        const finish = () => {
+          if (finished || !rendered || loadedSources.size !== 2) return
+          finished = true
           map.current?.off('sourcedata', onSourceData)
+          map.current?.off('render', onRender)
           window.requestAnimationFrame(() => {
             performance.measure('game-map-update-to-render', startMark)
             performance.clearMarks(startMark)
           })
         }
+        const onSourceData = (event: MapSourceDataEvent) => {
+          if (
+            !event.isSourceLoaded ||
+            (event.sourceId !== 'private-traces' && event.sourceId !== 'private-traces-visual')
+          )
+            return
+          loadedSources.add(event.sourceId)
+          finish()
+        }
+        const onRender = () => {
+          rendered = true
+          finish()
+        }
         map.current.on('sourcedata', onSourceData)
-        source.setData(featureCollection(result.data.activities, colors))
+        map.current.on('render', onRender)
+        source.setData(interactionFeatureCollection(result.data.activities))
         visualSource?.setData(memberFeatureCollection(result.data.activities, colors))
         visibleMemberIdsRef.current = selected
         map.current.setFilter('private-traces-visual', memberFilter(selected))
+        map.current.setFilter('private-traces', memberFilter(selected))
       }
     } catch {
       if (latestMapRequestKey.current === requestKey) {
         // Permit the visible Retry action to resend the same viewport after a
         // failed request; successful requests remain deduplicated.
         lastMapRequestKey.current = null
+        clearMapData()
         setError(copy.gameMapError)
       }
     } finally {
@@ -317,7 +406,16 @@ export default function GameApp() {
       setMapLoading(false)
       if (followUp) scheduleMapLoad()
     }
-  }, [competitionId, competitions, copy.gameMapError, scheduleMapLoad, visibleMembers])
+  }, [
+    clearMapData,
+    clearSessionState,
+    benchmarkFullUpdate,
+    competitionId,
+    competitions,
+    copy.gameMapError,
+    scheduleMapLoad,
+    visibleMembers,
+  ])
 
   useEffect(() => {
     loadMapRef.current = loadMap
@@ -366,7 +464,7 @@ export default function GameApp() {
       // the rendered layer's interaction contract.
       instance.addSource('private-traces', {
         type: 'geojson',
-        data: featureCollection([]),
+        data: interactionFeatureCollection([]),
         buffer: 0,
         tolerance: 1,
       })
@@ -409,8 +507,11 @@ export default function GameApp() {
           setSelectedTraceId(String(id))
         }
       })
-      instance.on('mouseenter', 'private-traces', () => {
-        instance.getCanvas().style.cursor = 'pointer'
+      instance.on('mouseenter', 'private-traces', (event) => {
+        const playerId = event.features?.[0]?.properties?.player_id
+        instance.getCanvas().style.cursor = visibleMemberIdsRef.current.includes(Number(playerId))
+          ? 'pointer'
+          : ''
       })
       instance.on('mouseleave', 'private-traces', () => {
         instance.getCanvas().style.cursor = ''
@@ -575,7 +676,10 @@ export default function GameApp() {
               <select
                 id="game-competition"
                 value={competitionId ?? ''}
-                onChange={(event) => setCompetitionId(event.target.value)}
+                onChange={(event) => {
+                  clearMapData()
+                  setCompetitionId(event.target.value)
+                }}
               >
                 {competitions.map((competition) => (
                   <option value={competition.id} key={competition.id}>

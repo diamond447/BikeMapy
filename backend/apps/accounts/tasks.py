@@ -17,7 +17,13 @@ from .competition_services import (
     MAX_DISPATCH_ATTEMPTS,
     authorized_activity_queryset,
 )
-from .models import Competition, CompetitionRecomputation, CompetitionResult, ImportedActivity
+from .models import (
+    Competition,
+    CompetitionRecomputation,
+    CompetitionResult,
+    CompetitionSharingConsentAudit,
+    ImportedActivity,
+)
 from .services import cleanup_identity_guards, purge_expired_players, retry_revocations
 
 
@@ -34,6 +40,16 @@ def purge_expired_players_task(limit: int = 100) -> dict[str, Any]:
 @shared_task(name="bikemapy.accounts.retry_revocations")  # type: ignore[untyped-decorator]
 def retry_revocations_task(limit: int = 100) -> dict[str, Any]:
     return retry_revocations(limit=max(1, limit))
+
+
+@shared_task(name="bikemapy.accounts.purge_expired_consent_audits")  # type: ignore[untyped-decorator]
+def purge_expired_consent_audits_task(limit: int = 1000) -> dict[str, Any]:
+    expired = CompetitionSharingConsentAudit.objects.filter(
+        retention_until__lte=timezone.now()
+    ).order_by("retention_until", "pk")[: max(1, limit)]
+    ids = list(expired.values_list("pk", flat=True))
+    deleted, _ = CompetitionSharingConsentAudit.objects.filter(pk__in=ids).delete()
+    return {"purged": deleted}
 
 
 @shared_task(name="bikemapy.accounts.recompute_competition_results")  # type: ignore[untyped-decorator]

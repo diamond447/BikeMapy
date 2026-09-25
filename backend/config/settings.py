@@ -462,6 +462,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.accounts.cleanup_identity_guards",
         "schedule": 900,
     },
+    "purge-expired-consent-audits": {
+        "task": "bikemapy.accounts.purge_expired_consent_audits",
+        "schedule": 86400,
+    },
     "retry-player-revocations": {
         "task": "bikemapy.accounts.retry_revocations",
         "schedule": 900,

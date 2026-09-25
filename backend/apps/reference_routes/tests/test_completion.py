@@ -16,6 +16,7 @@ from django.test import Client, override_settings
 from django.utils import timezone
 
 from apps.accounts.competition_services import (
+    CURRENT_SHARING_DISCLOSURE_VERSION,
     create_competition,
     grant_sharing_consent,
     join_competition,
@@ -221,9 +222,21 @@ def test_competition_completion_is_union_and_reverses_after_activity_removal() -
     first = _player(2)
     second = _player(3)
     competition, _ = create_competition(first, name="Union")
-    grant_sharing_consent(first, competition, scope="recent")
+    grant_sharing_consent(
+        first,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
     CompetitionMembership.objects.create(competition=competition, player=second, color="#123456")
-    grant_sharing_consent(second, competition, scope="recent")
+    grant_sharing_consent(
+        second,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
     _activity(first, "first", [[14, 50], [14.05, 50]], date(2026, 2, 1))
     activity = _activity(second, "second", [[14.05, 50], [14.1, 50]], date(2026, 2, 2))
     union = calculate_completion(version, CompletionSubject.COMPETITION, competition=competition)
@@ -265,9 +278,21 @@ def test_account_deletion_erases_surviving_competition_evidence() -> None:
     deleted = _player(14)
     survivor = _player(15)
     competition, _ = create_competition(survivor, name="Privacy competition")
-    grant_sharing_consent(survivor, competition, scope="recent")
+    grant_sharing_consent(
+        survivor,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
     CompetitionMembership.objects.create(competition=competition, player=deleted, color="#123456")
-    grant_sharing_consent(deleted, competition, scope="recent")
+    grant_sharing_consent(
+        deleted,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
     _activity(deleted, "deleted", [[14, 50], [14.03, 50]], date(2026, 2, 4))
     calculate_completion(version, CompletionSubject.COMPETITION, competition=competition)
     assert RouteCompletionEvidence.objects.filter(completion__competition=competition).exists()
@@ -520,6 +545,7 @@ def test_activity_erasure_fences_worker_after_activity_read(
 
 @override_settings(
     GAME_ENABLED=True,
+    COMPETITION_GAME_ENABLED=True,
     STRAVA_OAUTH_CLIENT_ID="client",
     STRAVA_OAUTH_CLIENT_SECRET="secret",
     STRAVA_TOKEN_ENCRYPTION_KEY="token-key",
@@ -537,6 +563,13 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     route.save(update_fields=("active", "publication_status", "updated_at"))
     player = _player(5)
     competition, _ = create_competition(player, name="API competition")
+    grant_sharing_consent(
+        player,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
     _activity(player, "api", [[14, 50], [14.02, 50]], date(2026, 4, 1))
     calculate_completion(version, CompletionSubject.PLAYER, player=player)
 

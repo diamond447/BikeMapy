@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { apiClient, csrfHeaders, rememberCsrfToken } from '../api/client'
 import type { components } from '../api/generated/schema'
+import { notifyGameDataRefresh, notifyGameMapReset } from '../gameState'
 import type { Copy } from '../i18n/types'
 
 type Competition = components['schemas']['Competition']
@@ -42,6 +43,7 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
         setSharingConfirmed(false)
         return true
       }
+      if (result.response?.status === 401) notifyGameMapReset('auth-loss')
       if (result.response?.status !== 401) {
         setMessage(errorDetail(result.error) ?? copy.gameCompetitionError)
         setLoadError(true)
@@ -64,17 +66,20 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
   const action = async (
     run: () => Promise<{ response?: Response; data?: unknown; error?: unknown }>,
   ): Promise<boolean> => {
+    notifyGameMapReset('competition-change')
     setBusy(true)
     setMessage(null)
     try {
       const result = await run()
       rememberCsrfToken(result.response)
       if (result.response?.status && result.response.status >= 400) {
+        if (result.response.status === 401) notifyGameMapReset('auth-loss')
         setMessage(errorDetail(result.error) ?? copy.gameCompetitionError)
         return false
       } else {
         const reloaded = await load()
         if (!reloaded) setMessage(copy.gameCompetitionReloadError)
+        else notifyGameDataRefresh()
         return true
       }
     } catch {
