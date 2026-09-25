@@ -235,6 +235,8 @@ export const translations = {
       'Explore member traces by date. Activity titles, exact times, and speeds never leave the private game.',
     gameMapCompetition: 'Competition',
     gameMapMembers: 'Member traces',
+    gameMapMemberLimit:
+      'Select up to 100 member traces; selecting another replaces the oldest selection.',
     gameMapInteractive: 'Private competition activity map',
     gameMapLoading: 'Loading private traces…',
     gameMapLoaded: 'Private traces loaded.',
@@ -491,6 +493,7 @@ export const translations = {
       'Prohlížejte členské stopy podle data. Názvy aktivit, přesné časy ani rychlosti neopouštějí soukromou hru.',
     gameMapCompetition: 'Soutěž',
     gameMapMembers: 'Stopy členů',
+    gameMapMemberLimit: 'Vyberte nejvýše 100 stop; výběr další nahradí nejstarší vybranou stopu.',
     gameMapInteractive: 'Soukromá mapa aktivit soutěže',
     gameMapLoading: 'Načítám soukromé stopy…',
     gameMapLoaded: 'Soukromé stopy načteny.',

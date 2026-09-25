@@ -115,6 +115,13 @@ export function visibleMapData(data: MapResponse, memberIds: number[]): MapRespo
   }
 }
 
+/** Keep every map request within the server's member cap while retaining a new selection. */
+export function boundedMemberSelection(memberIds: number[], maxMembers = MAX_MAP_MEMBERS) {
+  const unique = [...new Set(memberIds)]
+  if (unique.length <= maxMembers) return unique
+  return [...unique.slice(0, Math.max(0, maxMembers - 1)), unique[unique.length - 1]!]
+}
+
 type InteractionPoint = { lng: number; lat: number }
 
 type ActivitySpatialIndex = {
@@ -656,7 +663,7 @@ export default function GameApp() {
 
   useEffect(() => {
     const selected = competitions.find((competition) => competition.id === competitionId)
-    if (!selected?.members_truncated) return
+    if (!selected?.roster_truncated) return
     const timer = window.setTimeout(() => void loadRosterPage(selected), 0)
     return () => window.clearTimeout(timer)
   }, [competitionId, competitions, loadRosterPage])
@@ -700,10 +707,11 @@ export default function GameApp() {
       : []
     const defaultMembers = knownMembers.slice(0, MAX_MAP_MEMBERS)
     const availableMembers = knownMembers.map((member) => member.player_id)
-    const selected =
+    const rawSelected =
       visibleMembers === null
         ? defaultMembers.map((member) => member.player_id)
         : visibleMembers.filter((id) => availableMembers.includes(id))
+    const selected = boundedMemberSelection(rawSelected, MAX_MAP_MEMBERS)
     // A competition list contains at most the map endpoint's member cap in
     // the normal path. Cache that authorized response and change visibility
     // with a layer filter instead of reparsing 1,200 traces for every toggle.
@@ -711,7 +719,7 @@ export default function GameApp() {
     const canCacheAllMembers =
       !benchmarkFullUpdate &&
       (selectedCompetition?.members.length ?? 0) <= MAX_MAP_MEMBERS &&
-      !selectedCompetition?.members_truncated
+      !selectedCompetition?.roster_truncated
     const requestedMembers = canCacheAllMembers ? availableMembers : selected
     const requestKey = JSON.stringify([
       competitionId,
@@ -1167,7 +1175,10 @@ export default function GameApp() {
     setVisibleMembers((current) => {
       const members =
         current ?? selectedCompetition?.members.map((member) => member.player_id) ?? []
-      return members.includes(id) ? members.filter((item) => item !== id) : [...members, id]
+      return boundedMemberSelection(
+        members.includes(id) ? members.filter((item) => item !== id) : [...members, id],
+        MAX_MAP_MEMBERS,
+      )
     })
 
   return (
@@ -1254,7 +1265,12 @@ export default function GameApp() {
                     {member.nickname || member.display_name}
                   </label>
                 ))}
-                {selectedCompetition?.members_truncated && rosterCursor && (
+                {mapMembers.length > MAX_MAP_MEMBERS && (
+                  <p className="game-map-member-limit" role="status">
+                    {copy.gameMapMemberLimit}
+                  </p>
+                )}
+                {selectedCompetition?.roster_truncated && rosterCursor && (
                   <button
                     type="button"
                     className="game-map-more-traces"

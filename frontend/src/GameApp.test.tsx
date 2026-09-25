@@ -96,6 +96,7 @@ vi.mock('maplibre-gl', () => ({
 
 import {
   buildActivitySpatialIndex,
+  boundedMemberSelection,
   featureCollection,
   drawWrappedLine,
   MAX_ACTIVITY_INDEX_ENTRIES,
@@ -119,6 +120,15 @@ afterEach(() => {
 })
 
 describe('private game map presentation', () => {
+  it('bounds a late member selection while retaining the newly selected member', () => {
+    expect(
+      boundedMemberSelection(Array.from({ length: 100 }, (_, index) => index + 1)),
+    ).toHaveLength(100)
+    expect(
+      boundedMemberSelection([...Array.from({ length: 100 }, (_, index) => index + 1), 101]),
+    ).toEqual([...Array.from({ length: 99 }, (_, index) => index + 1), 101])
+  })
+
   it('keeps trace metadata to member color and calendar date', () => {
     const result = featureCollection(
       [
@@ -561,5 +571,90 @@ describe('private game map presentation', () => {
     expect(traceList.querySelectorAll('button[data-player-id]')).toHaveLength(101)
     expect(screen.getAllByRole('button', { name: '2026-01-01' })).toHaveLength(101)
     expect(screen.queryByRole('button', { name: 'Show more traces' })).not.toBeInTheDocument()
+  })
+
+  it('loads a late roster member and keeps the explicit map request at 100 members', async () => {
+    const members = Array.from({ length: 100 }, (_, index) => ({
+      player_id: index + 1,
+      display_name: `Rider ${index + 1}`,
+      nickname: null,
+      color: '#3A86FF',
+      is_owner: index === 0,
+    }))
+    const lateMember = {
+      player_id: 101,
+      display_name: 'Rider 101',
+      nickname: null,
+      color: '#E45756',
+      is_owner: false,
+      sharing_active: true,
+    }
+    const competition = {
+      id: 'competition-legacy-map',
+      name: 'Legacy map',
+      invite_code: 'LEGACY2345',
+      owner_player_id: 1,
+      is_owner: true,
+      is_active: true,
+      is_selected: true,
+      color: '#E45756',
+      created_at: '2026-09-21T00:00:00Z',
+      sharing_scope: 'recent',
+      members,
+      members_truncated: false,
+      roster_count: 101,
+      roster_truncated: true,
+    }
+    const mapRequests: number[][] = []
+    vi.spyOn(apiClient, 'GET').mockImplementation(((path: string, options?: unknown) => {
+      if (path.includes('/map/')) {
+        const selected =
+          (options as { params?: { query?: { member?: number[] } } } | undefined)?.params?.query
+            ?.member ?? []
+        mapRequests.push(selected)
+        return Promise.resolve({
+          data: {
+            status: 'empty' as const,
+            competition_id: competition.id,
+            members: [],
+            activities: [],
+            truncated: false,
+            limits: { max_features: 1200, max_coordinates: 120000 },
+          },
+          response: new Response(),
+        })
+      }
+      const cursor = String(
+        (options as { params?: { query?: { cursor?: string } } } | undefined)?.params?.query
+          ?.cursor ?? '',
+      )
+      if (path.includes('/members/')) {
+        return Promise.resolve({
+          data: cursor
+            ? { members: [lateMember], next_cursor: null, has_more: false }
+            : {
+                members: members.map((member) => ({ ...member, sharing_active: true })),
+                next_cursor: 'next',
+                has_more: true,
+              },
+          response: new Response(),
+        })
+      }
+      return Promise.resolve({
+        data: { competitions: [competition], active_competition_id: competition.id },
+        response: new Response(),
+      })
+    }) as never)
+
+    const user = userEvent.setup()
+    render(<GameApp />)
+    await waitFor(() => expect(mapRequests.length).toBeGreaterThan(0))
+    await user.click(screen.getByRole('button', { name: 'Load more members' }))
+    const lateCheckbox = await screen.findByRole('checkbox', { name: 'Rider 101' })
+    await user.click(lateCheckbox)
+    await waitFor(() => expect(mapRequests.some((request) => request.includes(101))).toBe(true))
+    const lateRequest = mapRequests.find((request) => request.includes(101))
+    expect(lateRequest).toHaveLength(100)
+    expect(screen.getByText(/up to 100/i)).toBeInTheDocument()
   })
 })

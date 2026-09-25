@@ -71,11 +71,11 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
 
   const current = competitions.find((competition) => competition.is_selected) ?? competitions[0]
   const currentId = current?.id
-  const currentMembersTruncated = current?.members_truncated
+  const currentRosterTruncated = current?.roster_truncated
 
   const loadRoster = useCallback(
     async (reset: boolean, search = '', cursor: string | null = null): Promise<void> => {
-      if (!currentId || (!currentMembersTruncated && reset)) {
+      if (!currentId || (!currentRosterTruncated && reset)) {
         return
       }
       setRosterLoading(true)
@@ -103,14 +103,14 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
         setRosterLoading(false)
       }
     },
-    [currentId, currentMembersTruncated],
+    [currentId, currentRosterTruncated],
   )
 
   useEffect(() => {
-    if (!currentMembersTruncated) return
+    if (!currentRosterTruncated) return
     const timer = window.setTimeout(() => void loadRoster(true), 0)
     return () => window.clearTimeout(timer)
-  }, [currentId, currentMembersTruncated, loadRoster, rosterReload])
+  }, [currentId, currentRosterTruncated, loadRoster, rosterReload])
 
   const action = async (
     run: () => Promise<{ response?: Response; data?: unknown; error?: unknown }>,
@@ -446,7 +446,7 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
                   )}
                 </div>
               ))}
-              {current.members_truncated && (
+              {current.roster_truncated && (
                 <div className="game-competition-roster-tools">
                   <label htmlFor="game-competition-member-search">
                     {copy.gameCompetitionMemberSearch}

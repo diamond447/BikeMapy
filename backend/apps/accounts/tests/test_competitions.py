@@ -147,6 +147,8 @@ def test_competition_list_caps_legacy_consenting_members() -> None:
     listed = payload["competitions"][0]
     assert len(listed["members"]) == 100
     assert listed["members_truncated"] is True
+    assert listed["roster_count"] == 102
+    assert listed["roster_truncated"] is True
 
 
 @override_settings(**SETTINGS)
@@ -191,6 +193,37 @@ def test_roster_is_cursor_paginated_searchable_and_keeps_inactive_viewer_access(
     assert inactive.json()["members"][0]["player_id"] == owner.pk
     outsider = authenticated_client(player(20_999))
     assert outsider.get(url).status_code == 404
+
+
+@override_settings(**SETTINGS)
+def test_inactive_owner_gets_total_roster_signal_even_when_fewer_than_100_share() -> None:
+    owner = player(20_600)
+    competition, _ = create_competition(owner, name="Inactive owner roster")
+    now = timezone.now()
+    extras = [player(20_601 + index) for index in range(101)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=extra,
+                color="#123456",
+                sharing_scope=(
+                    CompetitionMembership.SharingScope.RECENT
+                    if index < 99
+                    else CompetitionMembership.SharingScope.NONE
+                ),
+                sharing_consent_at=now if index < 99 else None,
+            )
+            for index, extra in enumerate(extras)
+        ]
+    )
+    listed = (
+        authenticated_client(owner).get(reverse("game-competition-list")).json()["competitions"][0]
+    )
+    assert listed["members"] == []
+    assert listed["members_truncated"] is False
+    assert listed["roster_count"] == 102
+    assert listed["roster_truncated"] is True
 
 
 @override_settings(**SETTINGS)

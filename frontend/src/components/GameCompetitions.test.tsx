@@ -113,7 +113,13 @@ describe('GameCompetitions', () => {
       is_owner: false,
       sharing_active: true,
     }
-    const largeCompetition = { ...competition, members: firstPage, members_truncated: true }
+    const largeCompetition = {
+      ...competition,
+      members: firstPage,
+      members_truncated: false,
+      roster_count: 101,
+      roster_truncated: true,
+    }
     const get = vi.spyOn(apiClient, 'GET').mockImplementation(((
       path: string,
       options?: unknown,
@@ -138,10 +144,21 @@ describe('GameCompetitions', () => {
         }) as never,
       )
     }) as never)
+    const remove = vi.spyOn(apiClient, 'DELETE').mockResolvedValue(result(undefined, 204) as never)
     render(<GameCompetitions copy={translations.en} />)
     expect(await screen.findByText('Rider 1')).toBeInTheDocument()
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Load more members' }))
     expect(await screen.findByText('Rider 101')).toBeInTheDocument()
+    const removeButtons = screen.getAllByRole('button', { name: 'Remove' })
+    await userEvent.setup().click(removeButtons[removeButtons.length - 1]!)
+    await waitFor(() =>
+      expect(remove).toHaveBeenCalledWith(
+        '/api/v1/game/competitions/{competition_id}/members/{player_id}/',
+        expect.objectContaining({
+          params: { path: { competition_id: competition.id, player_id: 101 } },
+        }),
+      ),
+    )
     expect(get).toHaveBeenCalledWith(
       '/api/v1/game/competitions/{competition_id}/members/',
       expect.anything(),

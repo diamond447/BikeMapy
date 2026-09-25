@@ -587,6 +587,8 @@ export interface components {
       created_at: string
       members: components['schemas']['CompetitionMember'][]
       members_truncated: boolean
+      roster_count: number
+      roster_truncated: boolean
       sharing_scope: components['schemas']['SharingScopeEnum']
     }
     CompetitionCreate: {

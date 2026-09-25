@@ -72,6 +72,8 @@ class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
     created_at = serializers.DateTimeField()
     members = CompetitionMemberSerializer(many=True)
     members_truncated = serializers.BooleanField()
+    roster_count = serializers.IntegerField()
+    roster_truncated = serializers.BooleanField()
     sharing_scope = serializers.ChoiceField(
         choices=tuple(CompetitionMembership.SharingScope.values)
     )
@@ -179,6 +181,7 @@ class CompetitionApi(GameEndpoint):
     @staticmethod
     def _payload(competition: Competition, player: Player) -> dict[str, Any]:
         membership = CompetitionMembership.objects.get(competition=competition, player=player)
+        roster_count = competition.memberships.count()
         members_truncated = False
         if sharing_is_active(membership):
             member_rows = list(
@@ -212,6 +215,8 @@ class CompetitionApi(GameEndpoint):
             "created_at": competition.created_at,
             "members": members,
             "members_truncated": members_truncated,
+            "roster_count": roster_count,
+            "roster_truncated": roster_count > MAX_COMPETITION_MEMBERS,
             "sharing_scope": membership.sharing_scope,
         }
 
