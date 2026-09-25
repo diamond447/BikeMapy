@@ -29,7 +29,7 @@ The client renders one grouped GeoJSON source and one line layer. Activity
 geometry remains in the already-authorized response, but is not copied into a
 second MapLibre worker source. Before `setData`, each visible line is
 deterministically tolerance-simplified for the current zoom and bounded by a
-24,000-coordinate client render budget; line endpoints and separate line parts
+2,400-coordinate client render budget; line endpoints and separate line parts
 are retained. A click on a visible member line resolves the
 nearest activity in that member's authorized geometry, so precise trace
 selection is lazy and does not delay the initial render. Member colors are

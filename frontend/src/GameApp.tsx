@@ -23,7 +23,7 @@ type MapActivity = components['schemas']['CompetitionMapActivity']
 
 const STORAGE_KEY = 'bikemapy:game-map'
 const TRACE_PAGE_SIZE = 100
-export const MAX_RENDER_COORDINATES = 24_000
+export const MAX_RENDER_COORDINATES = 2_400
 const DEFAULT_VIEW = { longitude: 16.6, latitude: 49.2, zoom: 7.5 }
 function readPrivateState(): { competitionId?: string; members?: number[] } {
   try {
