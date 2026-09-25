@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
-from datetime import timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from math import sqrt
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -18,6 +21,8 @@ from .models import (
     CompetitionMembership,
     CompetitionRecomputation,
     CompetitionResult,
+    CompetitionSharingConsentAudit,
+    ImportedActivity,
     Player,
 )
 
@@ -36,7 +41,16 @@ DEFAULT_COLORS = (
 MIN_COLOR_DELTA_E = 18.0
 MAX_DISPATCH_ATTEMPTS = 5
 MAX_INVITE_ATTEMPTS = 5
+MAX_COMPETITION_MEMBERS = 100
 DISPATCH_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
+SHARING_SCOPES = frozenset(
+    {
+        CompetitionMembership.SharingScope.RECENT,
+        CompetitionMembership.SharingScope.FULL_HISTORY,
+    }
+)
+CURRENT_SHARING_DISCLOSURE_VERSION = "2026-09-25"
+GAME_TIME_ZONE = ZoneInfo("Europe/Prague")
 
 
 class CompetitionError(Exception):
@@ -137,6 +151,229 @@ def _membership(player: Player, competition: Competition) -> CompetitionMembersh
     except CompetitionMembership.DoesNotExist as exc:
         # Deliberately do not distinguish a missing object from a non-member.
         raise CompetitionError("Competition not found.", code="not_found") from exc
+
+
+def sharing_is_active(membership: CompetitionMembership) -> bool:
+    return bool(
+        membership.sharing_consent_at is not None and membership.sharing_scope in SHARING_SCOPES
+    )
+
+
+def sharing_cutoff_date(at: datetime | None = None) -> date:
+    """Return the inclusive start of the previous twelve Prague calendar months."""
+
+    if at is not None and timezone.is_naive(at):
+        at = timezone.make_aware(at, GAME_TIME_ZONE)
+    local_date = timezone.localtime(at or timezone.now(), GAME_TIME_ZONE).date()
+    try:
+        return local_date.replace(year=local_date.year - 1)
+    except ValueError:  # February 29 in a leap year.
+        return local_date.replace(year=local_date.year - 1, day=28)
+
+
+def activity_calendar_date(activity: ImportedActivity) -> date | None:
+    if activity.calendar_date is not None:
+        return activity.calendar_date
+    if activity.started_at is None:
+        return (
+            timezone.localtime(activity.imported_at, GAME_TIME_ZONE).date()
+            if activity.imported_at is not None
+            else None
+        )
+    return timezone.localtime(activity.started_at, GAME_TIME_ZONE).date()
+
+
+def activity_is_authorized_for_membership(
+    activity: ImportedActivity,
+    membership: CompetitionMembership,
+    *,
+    at: datetime | None = None,
+) -> bool:
+    """Apply the single sharing policy to one imported activity."""
+
+    if (
+        not sharing_is_active(membership)
+        or activity.removed_at is not None
+        or activity.geometry is None
+    ):
+        return False
+    if membership.sharing_scope == CompetitionMembership.SharingScope.FULL_HISTORY:
+        return True
+    activity_date = activity_calendar_date(activity)
+    return activity_date is not None and activity_date >= sharing_cutoff_date(at)
+
+
+def authorized_activity_filter(
+    memberships: Any,
+    *,
+    at: datetime | None = None,
+) -> Q:
+    """Build the DB predicate equivalent of the activity authorization policy."""
+
+    full_history_ids: list[int] = []
+    recent_ids: list[int] = []
+    for membership in memberships:
+        if not sharing_is_active(membership):
+            continue
+        if membership.sharing_scope == CompetitionMembership.SharingScope.FULL_HISTORY:
+            full_history_ids.append(membership.player_id)
+        else:
+            recent_ids.append(membership.player_id)
+    predicate = Q(pk__in=[])
+    if full_history_ids:
+        predicate |= Q(player_id__in=full_history_ids)
+    if recent_ids:
+        cutoff = sharing_cutoff_date(at)
+        cutoff_start = timezone.make_aware(
+            datetime.combine(cutoff, time.min), GAME_TIME_ZONE
+        ).astimezone(UTC)
+        predicate |= Q(player_id__in=recent_ids) & (
+            Q(calendar_date__gte=cutoff)
+            | Q(calendar_date__isnull=True, started_at__gte=cutoff_start)
+            | Q(
+                calendar_date__isnull=True,
+                started_at__isnull=True,
+                imported_at__gte=cutoff_start,
+            )
+        )
+    return predicate
+
+
+def authorized_activity_queryset(
+    queryset: Any, memberships: Any, *, at: datetime | None = None
+) -> Any:
+    return queryset.filter(
+        authorized_activity_filter(memberships, at=at),
+        removed_at__isnull=True,
+        geometry__isnull=False,
+    )
+
+
+def competition_member_label(membership: CompetitionMembership) -> str:
+    """Return a stable, competition-scoped pseudonym without exposing PII."""
+
+    secret = str(getattr(settings, "SECRET_KEY", "bikemapy-local-secret")).encode()
+    message = f"competition-member:{membership.competition_id}:{membership.player_id}".encode()
+    digest = hmac.new(secret, message, hashlib.sha256).hexdigest()[:8].upper()
+    return f"Rider {digest}"
+
+
+def _consent_audit_key(kind: str, value: Any) -> str:
+    secret = str(getattr(settings, "SECRET_KEY", "bikemapy-local-secret")).encode()
+    message = f"competition-sharing-audit:{kind}:{value}".encode()
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def _record_consent_audit(
+    membership: CompetitionMembership,
+    *,
+    action: CompetitionSharingConsentAudit.Action,
+    scope: str,
+    disclosure_version: str,
+) -> None:
+    CompetitionSharingConsentAudit.objects.create(
+        membership=membership,
+        competition_key=_consent_audit_key("competition", membership.competition_id),
+        player_key=_consent_audit_key("player", membership.player_id),
+        action=action,
+        scope=scope,
+        disclosure_version=disclosure_version,
+    )
+
+
+@transaction.atomic
+def grant_sharing_consent(
+    player: Player,
+    competition: Competition,
+    *,
+    scope: Any,
+    disclosure_version: Any,
+    confirmed: bool,
+) -> CompetitionMembership:
+    player = _locked_player(player)
+    locked = Competition.objects.select_for_update().get(pk=competition.pk)
+    try:
+        membership = CompetitionMembership.objects.select_for_update().get(
+            player=player, competition=locked
+        )
+    except CompetitionMembership.DoesNotExist as exc:
+        raise CompetitionError("Competition not found.", code="not_found") from exc
+    normalized = str(scope or "").strip().lower()
+    if normalized not in SHARING_SCOPES:
+        raise CompetitionError(
+            "Choose recent or full available history.", code="invalid_sharing_scope"
+        )
+    version = str(disclosure_version or "").strip()
+    if version != CURRENT_SHARING_DISCLOSURE_VERSION:
+        raise CompetitionError(
+            "This sharing disclosure is out of date. Review the current disclosure and try again.",
+            code="disclosure_out_of_date",
+        )
+    if not confirmed:
+        raise CompetitionError(
+            "Confirm that you understand the activity sharing disclosure.",
+            code="disclosure_confirmation_required",
+        )
+    previous_scope = membership.sharing_scope
+    membership.sharing_scope = normalized
+    membership.sharing_consent_at = timezone.now()
+    membership.sharing_disclosure_version = version
+    membership.save(
+        update_fields=(
+            "sharing_scope",
+            "sharing_consent_at",
+            "sharing_disclosure_version",
+            "updated_at",
+        )
+    )
+    _record_consent_audit(
+        membership,
+        action=CompetitionSharingConsentAudit.Action.GRANTED,
+        scope=normalized,
+        disclosure_version=version,
+    )
+    if previous_scope != normalized:
+        from apps.reference_routes.completion_services import reset_competition_completion_data
+
+        reset_competition_completion_data(locked, player_id=player.pk)
+    schedule_recomputation(locked, affected_player_id=player.pk, bump_revision=False)
+    return membership
+
+
+@transaction.atomic
+def withdraw_sharing_consent(player: Player, competition: Competition) -> CompetitionMembership:
+    player = _locked_player(player)
+    locked = Competition.objects.select_for_update().get(pk=competition.pk)
+    try:
+        membership = CompetitionMembership.objects.select_for_update().get(
+            player=player, competition=locked
+        )
+    except CompetitionMembership.DoesNotExist as exc:
+        raise CompetitionError("Competition not found.", code="not_found") from exc
+    previous_scope = membership.sharing_scope
+    membership.sharing_scope = CompetitionMembership.SharingScope.NONE
+    membership.sharing_consent_at = None
+    membership.sharing_disclosure_version = ""
+    membership.save(
+        update_fields=(
+            "sharing_scope",
+            "sharing_consent_at",
+            "sharing_disclosure_version",
+            "updated_at",
+        )
+    )
+    _record_consent_audit(
+        membership,
+        action=CompetitionSharingConsentAudit.Action.WITHDRAWN,
+        scope=previous_scope,
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+    )
+    CompetitionResult.objects.filter(competition=locked, player=player).delete()
+    from apps.reference_routes.completion_services import reset_competition_completion_data
+
+    reset_competition_completion_data(locked, player_id=player.pk)
+    schedule_recomputation(locked, affected_player_id=player.pk, bump_revision=False)
+    return membership
 
 
 def _locked_player(player: Player) -> Player:
@@ -245,14 +482,44 @@ def _dispatch_recomputation(job_id: int, *, dispatch_token: str | None = None) -
 
 
 def schedule_recomputation(
-    competition: Competition, *, affected_player_id: int | None = None
+    competition: Competition,
+    *,
+    affected_player_id: int | None = None,
+    bump_revision: bool = True,
 ) -> CompetitionRecomputation:
-    competition.revision += 1
-    competition.save(update_fields=("revision", "updated_at"))
+    if bump_revision:
+        competition.revision += 1
+        competition.save(update_fields=("revision", "updated_at"))
     job, _ = CompetitionRecomputation.objects.get_or_create(
         competition=competition,
         generation=competition.revision,
         defaults={"affected_player_id": affected_player_id},
+    )
+    if job.affected_player_id != affected_player_id:
+        job.affected_player_id = affected_player_id
+    if job.status != CompetitionRecomputation.Status.PENDING:
+        job.status = CompetitionRecomputation.Status.PENDING
+        job.completed_at = None
+        job.lease_token = ""
+        job.lease_until = None
+        job.dispatch_token = ""
+        job.dispatch_lease_until = None
+        job.next_attempt_at = timezone.now()
+        job.dispatched_at = None
+        job.error = ""
+    job.save(
+        update_fields=(
+            "affected_player_id",
+            "status",
+            "completed_at",
+            "lease_token",
+            "lease_until",
+            "dispatch_token",
+            "dispatch_lease_until",
+            "next_attempt_at",
+            "dispatched_at",
+            "error",
+        )
     )
     from apps.reference_routes.completion_services import schedule_competition_completions
 
@@ -293,6 +560,14 @@ def join_competition(
         raise CompetitionError("That invite code is not valid.", code="invalid_invite") from exc
     if CompetitionMembership.objects.filter(competition=competition, player=player).exists():
         raise CompetitionError("You already belong to this competition.", code="already_member")
+    has_reached_member_limit = competition.memberships.values("pk")[
+        MAX_COMPETITION_MEMBERS - 1 : MAX_COMPETITION_MEMBERS
+    ].exists()
+    if has_reached_member_limit:
+        raise CompetitionError(
+            "This competition already has the maximum number of members.",
+            code="member_limit",
+        )
     colors = list(competition.memberships.values_list("color", flat=True))
     selected_color = normalize_color(color) if color is not None else available_color(colors)
     ensure_distinguishable(selected_color, colors)

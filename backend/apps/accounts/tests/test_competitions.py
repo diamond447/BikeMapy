@@ -17,9 +17,11 @@ from django.utils import timezone
 
 from apps.accounts import services
 from apps.accounts.competition_services import (
+    CURRENT_SHARING_DISCLOSURE_VERSION,
     CompetitionError,
     create_competition,
     delete_competition,
+    grant_sharing_consent,
     join_competition,
     leave_competition,
     remove_member,
@@ -33,12 +35,14 @@ from apps.accounts.models import (
     CompetitionMembership,
     CompetitionRecomputation,
     CompetitionResult,
+    CompetitionSharingConsentAudit,
     ImportedActivity,
     Player,
 )
 from apps.accounts.services import delete_player
 from apps.accounts.tasks import (
     dispatch_competition_recomputations_task,
+    purge_expired_consent_audits_task,
     recompute_competition_results_task,
 )
 
@@ -87,6 +91,9 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
     )
     assert created.status_code == 201
     competition = created.json()["competition"]
+    assert "activities" not in competition
+    assert competition["sharing_scope"] == "none"
+    assert competition["members"] == []
     code = competition["invite_code"]
 
     member_client = authenticated_client(member)
@@ -95,6 +102,7 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
     )
     assert joined.status_code == 200
     assert joined.json()["competition"]["is_owner"] is False
+    assert "activities" not in joined.json()["competition"]
     assert member_client.get(reverse("game-competition-list")).json()["active_competition_id"]
 
     outsider_client = authenticated_client(outsider)
@@ -111,6 +119,190 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
 
     switched = member_client.post(reverse("game-competition-switch", args=[identifier]))
     assert switched.status_code == 200
+
+
+@override_settings(**SETTINGS)
+def test_competition_list_caps_legacy_consenting_members() -> None:
+    owner = player(20_000)
+    competition, owner_membership = create_competition(owner, name="Legacy large")
+    now = timezone.now()
+    owner_membership.sharing_consent_at = now
+    owner_membership.sharing_scope = CompetitionMembership.SharingScope.RECENT
+    owner_membership.save(update_fields=["sharing_consent_at", "sharing_scope"])
+    extra_players = [player(20_001 + index) for index in range(101)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=extra,
+                color="#123456",
+                sharing_scope=CompetitionMembership.SharingScope.RECENT,
+                sharing_consent_at=now,
+            )
+            for extra in extra_players
+        ]
+    )
+
+    payload = authenticated_client(owner).get(reverse("game-competition-list")).json()
+    listed = payload["competitions"][0]
+    assert len(listed["members"]) == 100
+    assert listed["members_truncated"] is True
+    assert listed["roster_count"] == 102
+    assert listed["roster_truncated"] is True
+
+
+@override_settings(**SETTINGS)
+def test_roster_is_cursor_paginated_searchable_and_keeps_inactive_viewer_access() -> None:
+    owner = player(20_500)
+    competition, owner_membership = create_competition(owner, name="Roster")
+    now = timezone.now()
+    owner_membership.sharing_consent_at = now
+    owner_membership.sharing_scope = CompetitionMembership.SharingScope.RECENT
+    owner_membership.save(update_fields=["sharing_consent_at", "sharing_scope"])
+    extra_players = [player(20_501 + index) for index in range(101)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=extra,
+                color="#123456",
+                sharing_scope=CompetitionMembership.SharingScope.RECENT,
+                sharing_consent_at=now,
+            )
+            for extra in extra_players
+        ]
+    )
+    url = reverse("game-competition-members", args=[competition.pk])
+    client = authenticated_client(owner)
+    first = client.get(url)
+    assert first.status_code == 200
+    assert len(first.json()["members"]) == 100
+    assert first.json()["has_more"] is True
+    second = client.get(url, {"cursor": first.json()["next_cursor"]})
+    assert second.status_code == 200
+    assert len(second.json()["members"]) == 2
+    late = extra_players[-1]
+    searched = client.get(url, {"search": str(late.pk)})
+    assert [member["player_id"] for member in searched.json()["members"]] == [late.pk]
+
+    owner_membership.sharing_scope = CompetitionMembership.SharingScope.NONE
+    owner_membership.sharing_consent_at = None
+    owner_membership.save(update_fields=["sharing_scope", "sharing_consent_at"])
+    inactive = client.get(url)
+    assert inactive.status_code == 200
+    assert inactive.json()["members"][0]["player_id"] == owner.pk
+    outsider = authenticated_client(player(20_999))
+    assert outsider.get(url).status_code == 404
+
+
+@override_settings(**SETTINGS)
+def test_inactive_owner_gets_total_roster_signal_even_when_fewer_than_100_share() -> None:
+    owner = player(20_600)
+    competition, _ = create_competition(owner, name="Inactive owner roster")
+    now = timezone.now()
+    extras = [player(20_601 + index) for index in range(101)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=extra,
+                color="#123456",
+                sharing_scope=(
+                    CompetitionMembership.SharingScope.RECENT
+                    if index < 99
+                    else CompetitionMembership.SharingScope.NONE
+                ),
+                sharing_consent_at=now if index < 99 else None,
+            )
+            for index, extra in enumerate(extras)
+        ]
+    )
+    listed = (
+        authenticated_client(owner).get(reverse("game-competition-list")).json()["competitions"][0]
+    )
+    assert listed["members"] == []
+    assert listed["members_truncated"] is False
+    assert listed["roster_count"] == 102
+    assert listed["roster_truncated"] is True
+
+
+@override_settings(**SETTINGS)
+def test_join_rejects_the_101st_member_without_breaking_legacy_rosters() -> None:
+    owner = player(21_000)
+    competition, _ = create_competition(owner, name="Capped roster")
+    existing_players = [player(21_001 + index) for index in range(99)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=member,
+                color="#123456",
+            )
+            for member in existing_players
+        ]
+    )
+    candidate = player(21_100)
+
+    with pytest.raises(CompetitionError, match="maximum number") as error:
+        join_competition(candidate, invite_code=competition.invite_code)
+
+    assert error.value.code == "member_limit"
+    assert CompetitionMembership.objects.filter(competition=competition).count() == 100
+
+
+@override_settings(**SETTINGS)
+def test_sharing_consent_is_explicit_and_member_metadata_is_pseudonymous() -> None:
+    owner = player(301)
+    member = player(302)
+    competition, _ = create_competition(owner, name="Consent")
+    join_competition(member, invite_code=competition.invite_code)
+    owner_client = authenticated_client(owner)
+    omitted_version = owner_client.post(
+        reverse("game-competition-sharing-consent", args=[competition.pk]),
+        {"scope": "recent", "confirmed": True},
+    )
+    assert omitted_version.status_code == 400
+    omitted_confirmation = owner_client.post(
+        reverse("game-competition-sharing-consent", args=[competition.pk]),
+        {"scope": "recent", "disclosure_version": CURRENT_SHARING_DISCLOSURE_VERSION},
+    )
+    assert omitted_confirmation.status_code == 400
+    wrong_version = owner_client.post(
+        reverse("game-competition-sharing-consent", args=[competition.pk]),
+        {"scope": "recent", "disclosure_version": "old", "confirmed": True},
+    )
+    assert wrong_version.status_code == 400
+    false_confirmation = owner_client.post(
+        reverse("game-competition-sharing-consent", args=[competition.pk]),
+        {
+            "scope": "recent",
+            "disclosure_version": CURRENT_SHARING_DISCLOSURE_VERSION,
+            "confirmed": False,
+        },
+    )
+    assert false_confirmation.status_code == 400
+    consented = owner_client.post(
+        reverse("game-competition-sharing-consent", args=[competition.pk]),
+        {
+            "scope": "recent",
+            "disclosure_version": CURRENT_SHARING_DISCLOSURE_VERSION,
+            "confirmed": True,
+        },
+    )
+    assert consented.status_code == 200
+    payload = owner_client.get(reverse("game-competition-detail", args=[competition.pk])).json()[
+        "competition"
+    ]
+    assert "activities" not in payload
+    assert payload["sharing_scope"] == "recent"
+    assert payload["members"]
+    assert payload["members"][0]["display_name"].startswith("Rider ")
+    assert payload["members"][0]["nickname"] is None
+    withdrawn = owner_client.delete(
+        reverse("game-competition-sharing-consent", args=[competition.pk])
+    )
+    assert withdrawn.status_code == 200
+    assert withdrawn.json()["competition"]["sharing_scope"] == "none"
 
 
 @override_settings(**{**SETTINGS, "COMPETITION_GAME_ENABLED": False})
@@ -390,6 +582,67 @@ def test_delete_competition_preserves_player_and_shared_activity() -> None:
 
 
 @override_settings(**SETTINGS)
+def test_consent_audits_survive_membership_competition_and_player_deletion() -> None:
+    owner = player(41)
+    member = player(42)
+    competition, _ = create_competition(owner, name="Audit membership")
+    join_competition(member, invite_code=competition.invite_code)
+    grant_sharing_consent(
+        member,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    audit = CompetitionSharingConsentAudit.objects.get()
+    assert audit.membership_id is not None
+    assert audit.competition_key != str(competition.pk)
+    assert audit.player_key != str(member.pk)
+    assert len(audit.competition_key) == 64
+    assert len(audit.player_key) == 64
+    assert audit.retention_until > timezone.now()
+
+    leave_competition(member, competition)
+    audit.refresh_from_db()
+    if getattr(audit, "membership_id", None) is not None:
+        raise AssertionError("consent audit must survive without its membership")
+    assert CompetitionSharingConsentAudit.objects.count() == 1
+
+    deleted_competition, _ = create_competition(owner, name="Audit competition")
+    grant_sharing_consent(
+        owner,
+        deleted_competition,
+        scope="full_history",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    competition_audit = CompetitionSharingConsentAudit.objects.latest("pk")
+    delete_competition(owner, deleted_competition)
+    competition_audit.refresh_from_db()
+    assert competition_audit.membership_id is None
+
+    deleted_player = player(43)
+    player_competition, _ = create_competition(deleted_player, name="Audit player")
+    grant_sharing_consent(
+        deleted_player,
+        player_competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    player_audit = CompetitionSharingConsentAudit.objects.latest("pk")
+    delete_player(deleted_player)
+    player_audit.refresh_from_db()
+    assert player_audit.membership_id is None
+    assert not Player.objects.filter(pk=deleted_player.pk).exists()
+
+    player_audit.retention_until = timezone.now() - timedelta(seconds=1)
+    player_audit.save(update_fields=("retention_until",))
+    assert purge_expired_consent_audits_task(limit=1) == {"purged": 1}
+    assert not CompetitionSharingConsentAudit.objects.filter(pk=player_audit.pk).exists()
+
+
+@override_settings(**SETTINGS)
 def test_remove_member_is_not_allowed_for_non_owner() -> None:
     owner = player(50)
     member = player(51)
@@ -439,6 +692,13 @@ def test_removal_selects_remaining_membership_and_preserves_newer_generation() -
     member = player(71)
     other = player(72)
     first, _ = create_competition(owner, name="First")
+    grant_sharing_consent(
+        owner,
+        first,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
     second, _ = create_competition(other, name="Second")
     join_competition(member, invite_code=first.invite_code)
     member.refresh_from_db()
@@ -454,7 +714,7 @@ def test_removal_selects_remaining_membership_and_preserves_newer_generation() -
     first.revision = 2
     first.save(update_fields=("revision", "updated_at"))
     newer = CompetitionRecomputation.objects.create(competition=first, generation=2)
-    older = CompetitionRecomputation.objects.create(competition=first, generation=0)
+    older = CompetitionRecomputation.objects.get(competition=first, generation=0)
     result = CompetitionResult.objects.create(competition=first, player=owner, points=3)
     recompute_competition_results_task.apply(args=[newer.pk]).get()
     recompute_competition_results_task.apply(args=[older.pk]).get()
@@ -532,6 +792,13 @@ def test_dispatch_failure_is_recorded_for_sweeper_retry() -> None:
 def test_recompute_failure_persists_attempts_and_stops_at_retry_limit() -> None:
     owner = player(110)
     competition, _ = create_competition(owner, name="Failure")
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
     job = CompetitionRecomputation.objects.create(competition=competition, generation=1)
     result = CompetitionResult.objects.create(competition=competition, player=owner, points=1)
     with patch.object(CompetitionResult, "save", side_effect=RuntimeError("score failure")):

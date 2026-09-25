@@ -22,6 +22,10 @@ def webhook_event_expiry() -> datetime:
     return timezone.now() + timedelta(days=30)
 
 
+def consent_audit_retention_until() -> datetime:
+    return timezone.now() + timedelta(days=730)
+
+
 class Player(models.Model):
     class Lifecycle(models.TextChoices):
         CONNECTED = "connected", "Connected"
@@ -131,6 +135,11 @@ class Competition(models.Model):
 class CompetitionMembership(models.Model):
     """One player's role and display color in one competition."""
 
+    class SharingScope(models.TextChoices):
+        NONE = "none", "No sharing"
+        RECENT = "recent", "Recent history"
+        FULL_HISTORY = "full_history", "Full available history"
+
     competition = models.ForeignKey(
         Competition, on_delete=models.CASCADE, related_name="memberships"
     )
@@ -138,6 +147,11 @@ class CompetitionMembership(models.Model):
         "accounts.Player", on_delete=models.CASCADE, related_name="competition_memberships"
     )
     color = models.CharField(max_length=7)
+    sharing_scope = models.CharField(
+        max_length=16, choices=SharingScope.choices, default=SharingScope.NONE
+    )
+    sharing_consent_at = models.DateTimeField(null=True, blank=True)
+    sharing_disclosure_version = models.CharField(max_length=32, blank=True)
     joined_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -152,6 +166,36 @@ class CompetitionMembership(models.Model):
 
     def __str__(self) -> str:
         return f"{self.player_id} in {self.competition_id}"
+
+
+class CompetitionSharingConsentAudit(models.Model):
+    """Durable, non-PII record of each competition sharing decision."""
+
+    class Action(models.TextChoices):
+        GRANTED = "granted", "Granted"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+
+    membership = models.ForeignKey(
+        CompetitionMembership,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sharing_audits",
+    )
+    competition_key = models.CharField(max_length=64, blank=True)
+    player_key = models.CharField(max_length=64, blank=True)
+    action = models.CharField(max_length=16, choices=Action.choices)
+    scope = models.CharField(max_length=16, choices=CompetitionMembership.SharingScope.choices)
+    disclosure_version = models.CharField(max_length=32)
+    recorded_at = models.DateTimeField(default=timezone.now)
+    retention_until = models.DateTimeField(default=consent_audit_retention_until)
+
+    class Meta:
+        ordering = ("-recorded_at", "-pk")
+        indexes = [models.Index(fields=("membership", "recorded_at"))]
+
+    def __str__(self) -> str:
+        return f"sharing-consent:{self.membership_id}:{self.action}:{self.recorded_at.isoformat()}"
 
 
 class ImportedActivity(models.Model):

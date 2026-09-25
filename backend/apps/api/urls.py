@@ -12,10 +12,13 @@ from apps.accounts.competition_api import (
     CompetitionListView,
     CompetitionMemberColorView,
     CompetitionRemoveMemberView,
+    CompetitionRosterView,
     CompetitionRotateInviteView,
+    CompetitionSharingConsentView,
     CompetitionSwitchView,
     CompetitionTransferView,
 )
+from apps.accounts.competition_map_api import CompetitionMapView
 from apps.accounts.game_api import (
     PlayerAccountView,
     PlayerDisconnectView,
@@ -80,9 +83,19 @@ urlpatterns = [
         name="game-competition-switch",
     ),
     path(
+        "game/competitions/<uuid:competition_id>/map/",
+        CompetitionMapView.as_view(),
+        name="game-competition-map",
+    ),
+    path(
         "game/competitions/<uuid:competition_id>/rotate-invite/",
         CompetitionRotateInviteView.as_view(),
         name="game-competition-rotate-invite",
+    ),
+    path(
+        "game/competitions/<uuid:competition_id>/sharing-consent/",
+        CompetitionSharingConsentView.as_view(),
+        name="game-competition-sharing-consent",
     ),
     path(
         "game/competitions/<uuid:competition_id>/leave/",
@@ -93,6 +106,11 @@ urlpatterns = [
         "game/competitions/<uuid:competition_id>/members/me/",
         CompetitionMemberColorView.as_view(),
         name="game-competition-member-color",
+    ),
+    path(
+        "game/competitions/<uuid:competition_id>/members/",
+        CompetitionRosterView.as_view(),
+        name="game-competition-members",
     ),
     path(
         "game/competitions/<uuid:competition_id>/members/<int:player_id>/",
