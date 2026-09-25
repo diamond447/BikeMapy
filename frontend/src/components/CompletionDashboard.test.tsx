@@ -347,4 +347,48 @@ describe('official route completion presentation', () => {
     expect(await screen.findByRole('button', { name: /1 Route A/ })).toBeInTheDocument()
     expect((await screen.findAllByText('37.0%')).length).toBeGreaterThan(0)
   })
+
+  it('clears cached details on lifecycle refresh and explains unavailable group progress', async () => {
+    const restricted = {
+      ...detail,
+      competition: null,
+      competition_access: 'consent_required',
+      player: { ...detail.player, partial: true, sync_status: 'paused' },
+    }
+    get.mockImplementation((path: string) =>
+      Promise.resolve(
+        apiResult(
+          path.includes('/completion/')
+            ? restricted
+            : { next: null, previous: null, results: [route] },
+        ),
+      ),
+    )
+    render(
+      <CompletionDashboard
+        copy={copy}
+        competitions={[{ id: 'competition-1', name: 'Weekend crew', members: [] } as never]}
+        competitionId="competition-1"
+        setCompetitionId={vi.fn()}
+        signedOut={false}
+      />,
+    )
+    const routeButton = await screen.findByRole('button', { name: /1 Via Czechia north/ })
+    fireEvent.click(routeButton)
+    expect(await screen.findByText(copy.gameCompletionPaused)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Competition' }))
+    expect(await screen.findByText(copy.gameCompletionConsentRequired)).toBeInTheDocument()
+    const routeCalls = get.mock.calls.filter(([path]) => path === '/api/v1/game/reference-routes/')
+    window.dispatchEvent(new Event('bikemapy:game-data-refresh'))
+    await waitFor(() =>
+      expect(
+        get.mock.calls.filter(([path]) => path === '/api/v1/game/reference-routes/'),
+      ).toHaveLength(routeCalls.length + 1),
+    )
+    await waitFor(() =>
+      expect(
+        get.mock.calls.filter(([path]) => path.includes('/completion/')).length,
+      ).toBeGreaterThan(1),
+    )
+  })
 })

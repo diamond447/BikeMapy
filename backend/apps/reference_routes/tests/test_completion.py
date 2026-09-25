@@ -21,7 +21,7 @@ from apps.accounts.competition_services import (
     grant_sharing_consent,
     join_competition,
 )
-from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
+from apps.accounts.models import CompetitionMembership, ImportedActivity, Player, StravaSyncState
 from apps.accounts.services import delete_player
 from apps.reference_routes.completion_services import (
     CompletionLeaseLost,
@@ -265,6 +265,7 @@ def test_activity_deletion_erases_immutable_completion_evidence() -> None:
     assert completion.status == CompletionStatus.PENDING
     assert completion.covered_length_meters == Decimal("0")
     assert completion.completion_percent == Decimal("0")
+    assert completion.covered_geometry is None
 
 
 @override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
@@ -305,6 +306,7 @@ def test_account_deletion_erases_surviving_competition_evidence() -> None:
     assert not RouteCompletionMonthly.objects.filter(
         route_version=version, competition=competition
     ).exists()
+    assert surviving_completion.covered_geometry is None
 
 
 @override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
@@ -571,6 +573,7 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
         confirmed=True,
     )
     _activity(player, "api", [[14, 50], [14.02, 50]], date(2026, 4, 1))
+    StravaSyncState.objects.create(player=player, status=StravaSyncState.Status.PAUSED)
     calculate_completion(version, CompletionSubject.PLAYER, player=player)
 
     client = Client()
@@ -586,6 +589,8 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     assert body["player"]["status"] == "fresh"
     assert body["player"]["covered_length_meters"] != "0.000"
     assert body["competition"]["status"] == "pending"
+    assert body["player"]["partial"] is True
+    assert body["player"]["sync_status"] == "paused"
     assert body["route_id"] == str(route.pk)
     assert competition.is_active
     assert response["Cache-Control"] == "private, no-store"

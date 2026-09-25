@@ -13,6 +13,7 @@ import type { components } from '../api/generated/schema'
 import { setMapLibreWorker } from '../maplibreWorker'
 import { MAP_PROVIDER } from '../mapProvider'
 import type { Copy } from '../i18n/types'
+import { subscribeToGameDataRefresh, subscribeToGameMapReset } from '../gameState'
 
 type RouteSummary = components['schemas']['ReferenceRouteList'] & {
   source_kind?: string
@@ -27,6 +28,7 @@ type Projection = {
   covered_geometry?: unknown
   monthly?: Array<{ month: string; covered_length_meters: string }>
   partial?: boolean
+  sync_status?: string
 }
 type RouteCompletion = {
   route_id: string
@@ -37,6 +39,7 @@ type RouteCompletion = {
   attribution?: Record<string, unknown>
   player: Projection
   competition: Projection | null
+  competition_access?: 'available' | 'consent_required' | 'competition_disabled'
   stages: Array<{
     route_id: string
     title: string
@@ -160,6 +163,19 @@ export function CompletionDashboard({
   const [mapReady, setMapReady] = useState(false)
   const currentMonth = useMemo(() => currentPragueMonth(), [])
 
+  const invalidateData = useCallback(() => {
+    routeRequestSequence.current += 1
+    detailRequestSequence.current += 1
+    setRoutes([])
+    setDetails({})
+    setRouteId(undefined)
+    setStageId(undefined)
+    setCatalogueIncomplete(false)
+    setDetailError(null)
+    setError(null)
+    setDetailLoading(false)
+  }, [])
+
   const loadRoutes = useCallback(async () => {
     if (!competitionId) {
       setRoutes([])
@@ -210,6 +226,24 @@ export function CompletionDashboard({
     const timer = window.setTimeout(() => void loadRoutes(), 0)
     return () => window.clearTimeout(timer)
   }, [competitionId, loadRoutes])
+
+  useEffect(() => {
+    const refresh = () => {
+      invalidateData()
+      if (!signedOut) window.setTimeout(() => void loadRoutes(), 0)
+    }
+    const unsubscribeRefresh = subscribeToGameDataRefresh(refresh)
+    const unsubscribeReset = subscribeToGameMapReset((event) => {
+      invalidateData()
+      if (event.detail?.reason !== 'logout' && event.detail?.reason !== 'auth-loss' && !signedOut) {
+        window.setTimeout(() => void loadRoutes(), 0)
+      }
+    })
+    return () => {
+      unsubscribeRefresh()
+      unsubscribeReset()
+    }
+  }, [invalidateData, loadRoutes, signedOut])
 
   const loadDetail = useCallback(
     async (id: string) => {
@@ -316,9 +350,15 @@ export function CompletionDashboard({
   )
 
   useEffect(() => {
-    if (!mapReady || !mapLoaded.current || !selectedGeometry) return
+    if (!mapReady || !mapLoaded.current) return
     const routeSource = map.current?.getSource('reference-route') as GeoJSONSource | undefined
     const coveredSource = map.current?.getSource('reference-covered') as GeoJSONSource | undefined
+    if (!selectedGeometry) {
+      routeSource?.setData({ type: 'FeatureCollection', features: [] })
+      coveredSource?.setData({ type: 'FeatureCollection', features: [] })
+      framedKey.current = null
+      return
+    }
     routeSource?.setData({
       type: 'FeatureCollection',
       features: [completionFeature(selectedGeometry)],
@@ -339,12 +379,20 @@ export function CompletionDashboard({
     if (framedKey.current === key) return
     const points = coordinates(selectedGeometry)
     if (points.length > 1) {
-      const lngs = points.map(([lng]) => lng)
-      const lats = points.map(([, lat]) => lat)
+      let west = Number.POSITIVE_INFINITY
+      let south = Number.POSITIVE_INFINITY
+      let east = Number.NEGATIVE_INFINITY
+      let north = Number.NEGATIVE_INFINITY
+      for (const [lng, lat] of points) {
+        west = Math.min(west, lng)
+        south = Math.min(south, lat)
+        east = Math.max(east, lng)
+        north = Math.max(north, lat)
+      }
       map.current?.fitBounds(
         [
-          [Math.min(...lngs), Math.min(...lats)],
-          [Math.max(...lngs), Math.max(...lats)],
+          [west, south],
+          [east, north],
         ],
         { padding: 90, duration: 0 },
       )
@@ -356,15 +404,33 @@ export function CompletionDashboard({
     setRouteId(id)
     setStageId(undefined)
   }
-  const selectByKeyboard = (index: number, event: React.KeyboardEvent) => {
+  const routeButtons = useRef(new Map<string, HTMLButtonElement>())
+  const orderedRoutes = useMemo(
+    () =>
+      groups.flatMap((group) =>
+        routes.filter((route) => (route.source_kind ?? 'osm_numbered') === group.key),
+      ),
+    [groups, routes],
+  )
+  const selectByKeyboard = (id: string, event: React.KeyboardEvent) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     event.preventDefault()
-    const next = event.key === 'ArrowDown' ? index + 1 : index - 1
-    const item = routes[next]
-    if (item) selectRoute(item.id)
+    const index = orderedRoutes.findIndex((route) => route.id === id)
+    if (index < 0 || !orderedRoutes.length) return
+    const delta = event.key === 'ArrowDown' ? 1 : -1
+    const item = orderedRoutes[(index + delta + orderedRoutes.length) % orderedRoutes.length]
+    if (!item) return
+    selectRoute(item.id)
+    window.requestAnimationFrame(() => routeButtons.current.get(item.id)?.focus())
   }
 
   const attribution = selectedDetail?.attribution ?? {}
+  const competitionUnavailable =
+    selectedDetail?.competition_access === 'consent_required'
+      ? copy.gameCompletionConsentRequired
+      : selectedDetail?.competition_access === 'competition_disabled'
+        ? copy.gameCompletionCompetitionDisabled
+        : ''
   const attributionText =
     typeof attribution.attribution_text === 'string' ? attribution.attribution_text : ''
   const attributionLicence = typeof attribution.licence === 'string' ? attribution.licence : ''
@@ -456,7 +522,6 @@ export function CompletionDashboard({
                         ? details[detailKey(competitionId, route.id)]
                         : undefined
                       const projection = detail?.[mode]
-                      const routeIndex = routes.indexOf(route)
                       return (
                         <div key={route.id} className="completion-route-wrap">
                           <button
@@ -464,7 +529,11 @@ export function CompletionDashboard({
                             className={`completion-route ${route.id === routeId && !stageId ? 'is-selected' : ''}`}
                             aria-pressed={route.id === routeId && !stageId}
                             onClick={() => selectRoute(route.id)}
-                            onKeyDown={(event) => selectByKeyboard(routeIndex, event)}
+                            onKeyDown={(event) => selectByKeyboard(route.id, event)}
+                            ref={(node) => {
+                              if (node) routeButtons.current.set(route.id, node)
+                              else routeButtons.current.delete(route.id)
+                            }}
                           >
                             <span>
                               <b>{route.route_number || '—'}</b> {route.title}
@@ -521,6 +590,13 @@ export function CompletionDashboard({
             </button>
           </aside>
         )}
+        {selectedSummary && mode === 'competition' && competitionUnavailable && !detailError && (
+          <aside className="completion-detail">
+            <span className="game-account-kicker">{copy.gameCompletionGroup}</span>
+            <h2>{selectedStage?.title ?? selectedDetail?.title ?? selectedSummary.title}</h2>
+            <p className="completion-status">{competitionUnavailable}</p>
+          </aside>
+        )}
         {selectedSummary && selectedProjection && !detailError && (
           <aside className="completion-detail">
             <span className="game-account-kicker">{copy.gameCompletionReference}</span>
@@ -533,7 +609,13 @@ export function CompletionDashboard({
               <p className="completion-status">{statusLabel(selectedProjection.status, copy)}</p>
             )}
             {selectedProjection.partial && (
-              <p className="completion-status completion-partial">{copy.gameCompletionPartial}</p>
+              <p className="completion-status completion-partial">
+                {selectedProjection.sync_status === 'paused'
+                  ? copy.gameCompletionPaused
+                  : selectedProjection.sync_status === 'failed'
+                    ? copy.gameCompletionHistoryFailed
+                    : copy.gameCompletionPartial}
+              </p>
             )}
             <dl className="completion-stats">
               <div>

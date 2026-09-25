@@ -276,6 +276,12 @@ export const translations = {
     gameCompletionFailed: 'Calculation failed',
     gameCompletionEmpty: 'No official routes are available yet.',
     gameCompletionPartial: 'Some activity history is still syncing.',
+    gameCompletionPaused: 'Activity history sharing is paused.',
+    gameCompletionHistoryFailed: 'Activity history needs attention before this view is complete.',
+    gameCompletionConsentRequired:
+      'Competition progress is hidden until every member consents to sharing.',
+    gameCompletionCompetitionDisabled:
+      'Competition progress is unavailable while group play is disabled.',
     gameCompletionCovered: 'covered',
     gameCompletionNewDistance: 'New distance this month',
     gameCompletionReference: 'Reference route',
@@ -561,6 +567,13 @@ export const translations = {
     gameCompletionFailed: 'Výpočet selhal',
     gameCompletionEmpty: 'Zatím nejsou dostupné žádné oficiální trasy.',
     gameCompletionPartial: 'Část historie aktivit se stále synchronizuje.',
+    gameCompletionPaused: 'Sdílení historie aktivit je pozastavené.',
+    gameCompletionHistoryFailed:
+      'Historie aktivit vyžaduje pozornost, než bude tento pohled úplný.',
+    gameCompletionConsentRequired:
+      'Postup soutěže je skrytý, dokud všichni členové nepotvrdí sdílení.',
+    gameCompletionCompetitionDisabled:
+      'Postup soutěže není dostupný, dokud je skupinová hra vypnutá.',
     gameCompletionCovered: 'pokryto',
     gameCompletionNewDistance: 'Nová vzdálenost tento měsíc',
     gameCompletionReference: 'Referenční trasa',

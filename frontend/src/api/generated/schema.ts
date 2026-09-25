@@ -591,6 +591,13 @@ export interface components {
       roster_truncated: boolean
       sharing_scope: components['schemas']['SharingScopeEnum']
     }
+    /**
+     * @description * `available` - available
+     *     * `consent_required` - consent_required
+     *     * `competition_disabled` - competition_disabled
+     * @enum {string}
+     */
+    CompetitionAccessEnum: 'available' | 'consent_required' | 'competition_disabled'
     CompetitionCreate: {
       name: string
       color?: string
@@ -687,6 +694,7 @@ export interface components {
         [key: string]: unknown
       }[]
       partial: boolean
+      sync_status: string
     }
     ElevationProfilePoint: {
       /** Format: double */
@@ -798,6 +806,7 @@ export interface components {
       version: number
       player: components['schemas']['CompletionProjection'] | null
       competition: components['schemas']['CompletionProjection'] | null
+      competition_access: components['schemas']['CompetitionAccessEnum']
       stages: {
         [key: string]: unknown
       }[]

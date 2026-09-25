@@ -76,6 +76,7 @@ def _reset_completion_projection(completion: RouteCompletion) -> None:
             "calculated_at",
             "evidence_digest",
             "evidence_generation",
+            "covered_geometry",
             "error",
             "updated_at",
         )
