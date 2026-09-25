@@ -156,7 +156,6 @@ class StravaWebhookView(APIView):
         responses={
             200: OpenApiResponse(description="Webhook accepted."),
             400: OpenApiResponse(description="Invalid Strava event."),
-            404: OpenApiResponse(description="Unknown Strava athlete."),
         },
         tags=["game-webhooks"],
     )
@@ -173,10 +172,11 @@ class StravaWebhookView(APIView):
             strava_athlete_id=payload["owner_id"], lifecycle=Player.Lifecycle.CONNECTED
         ).first()
         if player is None:
-            return Response({"detail": "Unknown Strava athlete."}, status=404)
+            return Response({"accepted": True, "duplicate": False}, status=200)
         event_key = webhook_event_key(payload, raw)
         duplicate = StravaWebhookEvent.objects.filter(event_key=event_key).exists()
-        queue_webhook_event(payload, event_key)
+        if queue_webhook_event(payload, event_key) is None:
+            return Response({"accepted": True, "duplicate": duplicate}, status=200)
         return Response({"accepted": True, "duplicate": duplicate}, status=200)
 
 

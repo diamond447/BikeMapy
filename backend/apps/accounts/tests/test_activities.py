@@ -16,6 +16,7 @@ from django.utils import timezone
 
 from apps.accounts.activity_services import (
     StravaActivityError,
+    StravaActivityNotFound,
     _lock_sync_state_then_job,
     _record_quota_response,
     _reserve_quota_slot,
@@ -26,6 +27,7 @@ from apps.accounts.activity_services import (
     purge_expired_webhook_events,
     queue_sync,
     validate_webhook_payload,
+    webhook_event_key,
 )
 from apps.accounts.activity_tasks import dispatch_strava_sync_task
 from apps.accounts.competition_services import create_competition
@@ -184,8 +186,20 @@ def test_official_webhook_challenge_replay_and_subscription_are_verified() -> No
         json.dumps(spoofed_owner).encode(),
         content_type="application/json",
     )
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "duplicate": False}
     assert Player.objects.filter(strava_athlete_id=999).count() == 0
+    assert StravaWebhookEvent.objects.count() == 1
+    disconnected = _player(998)
+    disconnected.lifecycle = Player.Lifecycle.DISCONNECTED
+    disconnected.save(update_fields=("lifecycle", "updated_at"))
+    response = client.post(
+        reverse("game-strava-webhook"),
+        json.dumps({**payload, "owner_id": 998}).encode(),
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    assert StravaWebhookEvent.objects.count() == 1
 
 
 @override_settings(**_settings())
@@ -204,6 +218,7 @@ def test_webhook_identifiers_expire_and_account_deletion_cascades_them() -> None
         },
         "retention-event",
     )
+    assert event is not None
     event.expires_at = timezone.now() - timedelta(seconds=1)
     event.save(update_fields=("expires_at",))
     assert purge_expired_webhook_events() == 1
@@ -220,8 +235,32 @@ def test_webhook_identifiers_expire_and_account_deletion_cascades_them() -> None
         },
         "deletion-event",
     )
+    assert event is not None
     delete_player(player)
     assert not StravaWebhookEvent.objects.filter(pk=event.pk).exists()
+
+
+@override_settings(**_settings())
+def test_webhook_payload_redacts_title_and_distinguishes_same_second_updates() -> None:
+    _player(422)
+    from apps.accounts.activity_services import queue_webhook_event
+
+    base = {
+        "object_type": "activity",
+        "object_id": 422,
+        "owner_id": 422,
+        "aspect_type": "update",
+        "event_time": 123,
+        "subscription_id": 9,
+    }
+    first = {**base, "updates": {"title": "private title", "private": "false"}}
+    second = {**base, "updates": {"title": "different title", "private": "true"}}
+    first_key = webhook_event_key(first, b"")
+    second_key = webhook_event_key(second, b"")
+    assert first_key != second_key
+    event = queue_webhook_event(first, first_key)
+    assert event is not None
+    assert "title" not in event.payload.get("updates", {})
 
 
 @override_settings(**_settings())
@@ -306,6 +345,36 @@ def test_webhook_update_accepts_official_updates_but_refetches_privacy_authorita
         assert process_sync_job(job.pk) == "completed"
     fetch.assert_called_once_with(player.pk, "440")
     assert not ImportedActivity.objects.filter(player=player, provider_activity_id="440").exists()
+
+
+@override_settings(**_settings())
+def test_provider_not_found_reconciles_create_without_retaining_old_activity() -> None:
+    player = _player(445)
+    import_activity(player, _activity(445, athlete={"id": 445}))
+    payload = {
+        "object_type": "activity",
+        "object_id": 445,
+        "owner_id": 445,
+        "aspect_type": "update",
+        "event_time": 2_000_000_000,
+        "subscription_id": 9,
+    }
+    client = Client()
+    assert (
+        client.post(
+            reverse("game-strava-webhook"),
+            json.dumps(payload).encode(),
+            content_type="application/json",
+        ).status_code
+        == 200
+    )
+    job = StravaSyncJob.objects.get(webhook_event__object_id=445)
+    with patch(
+        "apps.accounts.activity_services.fetch_activity",
+        side_effect=StravaActivityNotFound(),
+    ):
+        assert process_sync_job(job.pk) == "completed"
+    assert not ImportedActivity.objects.filter(player=player, provider_activity_id="445").exists()
 
 
 @override_settings(**_settings())
@@ -461,7 +530,12 @@ def test_shared_quota_reservation_stops_concurrent_request_bursts() -> None:
     _record_quota_response(
         httpx.Response(
             200,
-            headers={"X-RateLimit-Limit": "2,10", "X-RateLimit-Usage": "1,1"},
+            headers={
+                "X-RateLimit-Limit": "2,10",
+                "X-RateLimit-Usage": "1,1",
+                "X-ReadRateLimit-Limit": "2,10",
+                "X-ReadRateLimit-Usage": "1,1",
+            },
             request=httpx.Request("GET", "https://www.strava.com/api/v3/athlete/activities"),
         )
     )
@@ -469,7 +543,12 @@ def test_shared_quota_reservation_stops_concurrent_request_bursts() -> None:
     _record_quota_response(
         httpx.Response(
             200,
-            headers={"X-RateLimit-Limit": "2,10", "X-RateLimit-Usage": "2,2"},
+            headers={
+                "X-RateLimit-Limit": "2,10",
+                "X-RateLimit-Usage": "2,2",
+                "X-ReadRateLimit-Limit": "2,10",
+                "X-ReadRateLimit-Usage": "2,2",
+            },
             request=httpx.Request("GET", "https://www.strava.com/api/v3/athlete/activities"),
         )
     )
@@ -479,6 +558,42 @@ def test_shared_quota_reservation_stops_concurrent_request_bursts() -> None:
     quota = StravaQuotaState.objects.get()
     assert quota.in_flight == 0
     assert quota.cooldown_until is not None
+    assert quota.read_short_window_used == 2
+
+
+@override_settings(
+    **_settings(),
+    STRAVA_QUOTA_SHORT_LIMIT=10,
+    STRAVA_QUOTA_DAILY_LIMIT=20,
+    STRAVA_QUOTA_SAFETY_MARGIN=0,
+)
+def test_quota_usage_is_monotonic_and_expired_reservations_recover() -> None:
+    token = _reserve_quota_slot()
+    _record_quota_response(
+        httpx.Response(
+            200,
+            headers={"X-RateLimit-Usage": "8,8", "X-ReadRateLimit-Usage": "8,8"},
+            request=httpx.Request("GET", "https://www.strava.com/api/v3/athlete/activities"),
+        ),
+        reservation_token=token,
+    )
+    _record_quota_response(
+        httpx.Response(
+            200,
+            headers={"X-RateLimit-Usage": "3,3", "X-ReadRateLimit-Usage": "3,3"},
+            request=httpx.Request("GET", "https://www.strava.com/api/v3/athlete/activities"),
+        )
+    )
+    quota = StravaQuotaState.objects.get()
+    assert quota.short_window_used == 8
+    stale = _reserve_quota_slot()
+    from apps.accounts.models import StravaQuotaReservation
+
+    StravaQuotaReservation.objects.filter(token=stale).update(
+        expires_at=timezone.now() - timedelta(seconds=1)
+    )
+    fresh = _reserve_quota_slot()
+    assert fresh != stale
 
 
 @override_settings(**_settings())
@@ -548,6 +663,18 @@ def test_sync_cursor_resumes_after_each_bounded_page() -> None:
     assert fetch.call_args_list[1].kwargs["page"] == 2
     assert fetch.call_args_list[2].kwargs["page"] == 3
     assert ImportedActivity.objects.filter(player=player).count() == 5
+
+
+@override_settings(**_settings(), STRAVA_SYNC_PAGE_SIZE=2, STRAVA_SYNC_PAGES_PER_RUN=2)
+def test_full_then_partial_page_finishes_without_unnecessary_requeue() -> None:
+    player = _player(93)
+    job = queue_sync(player, kind=StravaSyncJob.Kind.INCREMENTAL)
+    pages = [[_activity(930), _activity(931)], [_activity(932)]]
+    with patch("apps.accounts.activity_services.fetch_activity_page", side_effect=pages) as fetch:
+        assert process_sync_job(job.pk) == "completed"
+    assert fetch.call_count == 2
+    job.refresh_from_db()
+    assert job.status == StravaSyncJob.Status.COMPLETED
 
 
 @override_settings(**_settings())

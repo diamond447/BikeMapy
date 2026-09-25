@@ -277,6 +277,10 @@ class StravaQuotaState(models.Model):
     daily_used = models.PositiveIntegerField(default=0)
     short_window_limit = models.PositiveIntegerField(default=100)
     daily_limit = models.PositiveIntegerField(default=1000)
+    read_short_window_used = models.PositiveIntegerField(default=0)
+    read_daily_used = models.PositiveIntegerField(default=0)
+    read_short_window_limit = models.PositiveIntegerField(default=100)
+    read_daily_limit = models.PositiveIntegerField(default=1000)
     short_window_reset_at = models.DateTimeField(null=True, blank=True)
     daily_reset_at = models.DateTimeField(null=True, blank=True)
     cooldown_until = models.DateTimeField(null=True, blank=True)
@@ -285,6 +289,20 @@ class StravaQuotaState(models.Model):
 
     def __str__(self) -> str:
         return f"Strava quota {self.key}"
+
+
+class StravaQuotaReservation(models.Model):
+    """Expiring reservation preventing dead workers from consuming quota forever."""
+
+    token = models.CharField(max_length=64, primary_key=True)
+    expires_at = models.DateTimeField()
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=("expires_at", "released_at"))]
+
+    def __str__(self) -> str:
+        return f"Strava quota reservation {self.token}"
 
 
 class StravaWebhookEvent(models.Model):

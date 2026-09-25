@@ -2067,13 +2067,6 @@ export interface operations {
         }
         content?: never
       }
-      /** @description Unknown Strava athlete. */
-      404: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
     }
   }
   v1_routes_list: {
