@@ -9,6 +9,7 @@ const context = await browser.newContext()
 await context.addCookies([{ name: 'sessionid', value: sessionKey, url: apiUrl }])
 const samples = []
 const lazySamples = []
+const stageSamples = []
 const page = await context.newPage()
 const benchmarkUrl = new URL(gameUrl)
 benchmarkUrl.searchParams.set('benchmark', 'full-update')
@@ -50,12 +51,24 @@ for (let index = 0; index < 30; index += 1) {
     (count) => performance.getEntriesByName('game-map-update-to-render').length > count,
     previousSamples,
   )
-  samples.push(
-    await page.evaluate(
-      () => performance.getEntriesByName('game-map-update-to-render').at(-1).duration,
-    ),
-  )
+  const sample = await page.evaluate(() => {
+    const latestDuration = (name) => performance.getEntriesByName(name).at(-1)?.duration
+    return {
+      responseToSource: latestDuration('game-map-response-to-source'),
+      sourceSetData: latestDuration('game-map-source-set-data'),
+      updateToRender: latestDuration('game-map-update-to-render'),
+    }
+  })
+  if (
+    typeof sample.responseToSource !== 'number' ||
+    typeof sample.sourceSetData !== 'number' ||
+    typeof sample.updateToRender !== 'number'
+  ) {
+    throw new Error('browser benchmark did not record all render stages')
+  }
+  stageSamples.push(sample)
+  samples.push(sample.updateToRender)
 }
 await page.close()
 await browser.close()
-process.stdout.write(JSON.stringify({ updateSamples: samples, lazySamples }))
+process.stdout.write(JSON.stringify({ updateSamples: samples, lazySamples, stageSamples }))

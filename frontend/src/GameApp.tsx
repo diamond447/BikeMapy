@@ -23,6 +23,7 @@ type MapActivity = components['schemas']['CompetitionMapActivity']
 
 const STORAGE_KEY = 'bikemapy:game-map'
 const TRACE_PAGE_SIZE = 100
+export const MAX_RENDER_COORDINATES = 24_000
 const DEFAULT_VIEW = { longitude: 16.6, latitude: 49.2, zoom: 7.5 }
 function readPrivateState(): { competitionId?: string; members?: number[] } {
   try {
@@ -137,23 +138,120 @@ export function memberFilter(memberIds: number[]): FilterSpecification {
     : ['==', ['get', 'player_id'], -1]
 }
 
+type RenderGeometryOptions = { maxCoordinates?: number; zoom?: number }
+
+function unwrapLongitude(longitude: number, reference: number): number {
+  let result = longitude
+  while (result - reference > 180) result -= 360
+  while (result - reference < -180) result += 360
+  return result
+}
+
+function pointDistanceSquared(point: number[], start: number[], end: number[], scale: number) {
+  const px = unwrapLongitude(point[0] ?? 0, start[0] ?? 0) * scale
+  const py = point[1] ?? 0
+  const ax = (start[0] ?? 0) * scale
+  const ay = start[1] ?? 0
+  const bx = unwrapLongitude(end[0] ?? 0, start[0] ?? 0) * scale
+  const by = end[1] ?? 0
+  const dx = bx - ax
+  const dy = by - ay
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared === 0) return (px - ax) ** 2 + (py - ay) ** 2
+  const position = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared))
+  const closestX = ax + position * dx
+  const closestY = ay + position * dy
+  return (px - closestX) ** 2 + (py - closestY) ** 2
+}
+
+function simplifyLine(line: number[][], tolerance: number): number[][] {
+  if (line.length <= 2) return line
+  const keep = new Uint8Array(line.length)
+  keep[0] = 1
+  keep[line.length - 1] = 1
+  const pending: [number, number][] = [[0, line.length - 1]]
+  while (pending.length) {
+    const [start, end] = pending.pop() as [number, number]
+    const scale = Math.cos(
+      ((((line[start]?.[1] ?? 0) + (line[end]?.[1] ?? 0)) / 2) * Math.PI) / 180,
+    )
+    let farthest = -1
+    let farthestDistance = tolerance * tolerance
+    for (let index = start + 1; index < end; index += 1) {
+      const distance = pointDistanceSquared(
+        line[index] ?? [],
+        line[start] ?? [],
+        line[end] ?? [],
+        scale,
+      )
+      if (distance > farthestDistance) {
+        farthest = index
+        farthestDistance = distance
+      }
+    }
+    if (farthest >= 0) {
+      keep[farthest] = 1
+      pending.push([start, farthest], [farthest, end])
+    }
+  }
+  return line.filter((_, index) => keep[index] === 1)
+}
+
+function decimateLine(line: number[][], target: number): number[][] {
+  if (line.length <= target) return line
+  return Array.from(
+    { length: target },
+    (_, index) => line[Math.round((index * (line.length - 1)) / (target - 1))] ?? [],
+  )
+}
+
+function boundRenderLines(lines: number[][][], maxCoordinates: number): number[][][] {
+  const total = lines.reduce((count, line) => count + line.length, 0)
+  if (total <= maxCoordinates) return lines
+  const minimum = lines.reduce((count, line) => count + Math.min(line.length, 2), 0)
+  const extraBudget = Math.max(0, maxCoordinates - minimum)
+  const extraTotal = lines.reduce((count, line) => count + Math.max(0, line.length - 2), 0)
+  const scale = extraTotal ? Math.min(1, extraBudget / extraTotal) : 0
+  const targets = lines.map((line) =>
+    Math.min(line.length, 2 + Math.floor(Math.max(0, line.length - 2) * scale)),
+  )
+  let allocated = targets.reduce((count, target) => count + target, 0)
+  for (let index = 0; allocated < maxCoordinates && index < lines.length; index += 1) {
+    if (targets[index] < lines[index]?.length) {
+      targets[index] = (targets[index] ?? 0) + 1
+      allocated += 1
+    }
+    if (index === lines.length - 1 && allocated < maxCoordinates) index = -1
+  }
+  return lines.map((line, index) => decimateLine(line, targets[index] ?? 2))
+}
+
 export function memberFeatureCollection(
   activities: MapActivity[],
   colors: globalThis.Map<number, string> = new globalThis.Map(),
+  options: RenderGeometryOptions = {},
 ) {
   const grouped = new globalThis.Map<number, number[][][]>()
+  const tolerance = 0.00005 * 2 ** Math.max(0, 12 - (options.zoom ?? 12))
   for (const activity of activities) {
     const geometry = activity.geometry as { type?: unknown; coordinates?: unknown }
     if (geometry.type === 'LineString' && Array.isArray(geometry.coordinates)) {
       const lines = grouped.get(activity.player_id) ?? []
-      lines.push(geometry.coordinates as number[][])
+      lines.push(simplifyLine(geometry.coordinates as number[][], tolerance))
       grouped.set(activity.player_id, lines)
     } else if (geometry.type === 'MultiLineString' && Array.isArray(geometry.coordinates)) {
       const lines = grouped.get(activity.player_id) ?? []
-      lines.push(...(geometry.coordinates as number[][][]))
+      lines.push(
+        ...(geometry.coordinates as number[][][]).map((line) => simplifyLine(line, tolerance)),
+      )
       grouped.set(activity.player_id, lines)
     }
   }
+  const bounded = boundRenderLines(
+    [...grouped.values()].flat(),
+    options.maxCoordinates ?? MAX_RENDER_COORDINATES,
+  )
+  let boundedIndex = 0
   return {
     type: 'FeatureCollection' as const,
     features: [...grouped].map(([playerId, coordinates]) => ({
@@ -163,7 +261,10 @@ export function memberFeatureCollection(
         player_id: playerId,
         color: colors.get(playerId) ?? '#2B8C76',
       },
-      geometry: { type: 'MultiLineString' as const, coordinates },
+      geometry: {
+        type: 'MultiLineString' as const,
+        coordinates: coordinates.map(() => bounded[boundedIndex++] ?? []),
+      },
     })),
   }
 }
@@ -389,6 +490,8 @@ export default function GameApp() {
       startTransition(() =>
         setMapData(canCacheAllMembers ? result.data : visibleMapData(result.data, selected)),
       )
+      const processingStart = `game-map-response-to-source-${mapMeasureSequence.current}`
+      performance.mark(processingStart)
       const visualSource = map.current?.getSource('private-traces-visual') as
         GeoJSONSource | undefined
       const colors = new globalThis.Map(
@@ -425,7 +528,17 @@ export default function GameApp() {
         map.current.on('sourcedata', onSourceData)
         map.current.on('render', onRender)
         mapInteractionActivitiesRef.current = result.data.activities
-        visualSource?.setData(memberFeatureCollection(result.data.activities, colors))
+        const visualData = memberFeatureCollection(result.data.activities, colors, {
+          maxCoordinates: MAX_RENDER_COORDINATES,
+          zoom: current.zoom,
+        })
+        performance.measure('game-map-response-to-source', processingStart)
+        performance.clearMarks(processingStart)
+        const setDataStart = `game-map-source-set-data-${sequence}`
+        performance.mark(setDataStart)
+        visualSource.setData(visualData)
+        performance.measure('game-map-source-set-data', setDataStart)
+        performance.clearMarks(setDataStart)
         visibleMemberIdsRef.current = selected
         map.current.setFilter('private-traces-visual', memberFilter(selected))
       }

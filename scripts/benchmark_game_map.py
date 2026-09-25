@@ -155,7 +155,9 @@ def api_runs(client: Client, competition: Competition) -> list[float]:
     return samples
 
 
-def browser_runs(url: str, api_url: str, session_key: str) -> tuple[list[float], list[float]]:
+def browser_runs(
+    url: str, api_url: str, session_key: str
+) -> tuple[list[float], list[float], dict[str, list[float]]]:
     output = subprocess.check_output(
         [
             "corepack",
@@ -176,14 +178,38 @@ def browser_runs(url: str, api_url: str, session_key: str) -> tuple[list[float],
         raise RuntimeError("browser benchmark did not return named samples")
     update_samples = samples.get("updateSamples")
     lazy_samples = samples.get("lazySamples")
+    stage_samples = samples.get("stageSamples")
     if (
         not isinstance(update_samples, list)
         or len(update_samples) != RUNS
         or not isinstance(lazy_samples, list)
         or len(lazy_samples) != RUNS
+        or not isinstance(stage_samples, list)
+        or len(stage_samples) != RUNS
     ):
         raise RuntimeError("browser benchmark did not return 30 samples")
-    return [float(sample) for sample in update_samples], [float(sample) for sample in lazy_samples]
+    stages: dict[str, list[float]] = {
+        "response_to_source": [],
+        "source_set_data": [],
+        "source_to_visible": [],
+    }
+    for sample in stage_samples:
+        if not isinstance(sample, dict):
+            raise RuntimeError("browser benchmark returned an invalid stage sample")
+        for source_key, result_key in (
+            ("responseToSource", "response_to_source"),
+            ("sourceSetData", "source_set_data"),
+            ("updateToRender", "source_to_visible"),
+        ):
+            value = sample.get(source_key)
+            if not isinstance(value, (float, int)):
+                raise RuntimeError("browser benchmark returned an invalid stage value")
+            stages[result_key].append(float(value))
+    return (
+        [float(sample) for sample in update_samples],
+        [float(sample) for sample in lazy_samples],
+        stages,
+    )
 
 
 def main() -> None:
@@ -241,7 +267,7 @@ def main() -> None:
         "budgets_ms": {"api_p95": API_BUDGET_MS, "browser_p95": BROWSER_BUDGET_MS},
     }
     if args.browser_url:
-        browser_samples, lazy_samples = browser_runs(
+        browser_samples, lazy_samples, stage_samples = browser_runs(
             args.browser_url, args.browser_api_url, session.session_key or ""
         )
         result["browser_response_to_render_ms"] = {
@@ -251,6 +277,10 @@ def main() -> None:
         result["browser_lazy_interaction_ms"] = {
             "median": statistics.median(lazy_samples),
             "p95": percentile(lazy_samples, 0.95),
+        }
+        result["browser_stages_ms"] = {
+            stage: {"median": statistics.median(values), "p95": percentile(values, 0.95)}
+            for stage, values in stage_samples.items()
         }
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     api_p95 = result["api_ms"]["p95"]  # type: ignore[index]

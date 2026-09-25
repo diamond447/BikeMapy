@@ -88,6 +88,7 @@ vi.mock('maplibre-gl', () => ({
 
 import {
   featureCollection,
+  MAX_RENDER_COORDINATES,
   memberFeatureCollection,
   memberFilter,
   nearestActivityId,
@@ -205,6 +206,31 @@ describe('private game map presentation', () => {
     ])
     expect(result.features).toHaveLength(1)
     expect(result.features[0].geometry.coordinates).toHaveLength(2)
+  })
+
+  it('bounds render geometry, preserves endpoints across the antimeridian, and strips activity data', () => {
+    const coordinates = Array.from({ length: 101 }, (_, index) => [
+      index < 51 ? 179.5 + index * 0.01 : -179.99 + (index - 50) * 0.01,
+      49 + Math.sin(index / 8) * 0.01,
+    ])
+    const result = memberFeatureCollection(
+      [
+        {
+          id: 'private-activity',
+          player_id: 7,
+          calendar_date: '2026-09-21',
+          geometry: { type: 'LineString' as const, coordinates },
+        },
+      ],
+      new Map([[7, '#F4B942']]),
+      { maxCoordinates: 20, zoom: 8 },
+    )
+    const rendered = result.features[0].geometry.coordinates[0] ?? []
+    expect(rendered.length).toBeLessThanOrEqual(20)
+    expect(rendered[0]).toEqual(coordinates[0])
+    expect(rendered.at(-1)).toEqual(coordinates.at(-1))
+    expect(result.features[0].properties).toEqual({ player_id: 7, color: '#F4B942' })
+    expect(MAX_RENDER_COORDINATES).toBeGreaterThan(1_200)
   })
 
   it('filters both visible and interaction features to exactly the selected members', () => {
