@@ -33,6 +33,13 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
       rememberCsrfToken(result.response)
       if (result.data && Array.isArray(result.data.competitions)) {
         setCompetitions(result.data.competitions)
+        const selectedScope = result.data.competitions.find(
+          (competition) => competition.is_selected,
+        )?.sharing_scope
+        if (selectedScope === 'recent' || selectedScope === 'full_history') {
+          setSharingScope(selectedScope)
+        }
+        setSharingConfirmed(false)
         return true
       }
       if (result.response?.status !== 401) {
@@ -53,12 +60,6 @@ export function GameCompetitions({ copy }: { copy: Copy }) {
     const timer = window.setTimeout(() => void load(), 0)
     return () => window.clearTimeout(timer)
   }, [load])
-
-  useEffect(() => {
-    const scope = competitions.find((competition) => competition.is_selected)?.sharing_scope
-    if (scope === 'recent' || scope === 'full_history') setSharingScope(scope)
-    setSharingConfirmed(false)
-  }, [competitions])
 
   const action = async (
     run: () => Promise<{ response?: Response; data?: unknown; error?: unknown }>,
