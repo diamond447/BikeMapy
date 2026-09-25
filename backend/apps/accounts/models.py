@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from apps.catalogue.fields import RouteGeometryField
+
 from .fields import EncryptedSecretField
 
 OAUTH_STATE_TTL = timedelta(minutes=10)
+
+
+def webhook_event_expiry() -> datetime:
+    return timezone.now() + timedelta(days=30)
 
 
 class Player(models.Model):
@@ -158,8 +164,17 @@ class ImportedActivity(models.Model):
     provider_activity_id = models.CharField(max_length=80)
     title = models.CharField(max_length=240, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
+    calendar_date = models.DateField(null=True, blank=True)
+    activity_type = models.CharField(max_length=48, blank=True)
+    visibility = models.CharField(max_length=32, blank=True)
+    geometry = RouteGeometryField(srid=4326, spatial_index=True, blank=True, null=True)
+    geometry_hash = models.CharField(max_length=64, blank=True)
+    provider_updated_at = models.DateTimeField(null=True, blank=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removal_reason = models.CharField(max_length=48, blank=True)
     payload = models.JSONField(default=dict, blank=True)
     imported_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
@@ -171,6 +186,149 @@ class ImportedActivity(models.Model):
 
     def __str__(self) -> str:
         return self.title or self.provider_activity_id
+
+
+class StravaSyncState(models.Model):
+    """Durable, non-secret progress for one player's activity import."""
+
+    class Status(models.TextChoices):
+        IDLE = "idle", "Idle"
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        PAUSED = "paused", "Paused"
+        FAILED = "failed", "Failed"
+
+    player = models.OneToOneField(
+        "accounts.Player", on_delete=models.CASCADE, related_name="strava_sync_state"
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.IDLE)
+    mode = models.CharField(max_length=16, default="incremental")
+    history_start = models.DateTimeField(null=True, blank=True)
+    cursor_page = models.PositiveIntegerField(default=1)
+    imported_count = models.PositiveIntegerField(default=0)
+    rejected_count = models.PositiveIntegerField(default=0)
+    processed_count = models.PositiveIntegerField(default=0)
+    last_provider_updated_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=240, blank=True)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    lease_token = models.CharField(max_length=64, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Strava sync state for player {self.player_id}"
+
+
+class StravaSyncJob(models.Model):
+    """Bounded queue item for a resumable list/detail import or webhook."""
+
+    class Kind(models.TextChoices):
+        INITIAL = "initial", "Initial history"
+        FULL_HISTORY = "full-history", "Full history"
+        INCREMENTAL = "incremental", "Incremental"
+        WEBHOOK = "webhook", "Webhook"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    player = models.ForeignKey(
+        "accounts.Player", on_delete=models.CASCADE, related_name="strava_sync_jobs"
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    idempotency_key = models.CharField(max_length=160, unique=True)
+    webhook_event = models.ForeignKey(
+        "accounts.StravaWebhookEvent",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sync_jobs",
+    )
+    page = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    retryable = models.BooleanField(default=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    last_error = models.CharField(max_length=240, blank=True)
+    lease_token = models.CharField(max_length=64, blank=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    dispatch_token = models.CharField(max_length=64, blank=True)
+    dispatch_lease_until = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=("status", "next_attempt_at"))]
+
+    def __str__(self) -> str:
+        return f"Strava sync {self.kind} for player {self.player_id}"
+
+
+class StravaQuotaState(models.Model):
+    """Shared provider quota reservation state for all synchronization workers."""
+
+    key = models.CharField(max_length=32, primary_key=True, default="global")
+    short_window_used = models.PositiveIntegerField(default=0)
+    daily_used = models.PositiveIntegerField(default=0)
+    short_window_limit = models.PositiveIntegerField(default=100)
+    daily_limit = models.PositiveIntegerField(default=1000)
+    read_short_window_used = models.PositiveIntegerField(default=0)
+    read_daily_used = models.PositiveIntegerField(default=0)
+    read_short_window_limit = models.PositiveIntegerField(default=100)
+    read_daily_limit = models.PositiveIntegerField(default=1000)
+    short_window_reset_at = models.DateTimeField(null=True, blank=True)
+    daily_reset_at = models.DateTimeField(null=True, blank=True)
+    cooldown_until = models.DateTimeField(null=True, blank=True)
+    in_flight = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Strava quota {self.key}"
+
+
+class StravaQuotaReservation(models.Model):
+    """Expiring reservation preventing dead workers from consuming quota forever."""
+
+    token = models.CharField(max_length=64, primary_key=True)
+    expires_at = models.DateTimeField()
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=("expires_at", "released_at"))]
+
+    def __str__(self) -> str:
+        return f"Strava quota reservation {self.token}"
+
+
+class StravaWebhookEvent(models.Model):
+    """Idempotency and audit record for a verified provider event."""
+
+    event_key = models.CharField(max_length=64, unique=True)
+    player = models.ForeignKey(
+        "accounts.Player",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="strava_webhook_events",
+    )
+    subscription_id = models.PositiveBigIntegerField(null=True, blank=True)
+    object_id = models.PositiveBigIntegerField()
+    owner_athlete_id = models.PositiveBigIntegerField()
+    aspect_type = models.CharField(max_length=24)
+    object_type = models.CharField(max_length=24, default="activity")
+    payload = models.JSONField(default=dict, blank=True)
+    received_at = models.DateTimeField(default=timezone.now)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=240, blank=True)
+    expires_at = models.DateTimeField(default=webhook_event_expiry)
+
+    def __str__(self) -> str:
+        return f"Strava webhook {self.event_key}"
 
 
 class CompetitionResult(models.Model):

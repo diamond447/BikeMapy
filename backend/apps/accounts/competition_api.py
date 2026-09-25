@@ -15,6 +15,7 @@ from rest_framework.throttling import BaseThrottle
 
 from apps.api.throttling import CompetitionInviteThrottle, PlayerSessionThrottle
 
+from .activity_api import activity_payload
 from .competition_services import (
     CompetitionError,
     create_competition,
@@ -29,7 +30,7 @@ from .competition_services import (
     transfer_ownership,
 )
 from .game_api import GameEndpoint, _private
-from .models import Competition, CompetitionMembership, Player
+from .models import Competition, CompetitionMembership, ImportedActivity, Player
 from .services import competition_is_available
 
 
@@ -39,6 +40,13 @@ class CompetitionMemberSerializer(serializers.Serializer[dict[str, Any]]):
     nickname = serializers.CharField(allow_null=True)
     color = serializers.CharField()
     is_owner = serializers.BooleanField()
+
+
+class CompetitionActivitySerializer(serializers.Serializer[dict[str, Any]]):
+    id = serializers.UUIDField()
+    player_id = serializers.IntegerField()
+    calendar_date = serializers.DateField()
+    geometry = serializers.JSONField()
 
 
 class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -52,6 +60,7 @@ class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
     color = serializers.CharField()
     created_at = serializers.DateTimeField()
     members = CompetitionMemberSerializer(many=True)
+    activities = CompetitionActivitySerializer(many=True)
 
 
 class CompetitionsResponseSerializer(serializers.Serializer[dict[str, Any]]):
@@ -157,6 +166,14 @@ class CompetitionApi(GameEndpoint):
                 "joined_at", "pk"
             )
         ]
+        activities = [
+            activity_payload(activity)
+            for activity in ImportedActivity.objects.filter(
+                player__competition_memberships__competition=competition,
+            )
+            .order_by("calendar_date", "pk")
+            .distinct()
+        ]
         return {
             "id": competition.pk,
             "name": competition.name,
@@ -168,6 +185,7 @@ class CompetitionApi(GameEndpoint):
             "color": membership.color,
             "created_at": competition.created_at,
             "members": members,
+            "activities": activities,
         }
 
     def _response(self, competition: Competition, player: Player, *, code: int = 200) -> Response:

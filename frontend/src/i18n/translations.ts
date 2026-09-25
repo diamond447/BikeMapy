@@ -169,6 +169,25 @@ export const translations = {
     gameDeleteTitle: 'Delete player account?',
     gameDeleteDescription:
       'This permanently removes your BikeMapy player account and its connected Strava data.',
+    gameActivityKicker: 'Activity bridge',
+    gameActivityTitle: 'Your rides, kept private',
+    gameActivityDescription:
+      'Only public outdoor rides with a route are shared in your private competitions. Strava titles and exact times stay yours.',
+    gameActivityWaiting: 'Waiting',
+    gameActivityStatus: (status: string) => {
+      const labels: Record<string, string> = {
+        queued: 'Queued',
+        running: 'Syncing',
+        paused: 'Paused',
+        failed: 'Needs attention',
+        idle: 'Up to date',
+      }
+      return labels[status] ?? 'Syncing'
+    },
+    gameActivityProgress: (imported: number, processed: number) =>
+      `${imported} rides kept · ${processed} checked`,
+    gameActivityHistoryQueued: 'Full history is queued. You can keep using BikeMapy while it runs.',
+    gameActivityFullHistory: 'Import my full Strava history',
     gameDeleteConfirm: 'Delete account',
     gameDeleted: 'Player account deleted.',
     gameClose: 'Close player account',
@@ -367,6 +386,25 @@ export const translations = {
     gameDeleteTitle: 'Smazat hráčský účet?',
     gameDeleteDescription:
       'Tímto trvale odstraníte hráčský účet BikeMapy a jeho propojená data ze Stravy.',
+    gameActivityKicker: 'Most aktivit',
+    gameActivityTitle: 'Vaše jízdy zůstávají soukromé',
+    gameActivityDescription:
+      'Do vašich soukromých soutěží se sdílejí jen veřejné venkovní jízdy s trasou. Názvy a přesné časy ze Stravy zůstávají jen vám.',
+    gameActivityWaiting: 'Čeká se',
+    gameActivityStatus: (status: string) => {
+      const labels: Record<string, string> = {
+        queued: 'Ve frontě',
+        running: 'Synchronizuje se',
+        paused: 'Pozastaveno',
+        failed: 'Vyžaduje pozornost',
+        idle: 'Aktuální',
+      }
+      return labels[status] ?? 'Synchronizuje se'
+    },
+    gameActivityProgress: (imported: number, processed: number) =>
+      `${imported} jízd uloženo · ${processed} zkontrolováno`,
+    gameActivityHistoryQueued: 'Celá historie je zařazená do fronty. BikeMapy můžete dál používat.',
+    gameActivityFullHistory: 'Importovat celou historii ze Stravy',
     gameDeleteConfirm: 'Smazat účet',
     gameDeleted: 'Hráčský účet byl smazán.',
     gameClose: 'Zavřít hráčský účet',
