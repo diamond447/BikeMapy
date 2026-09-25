@@ -25,6 +25,12 @@ all members selected.
 | zoom                 |         0–22 |
 | longitude viewport   | at most 120° |
 
+Competition list responses expose at most 100 consenting members and set
+`members_truncated` for legacy competitions that exceed that page. The client
+uses only this bounded page for its initial map request; the map endpoint still
+authorizes an explicitly requested member beyond the page without materializing
+the rest of the competition.
+
 The client renders one grouped canvas overlay while MapLibre retains navigation
 and attribution. Activity geometry remains in the already-authorized response,
 but is not copied into a second MapLibre worker source. Before the overlay is
@@ -32,7 +38,9 @@ drawn, each visible line is
 deterministically tolerance-simplified for the current zoom and bounded by a
 2,400-coordinate client render budget; line endpoints and separate line parts
 are retained. A click on a visible member line resolves the
-nearest activity in that member's authorized geometry, so precise trace
+nearest activity in that member's authorized geometry. A one-degree,
+antimeridian-safe activity index bounds candidate lookup, and pointer bursts
+are coalesced to one exact lookup per animation frame, so precise trace
 selection is lazy and does not delay the initial render. Member colors are
 copied into feature properties; trace inspection exposes only the calendar
 date. Titles, exact timestamps, speed, provider IDs, and payload metadata are

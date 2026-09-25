@@ -142,6 +142,7 @@ test('game map applies the latest member filter after an in-flight response', as
     mapCalls += 1
     const url = new URL(route.request().url())
     const selected = url.searchParams.getAll('member')
+    if (mapCalls === 1) expect(selected.length).toBeLessThanOrEqual(100)
     if (mapCalls === 2) await page.waitForTimeout(300)
     await route.fulfill({
       status: 200,
@@ -218,4 +219,67 @@ test('game map Retry repeats a failed map request', async ({ page }) => {
   await page.getByRole('button', { name: /retry/i }).click()
   await expect(page.getByRole('button', { name: activity.calendar_date })).toBeVisible()
   expect(mapCalls).toBe(2)
+})
+
+test('game map wraps dateline geometry and normalizes world-copy bounds', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/*/map/**')
+  await page.route('**/api/v1/game/competitions/*/map/**', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'loaded',
+        competition_id: competition.id,
+        members: competition.members,
+        activities: [
+          {
+            ...activity,
+            geometry: {
+              type: 'LineString',
+              coordinates: [
+                [179.5, 49],
+                [-179.5, 49.1],
+              ],
+            },
+          },
+        ],
+        truncated: false,
+        limits: { max_features: 1200, max_coordinates: 120000 },
+      }),
+    }),
+  )
+  await page.goto('/game?benchmark=full-update')
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.url().includes('/api/v1/game/competitions/') && request.url().includes('/map/'),
+  )
+  await page.evaluate(() =>
+    globalThis.dispatchEvent(
+      new CustomEvent('bikemapy:benchmark-map-pan', {
+        detail: { center: [180, 49], zoom: 8 },
+      }),
+    ),
+  )
+  const request = await requestPromise
+  const url = new URL(request.url())
+  const west = Number(url.searchParams.get('west'))
+  const east = Number(url.searchParams.get('east'))
+  expect(west).toBeGreaterThanOrEqual(-180)
+  expect(west).toBeLessThanOrEqual(180)
+  expect(east).toBeGreaterThanOrEqual(-180)
+  expect(east).toBeLessThanOrEqual(180)
+  expect((east - west + 360) % 360).toBeLessThanOrEqual(120)
+  await expect(page.locator('.game-map-render-overlay')).toBeVisible()
+  expect(
+    await page.locator('.game-map-render-overlay').evaluate((canvas) => {
+      const context = canvas.getContext('2d')
+      if (!context) return false
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+      for (let index = 3; index < pixels.length; index += 4) {
+        if (pixels[index] !== 0) return true
+      }
+      return false
+    }),
+  ).toBe(true)
 })

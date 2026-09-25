@@ -56,6 +56,7 @@ class CompetitionSerializer(serializers.Serializer[dict[str, Any]]):
     color = serializers.CharField()
     created_at = serializers.DateTimeField()
     members = CompetitionMemberSerializer(many=True)
+    members_truncated = serializers.BooleanField()
     sharing_scope = serializers.ChoiceField(
         choices=tuple(CompetitionMembership.SharingScope.values)
     )
@@ -163,8 +164,16 @@ class CompetitionApi(GameEndpoint):
     @staticmethod
     def _payload(competition: Competition, player: Player) -> dict[str, Any]:
         membership = CompetitionMembership.objects.get(competition=competition, player=player)
-        members = (
-            [
+        members_truncated = False
+        if sharing_is_active(membership):
+            member_rows = list(
+                competition.memberships.select_related("player")
+                .filter(sharing_consent_at__isnull=False)
+                .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
+                .order_by("joined_at", "pk")[:101]
+            )
+            members_truncated = len(member_rows) > 100
+            members = [
                 {
                     "player_id": member.player_id,
                     "display_name": competition_member_label(member),
@@ -172,14 +181,10 @@ class CompetitionApi(GameEndpoint):
                     "color": member.color,
                     "is_owner": member.player_id == competition.owner_id,
                 }
-                for member in competition.memberships.select_related("player")
-                .filter(sharing_consent_at__isnull=False)
-                .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
-                .order_by("joined_at", "pk")
+                for member in member_rows[:100]
             ]
-            if sharing_is_active(membership)
-            else []
-        )
+        else:
+            members = []
         return {
             "id": competition.pk,
             "name": competition.name,
@@ -191,6 +196,7 @@ class CompetitionApi(GameEndpoint):
             "color": membership.color,
             "created_at": competition.created_at,
             "members": members,
+            "members_truncated": members_truncated,
             "sharing_scope": membership.sharing_scope,
         }
 

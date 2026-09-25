@@ -122,6 +122,34 @@ def test_create_join_switch_and_non_member_access_is_not_enumerable() -> None:
 
 
 @override_settings(**SETTINGS)
+def test_competition_list_caps_legacy_consenting_members() -> None:
+    owner = player(20_000)
+    competition, owner_membership = create_competition(owner, name="Legacy large")
+    now = timezone.now()
+    owner_membership.sharing_consent_at = now
+    owner_membership.sharing_scope = CompetitionMembership.SharingScope.RECENT
+    owner_membership.save(update_fields=["sharing_consent_at", "sharing_scope"])
+    extra_players = [player(20_001 + index) for index in range(101)]
+    CompetitionMembership.objects.bulk_create(
+        [
+            CompetitionMembership(
+                competition=competition,
+                player=extra,
+                color="#123456",
+                sharing_scope=CompetitionMembership.SharingScope.RECENT,
+                sharing_consent_at=now,
+            )
+            for extra in extra_players
+        ]
+    )
+
+    payload = authenticated_client(owner).get(reverse("game-competition-list")).json()
+    listed = payload["competitions"][0]
+    assert len(listed["members"]) == 100
+    assert listed["members_truncated"] is True
+
+
+@override_settings(**SETTINGS)
 def test_sharing_consent_is_explicit_and_member_metadata_is_pseudonymous() -> None:
     owner = player(301)
     member = player(302)

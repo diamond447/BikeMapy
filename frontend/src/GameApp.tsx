@@ -23,8 +23,33 @@ type MapActivity = components['schemas']['CompetitionMapActivity']
 
 const STORAGE_KEY = 'bikemapy:game-map'
 const TRACE_PAGE_SIZE = 100
+const MAX_MAP_MEMBERS = 100
 export const MAX_RENDER_COORDINATES = 2_400
 const DEFAULT_VIEW = { longitude: 16.6, latitude: 49.2, zoom: 7.5 }
+
+export function normalizeLongitude(longitude: number): number {
+  const normalized = ((((longitude + 180) % 360) + 360) % 360) - 180
+  return normalized === -180 && longitude > 0 ? 180 : normalized
+}
+
+export function normalizeMapBounds(bounds: {
+  west: number
+  south: number
+  east: number
+  north: number
+  zoom: number
+}) {
+  const rawWidth = (((bounds.east - bounds.west) % 360) + 360) % 360 || 360
+  const width = Math.min(rawWidth, 120)
+  const center = normalizeLongitude(bounds.west + rawWidth / 2)
+  return {
+    west: normalizeLongitude(center - width / 2),
+    south: bounds.south,
+    east: normalizeLongitude(center + width / 2),
+    north: bounds.north,
+    zoom: bounds.zoom,
+  }
+}
 function readPrivateState(): { competitionId?: string; members?: number[] } {
   try {
     const value = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '{}') as unknown
@@ -79,6 +104,12 @@ export function visibleMapData(data: MapResponse, memberIds: number[]): MapRespo
 
 type InteractionPoint = { lng: number; lat: number }
 
+type ActivitySpatialIndex = {
+  cellSize: number
+  cells: Map<string, Set<number>>
+  activities: MapActivity[]
+}
+
 function lineParts(activity: MapActivity): number[][][] {
   const geometry = activity.geometry as { type?: unknown; coordinates?: unknown }
   if (geometry.type === 'LineString' && Array.isArray(geometry.coordinates)) {
@@ -94,9 +125,9 @@ function segmentDistanceSquared(point: InteractionPoint, start: number[], end: n
   const scale = Math.cos((point.lat * Math.PI) / 180)
   const px = point.lng * scale
   const py = point.lat
-  const ax = (start[0] ?? 0) * scale
+  const ax = unwrapLongitude(start[0] ?? 0, point.lng) * scale
   const ay = start[1] ?? 0
-  const bx = (end[0] ?? 0) * scale
+  const bx = unwrapLongitude(end[0] ?? 0, point.lng) * scale
   const by = end[1] ?? 0
   const dx = bx - ax
   const dy = by - ay
@@ -131,6 +162,93 @@ export function nearestActivityId(
     }
   }
   return closestDistance <= maxDistance * maxDistance ? closestId : null
+}
+
+/** Build a coarse, antimeridian-safe index used only to shortlist click candidates. */
+export function buildActivitySpatialIndex(
+  activities: MapActivity[],
+  cellSize = 1,
+): ActivitySpatialIndex {
+  const cells = new Map<string, Set<number>>()
+  const longitudeCells = Math.ceil(360 / cellSize)
+  const latitudeCells = Math.ceil(180 / cellSize)
+  const add = (x: number, y: number, activityIndex: number) => {
+    const key = `${((x % longitudeCells) + longitudeCells) % longitudeCells}:${Math.max(
+      0,
+      Math.min(latitudeCells - 1, y),
+    )}`
+    const entries = cells.get(key) ?? new Set<number>()
+    entries.add(activityIndex)
+    cells.set(key, entries)
+  }
+  activities.forEach((activity, activityIndex) => {
+    let minimumLongitude = Number.POSITIVE_INFINITY
+    let maximumLongitude = Number.NEGATIVE_INFINITY
+    let minimumLatitude = Number.POSITIVE_INFINITY
+    let maximumLatitude = Number.NEGATIVE_INFINITY
+    for (const line of lineParts(activity)) {
+      const reference = line[0]?.[0] ?? 0
+      for (const coordinate of line) {
+        const longitude = unwrapLongitude(coordinate[0] ?? 0, reference)
+        const latitude = coordinate[1] ?? 0
+        minimumLongitude = Math.min(minimumLongitude, longitude)
+        maximumLongitude = Math.max(maximumLongitude, longitude)
+        minimumLatitude = Math.min(minimumLatitude, latitude)
+        maximumLatitude = Math.max(maximumLatitude, latitude)
+      }
+    }
+    if (!Number.isFinite(minimumLongitude) || !Number.isFinite(minimumLatitude)) return
+    const firstX = Math.floor((minimumLongitude + 180) / cellSize)
+    const lastX = Math.floor((maximumLongitude + 180) / cellSize)
+    const firstY = Math.floor((minimumLatitude + 90) / cellSize)
+    const lastY = Math.floor((maximumLatitude + 90) / cellSize)
+    const xCount = lastX - firstX + 1
+    if (xCount >= longitudeCells) {
+      for (let x = 0; x < longitudeCells; x += 1) {
+        for (let y = firstY; y <= lastY; y += 1) add(x, y, activityIndex)
+      }
+    } else {
+      for (let x = firstX; x <= lastX; x += 1) {
+        for (let y = firstY; y <= lastY; y += 1) add(x, y, activityIndex)
+      }
+    }
+  })
+  return { cellSize, cells, activities }
+}
+
+export function nearestIndexedActivityId(
+  index: ActivitySpatialIndex,
+  visibleMemberIds: number[],
+  point: InteractionPoint,
+  maxDistance = Number.POSITIVE_INFINITY,
+): string | null {
+  const radius = Number.isFinite(maxDistance)
+    ? Math.max(1, Math.ceil(maxDistance / index.cellSize) + 1)
+    : Math.ceil(180 / index.cellSize)
+  const centerX = Math.floor((normalizeLongitude(point.lng) + 180) / index.cellSize)
+  const centerY = Math.floor((point.lat + 90) / index.cellSize)
+  const longitudeCells = Math.ceil(360 / index.cellSize)
+  const candidates = new Set<number>()
+  for (let xOffset = -radius; xOffset <= radius; xOffset += 1) {
+    for (let yOffset = -radius; yOffset <= radius; yOffset += 1) {
+      const key = `${(((centerX + xOffset) % longitudeCells) + longitudeCells) % longitudeCells}:${Math.max(
+        0,
+        Math.min(Math.ceil(180 / index.cellSize) - 1, centerY + yOffset),
+      )}`
+      for (const activityIndex of index.cells.get(key) ?? []) candidates.add(activityIndex)
+    }
+  }
+  const visible = new Set(visibleMemberIds)
+  return nearestActivityId(
+    [...candidates]
+      .map((activityIndex) => index.activities[activityIndex])
+      .filter(
+        (activity): activity is MapActivity => Boolean(activity) && visible.has(activity.player_id),
+      ),
+    visibleMemberIds,
+    point,
+    maxDistance,
+  )
 }
 
 export function memberFilter(memberIds: number[]): FilterSpecification {
@@ -206,25 +324,42 @@ function decimateLine(line: number[][], target: number): number[][] {
   )
 }
 
-function boundRenderLines(lines: number[][][], maxCoordinates: number): number[][][] {
+function boundRenderLines(lines: number[][][], maxCoordinates: number): (number[][] | null)[] {
   const total = lines.reduce((count, line) => count + line.length, 0)
   if (total <= maxCoordinates) return lines
-  const minimum = lines.reduce((count, line) => count + Math.min(line.length, 2), 0)
+  if (maxCoordinates < 2) return lines.map(() => null)
+  const maxLines = Math.max(1, Math.floor(maxCoordinates / 2))
+  const selected = new Set<number>()
+  if (lines.length <= maxLines) {
+    lines.forEach((_, index) => selected.add(index))
+  } else {
+    for (let index = 0; index < maxLines; index += 1) {
+      selected.add(Math.round((index * (lines.length - 1)) / Math.max(1, maxLines - 1)))
+    }
+  }
+  const selectedLines = lines.filter((_, index) => selected.has(index))
+  const minimum = selectedLines.reduce((count, line) => count + Math.min(line.length, 2), 0)
   const extraBudget = Math.max(0, maxCoordinates - minimum)
-  const extraTotal = lines.reduce((count, line) => count + Math.max(0, line.length - 2), 0)
+  const extraTotal = selectedLines.reduce((count, line) => count + Math.max(0, line.length - 2), 0)
   const scale = extraTotal ? Math.min(1, extraBudget / extraTotal) : 0
-  const targets = lines.map((line) =>
+  const targets = selectedLines.map((line) =>
     Math.min(line.length, 2 + Math.floor(Math.max(0, line.length - 2) * scale)),
   )
   let allocated = targets.reduce((count, target) => count + target, 0)
-  for (let index = 0; allocated < maxCoordinates && index < lines.length; index += 1) {
-    if (targets[index] < lines[index]?.length) {
+  for (let index = 0; allocated < maxCoordinates && index < selectedLines.length; index += 1) {
+    if (targets[index] < selectedLines[index]?.length) {
       targets[index] = (targets[index] ?? 0) + 1
       allocated += 1
     }
-    if (index === lines.length - 1 && allocated < maxCoordinates) index = -1
+    if (index === selectedLines.length - 1 && allocated < maxCoordinates) index = -1
   }
-  return lines.map((line, index) => decimateLine(line, targets[index] ?? 2))
+  let selectedIndex = 0
+  return lines.map((line, index) => {
+    if (!selected.has(index)) return null
+    const bounded = decimateLine(line, targets[selectedIndex] ?? 2)
+    selectedIndex += 1
+    return bounded
+  })
 }
 
 export function memberFeatureCollection(
@@ -238,13 +373,15 @@ export function memberFeatureCollection(
     const geometry = activity.geometry as { type?: unknown; coordinates?: unknown }
     if (geometry.type === 'LineString' && Array.isArray(geometry.coordinates)) {
       const lines = grouped.get(activity.player_id) ?? []
-      lines.push(simplifyLine(geometry.coordinates as number[][], tolerance))
+      const simplified = simplifyLine(geometry.coordinates as number[][], tolerance)
+      if (simplified.length >= 2) lines.push(simplified)
       grouped.set(activity.player_id, lines)
     } else if (geometry.type === 'MultiLineString' && Array.isArray(geometry.coordinates)) {
       const lines = grouped.get(activity.player_id) ?? []
-      lines.push(
-        ...(geometry.coordinates as number[][][]).map((line) => simplifyLine(line, tolerance)),
-      )
+      for (const line of geometry.coordinates as number[][][]) {
+        const simplified = simplifyLine(line, tolerance)
+        if (simplified.length >= 2) lines.push(simplified)
+      }
       grouped.set(activity.player_id, lines)
     }
   }
@@ -264,10 +401,66 @@ export function memberFeatureCollection(
       },
       geometry: {
         type: 'MultiLineString' as const,
-        coordinates: coordinates.map(() => bounded[boundedIndex++] ?? []),
+        coordinates: coordinates
+          .map(() => bounded[boundedIndex++])
+          .filter((line): line is number[][] => line !== null),
       },
     })),
   }
+}
+
+export function drawWrappedLine(
+  context: CanvasRenderingContext2D,
+  points: Array<{ x: number; y: number }>,
+  width: number,
+) {
+  if (!points.length) return
+  context.beginPath()
+  context.moveTo(points[0]?.x ?? 0, points[0]?.y ?? 0)
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1] ?? { x: 0, y: 0 }
+    const current = points[index] ?? previous
+    const delta = current.x - previous.x
+    if (Math.abs(delta) <= width / 2) {
+      context.lineTo(current.x, current.y)
+      continue
+    }
+    const direction = delta > 0 ? -1 : 1
+    const wrappedX = current.x + direction * width
+    const boundary = direction > 0 ? width : 0
+    const fraction = (boundary - previous.x) / (wrappedX - previous.x)
+    const boundaryY = previous.y + (current.y - previous.y) * fraction
+    context.lineTo(boundary, boundaryY)
+    context.stroke()
+    context.beginPath()
+    context.moveTo(boundary === 0 ? width : 0, boundaryY)
+    context.lineTo(current.x, current.y)
+  }
+  context.stroke()
+}
+
+function pointNearRenderData(
+  point: InteractionPoint,
+  data: ReturnType<typeof memberFeatureCollection>,
+  visibleMemberIds: number[],
+  maxDistance: number,
+) {
+  const visible = new Set(visibleMemberIds)
+  const maxDistanceSquared = maxDistance * maxDistance
+  for (const feature of data.features) {
+    if (!visible.has(Number(feature.properties.player_id))) continue
+    for (const line of feature.geometry.coordinates) {
+      for (let index = 1; index < line.length; index += 1) {
+        if (
+          segmentDistanceSquared(point, line[index - 1] ?? [], line[index] ?? []) <=
+          maxDistanceSquared
+        ) {
+          return true
+        }
+      }
+    }
+  }
+  return false
 }
 
 function statusMessage(status: MapResponse['status'], copy: Copy) {
@@ -315,10 +508,10 @@ export default function GameApp() {
   const mapRequestPending = useRef(false)
   const mapMeasureSequence = useRef(0)
   const visibleMemberIdsRef = useRef<number[]>([])
-  const mapInteractionActivitiesRef = useRef<MapActivity[]>([])
   const fullMapDataRef = useRef<MapResponse | null>(null)
   const fullMapRequestKey = useRef<string | null>(null)
   const visualDataRef = useRef(memberFeatureCollection([]))
+  const activityIndexRef = useRef<ActivitySpatialIndex>(buildActivitySpatialIndex([]))
   const drawVisualDataRef = useRef<() => void>(() => undefined)
   const bounds = useRef({ west: 14, south: 48.5, east: 19, north: 51.2, zoom: 7.5 })
   const loadMapRef = useRef<() => Promise<void>>(() => Promise.resolve())
@@ -340,7 +533,7 @@ export default function GameApp() {
     mapRequestPending.current = false
     mapRequestInFlight.current = false
     visibleMemberIdsRef.current = []
-    mapInteractionActivitiesRef.current = []
+    activityIndexRef.current = buildActivitySpatialIndex([])
     visualDataRef.current = memberFeatureCollection([])
     drawVisualDataRef.current()
     setMapData(null)
@@ -409,7 +602,8 @@ export default function GameApp() {
     setError(null)
     const current = bounds.current
     const selectedCompetition = competitions.find((competition) => competition.id === competitionId)
-    const availableMembers = selectedCompetition?.members.map((member) => member.player_id) ?? []
+    const availableMembers =
+      selectedCompetition?.members.slice(0, MAX_MAP_MEMBERS).map((member) => member.player_id) ?? []
     const selected =
       visibleMembers === null
         ? availableMembers
@@ -418,7 +612,10 @@ export default function GameApp() {
     // the normal path. Cache that authorized response and change visibility
     // with a layer filter instead of reparsing 1,200 traces for every toggle.
     // Larger competitions retain the server-filtered path below.
-    const canCacheAllMembers = !benchmarkFullUpdate && availableMembers.length <= 100
+    const canCacheAllMembers =
+      !benchmarkFullUpdate &&
+      (selectedCompetition?.members.length ?? 0) <= MAX_MAP_MEMBERS &&
+      !selectedCompetition?.members_truncated
     const requestedMembers = canCacheAllMembers ? availableMembers : selected
     const requestKey = JSON.stringify([
       competitionId,
@@ -498,7 +695,7 @@ export default function GameApp() {
       const sequence = mapMeasureSequence.current++
       const startMark = `game-map-response-${sequence}`
       performance.mark(startMark)
-      mapInteractionActivitiesRef.current = result.data.activities
+      activityIndexRef.current = buildActivitySpatialIndex(result.data.activities)
       visualDataRef.current = memberFeatureCollection(result.data.activities, colors, {
         maxCoordinates: MAX_RENDER_COORDINATES,
         zoom: current.zoom,
@@ -558,17 +755,20 @@ export default function GameApp() {
     })
     map.current = instance
     let benchmarkInteraction: ((event: Event) => void) | undefined
+    let benchmarkPan: ((event: Event) => void) | undefined
+    let interactionFrame: number | null = null
+    let pendingInteractionPoint: { lng: number; lat: number } | null = null
     instance.addControl(new NavigationControl({ showCompass: true }), 'top-right')
     instance.addControl(new AttributionControl({ customAttribution: MAP_PROVIDER.attribution }))
     instance.on('moveend', () => {
       const current = instance.getBounds()
-      bounds.current = {
+      bounds.current = normalizeMapBounds({
         west: current.getWest(),
         south: current.getSouth(),
         east: current.getEast(),
         north: current.getNorth(),
         zoom: instance.getZoom(),
-      }
+      })
       if (!mapCanRequest.current) return
       scheduleMapLoad()
     })
@@ -578,13 +778,13 @@ export default function GameApp() {
         instance.jumpTo({ center: [14.5, 49], zoom: 8.5 })
       }
       const current = instance.getBounds()
-      bounds.current = {
+      bounds.current = normalizeMapBounds({
         west: current.getWest(),
         south: current.getSouth(),
         east: current.getEast(),
         north: current.getNorth(),
         zoom: instance.getZoom(),
-      }
+      })
       // Activity geometry stays in the authorized response and is resolved on
       // demand for clicks. The bounded, tolerance-simplified grouped geometry
       // is drawn in an overlay canvas so a fresh response does not wait for a
@@ -638,28 +838,13 @@ export default function GameApp() {
           context.lineCap = 'round'
           context.lineJoin = 'round'
           for (const line of feature.geometry.coordinates) {
-            context.beginPath()
-            let previousX: number | undefined
-            let hasPoint = false
-            for (const coordinate of line) {
-              const projected = instance.project({
-                lng: coordinate[0] ?? 0,
-                lat: coordinate[1] ?? 0,
-              })
-              if (previousX !== undefined && Math.abs(projected.x - previousX) > width / 2) {
-                context.stroke()
-                context.beginPath()
-                hasPoint = false
-              }
-              if (!hasPoint) {
-                context.moveTo(projected.x, projected.y)
-                hasPoint = true
-              } else {
-                context.lineTo(projected.x, projected.y)
-              }
-              previousX = projected.x
-            }
-            context.stroke()
+            drawWrappedLine(
+              context,
+              line.map((coordinate) =>
+                instance.project({ lng: coordinate[0] ?? 0, lat: coordinate[1] ?? 0 }),
+              ),
+              width,
+            )
           }
         }
       }
@@ -667,15 +852,27 @@ export default function GameApp() {
       instance.on('move', drawVisualData)
       instance.on('resize', drawVisualData)
       setMapReady(true)
-      const selectActivityAtPoint = (point: { lng: number; lat: number }) => {
+      const resolveActivityAtPoint = (point: { lng: number; lat: number }) => {
         const interactionSequence = mapMeasureSequence.current++
         const interactionStart = `game-map-lazy-interaction-${interactionSequence}`
         performance.mark(interactionStart)
-        const id = nearestActivityId(
-          mapInteractionActivitiesRef.current,
+        const maxDistance = 0.03 / 2 ** Math.max(0, instance.getZoom() - 8)
+        if (
+          !pointNearRenderData(
+            point,
+            visualDataRef.current,
+            visibleMemberIdsRef.current,
+            maxDistance,
+          )
+        ) {
+          performance.clearMarks(interactionStart)
+          return
+        }
+        const id = nearestIndexedActivityId(
+          activityIndexRef.current,
           visibleMemberIdsRef.current,
           point,
-          0.03 / 2 ** Math.max(0, instance.getZoom() - 8),
+          maxDistance,
         )
         if (id) {
           originatingTraceRef.current = id
@@ -688,6 +885,19 @@ export default function GameApp() {
           performance.clearMarks(interactionStart)
         }
       }
+      // Coalesce click bursts into one exact lookup per animation frame. The
+      // index only shortlists candidates; the final lookup still uses the
+      // authorized activity geometry.
+      const selectActivityAtPoint = (point: { lng: number; lat: number }) => {
+        pendingInteractionPoint = point
+        if (interactionFrame !== null) return
+        interactionFrame = window.requestAnimationFrame(() => {
+          interactionFrame = null
+          const pending = pendingInteractionPoint
+          pendingInteractionPoint = null
+          if (pending) resolveActivityAtPoint(pending)
+        })
+      }
       instance.on('click', (event) => {
         selectActivityAtPoint(event.lngLat)
       })
@@ -697,16 +907,12 @@ export default function GameApp() {
       }
       if (benchmarkFullUpdate) {
         window.addEventListener('bikemapy:benchmark-map-click', benchmarkInteraction)
+        benchmarkPan = (event: Event) => {
+          const detail = (event as CustomEvent<{ center: [number, number]; zoom: number }>).detail
+          if (detail) instance.jumpTo(detail)
+        }
+        window.addEventListener('bikemapy:benchmark-map-pan', benchmarkPan)
       }
-      instance.on('mousemove', (event) => {
-        const hit = nearestActivityId(
-          mapInteractionActivitiesRef.current,
-          visibleMemberIdsRef.current,
-          event.lngLat,
-          0.03 / 2 ** Math.max(0, instance.getZoom() - 8),
-        )
-        instance.getCanvas().style.cursor = hit ? 'pointer' : ''
-      })
       instance.once('idle', () => {
         mapCanRequest.current = true
         scheduleMapLoad()
@@ -721,11 +927,17 @@ export default function GameApp() {
       mapRequestPending.current = false
       fullMapDataRef.current = null
       fullMapRequestKey.current = null
-      mapInteractionActivitiesRef.current = []
+      activityIndexRef.current = buildActivitySpatialIndex([])
+      if (interactionFrame !== null) window.cancelAnimationFrame(interactionFrame)
+      interactionFrame = null
+      pendingInteractionPoint = null
       visualDataRef.current = memberFeatureCollection([])
       drawVisualDataRef.current = () => undefined
       if (benchmarkFullUpdate && benchmarkInteraction) {
         window.removeEventListener('bikemapy:benchmark-map-click', benchmarkInteraction)
+      }
+      if (benchmarkFullUpdate && benchmarkPan) {
+        window.removeEventListener('bikemapy:benchmark-map-pan', benchmarkPan)
       }
       setMapDataIncludesAllMembers(false)
       if (mapLoadTimer.current !== null) window.clearTimeout(mapLoadTimer.current)

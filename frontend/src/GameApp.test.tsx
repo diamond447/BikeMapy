@@ -95,11 +95,15 @@ vi.mock('maplibre-gl', () => ({
 }))
 
 import {
+  buildActivitySpatialIndex,
   featureCollection,
+  drawWrappedLine,
   MAX_RENDER_COORDINATES,
   memberFeatureCollection,
   memberFilter,
   nearestActivityId,
+  nearestIndexedActivityId,
+  normalizeMapBounds,
   visibleMapData,
 } from './GameApp'
 import { apiClient } from './api/client'
@@ -241,6 +245,45 @@ describe('private game map presentation', () => {
     expect(MAX_RENDER_COORDINATES).toBeGreaterThan(1_200)
   })
 
+  it('fairly drops excess line parts while enforcing the global render budget', () => {
+    const parts = Array.from({ length: 1_300 }, (_, index) => [
+      [14 + index * 0.0001, 49],
+      [14 + index * 0.0001, 49.001],
+    ])
+    const result = memberFeatureCollection(
+      [
+        {
+          id: 'many-a',
+          player_id: 7,
+          calendar_date: null,
+          geometry: { type: 'MultiLineString', coordinates: parts },
+        },
+        {
+          id: 'many-b',
+          player_id: 8,
+          calendar_date: null,
+          geometry: { type: 'MultiLineString', coordinates: parts },
+        },
+      ],
+      new Map([
+        [7, '#F4B942'],
+        [8, '#2B8C76'],
+      ]),
+      { maxCoordinates: MAX_RENDER_COORDINATES },
+    )
+    const counts = result.features.map((feature) => feature.geometry.coordinates.length)
+    const coordinates = result.features.flatMap((feature) => feature.geometry.coordinates)
+    expect(coordinates.reduce((count, line) => count + line.length, 0)).toBeLessThanOrEqual(
+      MAX_RENDER_COORDINATES,
+    )
+    expect(counts).toEqual([600, 600])
+    expect(coordinates.every((line) => line.length === 2)).toBe(true)
+    expect(result.features.map((feature) => Object.keys(feature.properties))).toEqual([
+      ['player_id', 'color'],
+      ['player_id', 'color'],
+    ])
+  })
+
   it('filters both visible and interaction features to exactly the selected members', () => {
     expect(memberFilter([7, 11])).toEqual(['match', ['get', 'player_id'], [7, 11], true, false])
     expect(memberFilter([])).toEqual(['==', ['get', 'player_id'], -1])
@@ -276,6 +319,75 @@ describe('private game map presentation', () => {
     expect(nearestActivityId(activities, [7], { lng: 14.05, lat: 49.01 })).toBe('activity-1')
     expect(nearestActivityId(activities, [8], { lng: 14.05, lat: 49.1 })).toBe('hidden-activity')
     expect(nearestActivityId(activities, [], { lng: 14.05, lat: 49.01 })).toBeNull()
+    expect(
+      nearestActivityId(
+        [
+          {
+            ...activities[0],
+            id: 'dateline-activity',
+            geometry: {
+              type: 'LineString' as const,
+              coordinates: [
+                [179.5, 49],
+                [-179.5, 49],
+              ],
+            },
+          },
+        ],
+        [7],
+        { lng: 180, lat: 49 },
+        0.02,
+      ),
+    ).toBe('dateline-activity')
+    const index = buildActivitySpatialIndex([
+      {
+        ...activities[0],
+        id: 'indexed-dateline-activity',
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: [
+            [179.5, 49],
+            [-179.5, 49],
+          ],
+        },
+      },
+    ])
+    expect(nearestIndexedActivityId(index, [7], { lng: -180, lat: 49 }, 0.02)).toBe(
+      'indexed-dateline-activity',
+    )
+  })
+
+  it('normalizes world-copy bounds and draws both halves of a dateline segment', () => {
+    expect(
+      normalizeMapBounds({ west: 179.5, south: 48, east: 180.5, north: 50, zoom: 8 }),
+    ).toMatchObject({ west: 179.5, east: -179.5 })
+    const bounded = normalizeMapBounds({ west: -200, south: 48, east: 200, north: 50, zoom: 8 })
+    expect((bounded.east - bounded.west + 360) % 360).toBeLessThanOrEqual(120)
+    const calls: string[] = []
+    const context = {
+      beginPath: () => calls.push('begin'),
+      moveTo: (x: number, y: number) => calls.push(`move:${x}:${y}`),
+      lineTo: (x: number, y: number) => calls.push(`line:${x}:${y}`),
+      stroke: () => calls.push('stroke'),
+    } as unknown as CanvasRenderingContext2D
+    drawWrappedLine(
+      context,
+      [
+        { x: 99, y: 10 },
+        { x: 1, y: 20 },
+      ],
+      100,
+    )
+    expect(calls).toEqual([
+      'begin',
+      'move:99:10',
+      'line:100:15',
+      'stroke',
+      'begin',
+      'move:0:15',
+      'line:1:20',
+      'stroke',
+    ])
   })
 
   it('loads, filters, and clears the private map through the visible controls', async () => {

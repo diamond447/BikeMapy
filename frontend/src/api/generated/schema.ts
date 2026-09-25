@@ -569,6 +569,7 @@ export interface components {
       /** Format: date-time */
       created_at: string
       members: components['schemas']['CompetitionMember'][]
+      members_truncated: boolean
       sharing_scope: components['schemas']['SharingScopeEnum']
     }
     CompetitionCreate: {
