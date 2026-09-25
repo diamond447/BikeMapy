@@ -22,8 +22,8 @@ const activity = {
   geometry: {
     type: 'LineString',
     coordinates: [
-      [14, 49],
-      [14.2, 49.2],
+      [16.5, 49.15],
+      [16.7, 49.25],
     ],
   },
 }
@@ -176,6 +176,18 @@ test('game map applies the latest member filter after an in-flight response', as
   await toggleRequest
   await member.check()
   await expect(page.getByRole('button', { name: '2026-09-23' })).toBeVisible()
+})
+
+test('game map resolves a grouped line click to an authorized activity', async ({ page }) => {
+  await page.goto('/game')
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  const canvas = await page.locator('.game-map-canvas').boundingBox()
+  expect(canvas).not.toBeNull()
+  if (!canvas) return
+  await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2)
+  await expect(page.getByRole('complementary', { name: 'Trace detail' })).toContainText(
+    activity.calendar_date,
+  )
 })
 
 test('game map Retry repeats a failed map request', async ({ page }) => {

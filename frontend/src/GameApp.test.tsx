@@ -56,6 +56,10 @@ const { MockMap } = vi.hoisted(() => {
 
     setFilter = vi.fn()
 
+    jumpTo() {
+      return this
+    }
+
     getBounds() {
       return { getWest: () => 14, getSouth: () => 48.5, getEast: () => 19, getNorth: () => 51.2 }
     }
@@ -84,9 +88,9 @@ vi.mock('maplibre-gl', () => ({
 
 import {
   featureCollection,
-  interactionFeatureCollection,
   memberFeatureCollection,
   memberFilter,
+  nearestActivityId,
   visibleMapData,
 } from './GameApp'
 import { apiClient } from './api/client'
@@ -207,8 +211,8 @@ describe('private game map presentation', () => {
     expect(memberFilter([])).toEqual(['==', ['get', 'player_id'], -1])
   })
 
-  it('keeps the full interaction source activity-level but privacy-minimal', () => {
-    const result = interactionFeatureCollection([
+  it('resolves grouped line clicks to the nearest visible activity only', () => {
+    const activities = [
       {
         id: 'activity-1',
         player_id: 7,
@@ -221,9 +225,22 @@ describe('private game map presentation', () => {
           ],
         },
       },
-    ])
-    expect(result.features).toHaveLength(1)
-    expect(result.features[0].properties).toEqual({ player_id: 7 })
+      {
+        id: 'hidden-activity',
+        player_id: 8,
+        calendar_date: '2026-09-22',
+        geometry: {
+          type: 'LineString' as const,
+          coordinates: [
+            [14, 49.1],
+            [14.1, 49.1],
+          ],
+        },
+      },
+    ]
+    expect(nearestActivityId(activities, [7], { lng: 14.05, lat: 49.01 })).toBe('activity-1')
+    expect(nearestActivityId(activities, [8], { lng: 14.05, lat: 49.1 })).toBe('hidden-activity')
+    expect(nearestActivityId(activities, [], { lng: 14.05, lat: 49.01 })).toBeNull()
   })
 
   it('loads, filters, and clears the private map through the visible controls', async () => {

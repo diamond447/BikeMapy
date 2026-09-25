@@ -155,7 +155,7 @@ def api_runs(client: Client, competition: Competition) -> list[float]:
     return samples
 
 
-def browser_runs(url: str, api_url: str, session_key: str) -> list[float]:
+def browser_runs(url: str, api_url: str, session_key: str) -> tuple[list[float], list[float]]:
     output = subprocess.check_output(
         [
             "corepack",
@@ -172,9 +172,18 @@ def browser_runs(url: str, api_url: str, session_key: str) -> list[float]:
         text=True,
     )
     samples = json.loads(output)
-    if not isinstance(samples, list) or len(samples) != RUNS:
+    if not isinstance(samples, dict):
+        raise RuntimeError("browser benchmark did not return named samples")
+    update_samples = samples.get("updateSamples")
+    lazy_samples = samples.get("lazySamples")
+    if (
+        not isinstance(update_samples, list)
+        or len(update_samples) != RUNS
+        or not isinstance(lazy_samples, list)
+        or len(lazy_samples) != RUNS
+    ):
         raise RuntimeError("browser benchmark did not return 30 samples")
-    return [float(sample) for sample in samples]
+    return [float(sample) for sample in update_samples], [float(sample) for sample in lazy_samples]
 
 
 def main() -> None:
@@ -232,12 +241,16 @@ def main() -> None:
         "budgets_ms": {"api_p95": API_BUDGET_MS, "browser_p95": BROWSER_BUDGET_MS},
     }
     if args.browser_url:
-        browser_samples = browser_runs(
+        browser_samples, lazy_samples = browser_runs(
             args.browser_url, args.browser_api_url, session.session_key or ""
         )
         result["browser_response_to_render_ms"] = {
             "median": statistics.median(browser_samples),
             "p95": percentile(browser_samples, 0.95),
+        }
+        result["browser_lazy_interaction_ms"] = {
+            "median": statistics.median(lazy_samples),
+            "p95": percentile(lazy_samples, 0.95),
         }
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     api_p95 = result["api_ms"]["p95"]  # type: ignore[index]

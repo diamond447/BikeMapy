@@ -18,19 +18,21 @@ all members selected.
 
 ## Limits and acceptance budget
 
-| Resource | Limit |
-| --- | ---: |
-| returned traces | 1,200 |
-| returned coordinates | 120,000 |
-| zoom | 0–22 |
-| longitude viewport | at most 120° |
+| Resource             |        Limit |
+| -------------------- | -----------: |
+| returned traces      |        1,200 |
+| returned coordinates |      120,000 |
+| zoom                 |         0–22 |
+| longitude viewport   | at most 120° |
 
-The client renders one grouped GeoJSON source and one line layer, while keeping
-the bounded activity-level source as an invisible interaction layer so a trace
-can still be inspected precisely. Member colors are copied into feature
-properties; trace inspection exposes only the calendar date. Titles, exact
-timestamps, speed, provider IDs, and payload metadata are not part of the
-response contract.
+The client renders one grouped GeoJSON source and one line layer. Activity
+geometry remains in the already-authorized response, but is not copied into a
+second MapLibre worker source. A click on a visible member line resolves the
+nearest activity in that member's authorized geometry, so precise trace
+selection is lazy and does not delay the initial render. Member colors are
+copied into feature properties; trace inspection exposes only the calendar
+date. Titles, exact timestamps, speed, provider IDs, and payload metadata are
+not part of the response contract.
 
 The benchmark should report median and p95 over at least 30 warm requests,
 separately for the PostGIS query and browser render. At the 1,200-trace
@@ -42,10 +44,12 @@ the map update after the response arrives. The API probe performs one
 unmeasured warm-up request before collecting its 30 samples. The browser probe
 waits for the initial map and then toggles a member filter 30 times on that
 same page in an opt-in `benchmark=full-update` mode. Every sample forces a new
-authorized map response and measures both grouped visual `setData` and
-activity-level interaction `setData`, waiting for both MapLibre sources to
-parse/load, a render, and one animation frame. The normal cached filter path is
-not the acceptance measurement; it may be reported separately as a diagnostic.
+authorized map response and measures grouped visual `setData`, source
+parse/load, a render, and one animation frame. The browser probe also performs
+30 real map-line clicks and records the lazy nearest-activity selection through
+the visible trace-detail render as `browser_lazy_interaction_ms`. The normal
+cached filter path is not the acceptance measurement; it may be reported
+separately as a diagnostic.
 These budgets are deployment targets tied to the response limits, not
 thresholds changed to fit one run.
 
@@ -64,4 +68,7 @@ probe is run.
 
 The checked-in result must be replaced after the full-response browser probe is
 run at the final implementation head. The browser acceptance value is the
-`browser_response_to_render_ms` p95, with a 100 ms budget.
+`browser_response_to_render_ms` p95, with a 100 ms budget. Lazy activity
+selection is reported separately in `browser_lazy_interaction_ms`; it is not
+part of the initial-render budget because it runs only after an explicit map
+click.
