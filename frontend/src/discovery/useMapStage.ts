@@ -2,12 +2,19 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import { MAP_PROVIDER } from '../mapProvider'
 import { geometryBounds } from './geometry'
-import type { ViewState, SpatialRoute, ViewportResponse } from './types'
+import type { Geometry, ViewState, SpatialRoute, ViewportResponse } from './types'
 import type { Copy } from '../i18n/types'
 
 const ROUTE_SOURCE = 'browse-routes'
 const HEAT_SOURCE = 'browse-heatmap'
 const SELECTED_SOURCE = 'selected-route'
+
+type GeoJSONSourceData = Exclude<Parameters<GeoJSONSource['setData']>[0], string>
+type GeoJSONFeature = Extract<GeoJSONSourceData, { type: 'FeatureCollection' }>['features'][number]
+type GeoJSONGeometry = NonNullable<GeoJSONFeature['geometry']>
+
+const asGeoJSONGeometry = (geometry: Geometry): GeoJSONGeometry =>
+  geometry as unknown as GeoJSONGeometry
 
 type MapStageOptions = {
   mapNode: RefObject<HTMLDivElement | null>
@@ -272,7 +279,7 @@ export function useMapStage({
         .map((cell) => ({
           type: 'Feature',
           properties: { count: cell.count },
-          geometry: cell.geometry!,
+          geometry: asGeoJSONGeometry(cell.geometry!),
         })),
     })
     routeSource?.setData({
@@ -285,7 +292,7 @@ export function useMapStage({
           selected: route.id === selectedId,
           hovered: route.id === hoveredRouteId,
         },
-        geometry: route.geometry!,
+        geometry: asGeoJSONGeometry(route.geometry!),
       })),
     })
     mapNode.current?.setAttribute('data-map-route-features', String(routeFeatures.length))
@@ -317,7 +324,7 @@ export function useMapStage({
     source?.setData({
       type: 'FeatureCollection',
       features: selected?.geometry
-        ? [{ type: 'Feature', properties: {}, geometry: selected.geometry }]
+        ? [{ type: 'Feature', properties: {}, geometry: asGeoJSONGeometry(selected.geometry) }]
         : [],
     })
     if (selected?.geometry) {
