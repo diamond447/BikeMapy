@@ -72,6 +72,14 @@ const { MockMap } = vi.hoisted(() => {
       return { style: {}, focus: vi.fn() }
     }
 
+    getContainer() {
+      return document.createElement('div')
+    }
+
+    project(point: { lng: number; lat: number }) {
+      return { x: point.lng * 10, y: point.lat * 10 }
+    }
+
     remove() {
       return this
     }

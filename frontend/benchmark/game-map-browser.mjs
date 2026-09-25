@@ -55,13 +55,13 @@ for (let index = 0; index < 30; index += 1) {
     const latestDuration = (name) => performance.getEntriesByName(name).at(-1)?.duration
     return {
       responseToSource: latestDuration('game-map-response-to-source'),
-      sourceSetData: latestDuration('game-map-source-set-data'),
+      overlayUpdate: latestDuration('game-map-overlay-update'),
       updateToRender: latestDuration('game-map-update-to-render'),
     }
   })
   if (
     typeof sample.responseToSource !== 'number' ||
-    typeof sample.sourceSetData !== 'number' ||
+    typeof sample.overlayUpdate !== 'number' ||
     typeof sample.updateToRender !== 'number'
   ) {
     throw new Error('browser benchmark did not record all render stages')

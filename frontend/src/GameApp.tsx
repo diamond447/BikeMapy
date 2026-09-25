@@ -6,7 +6,7 @@ import {
   NavigationControl,
   setWorkerUrl,
 } from 'maplibre-gl'
-import type { FilterSpecification, GeoJSONSource, MapSourceDataEvent } from 'maplibre-gl'
+import type { FilterSpecification } from 'maplibre-gl'
 
 import { apiClient, rememberCsrfToken } from './api/client'
 import type { components } from './api/generated/schema'
@@ -113,6 +113,7 @@ export function nearestActivityId(
   activities: MapActivity[],
   visibleMemberIds: number[],
   point: InteractionPoint,
+  maxDistance = Number.POSITIVE_INFINITY,
 ): string | null {
   const visible = new Set(visibleMemberIds)
   let closestId: string | null = null
@@ -129,7 +130,7 @@ export function nearestActivityId(
       }
     }
   }
-  return closestId
+  return closestDistance <= maxDistance * maxDistance ? closestId : null
 }
 
 export function memberFilter(memberIds: number[]): FilterSpecification {
@@ -317,6 +318,8 @@ export default function GameApp() {
   const mapInteractionActivitiesRef = useRef<MapActivity[]>([])
   const fullMapDataRef = useRef<MapResponse | null>(null)
   const fullMapRequestKey = useRef<string | null>(null)
+  const visualDataRef = useRef(memberFeatureCollection([]))
+  const drawVisualDataRef = useRef<() => void>(() => undefined)
   const bounds = useRef({ west: 14, south: 48.5, east: 19, north: 51.2, zoom: 7.5 })
   const loadMapRef = useRef<() => Promise<void>>(() => Promise.resolve())
   const mapLoadTimer = useRef<number | null>(null)
@@ -338,18 +341,13 @@ export default function GameApp() {
     mapRequestInFlight.current = false
     visibleMemberIdsRef.current = []
     mapInteractionActivitiesRef.current = []
+    visualDataRef.current = memberFeatureCollection([])
+    drawVisualDataRef.current()
     setMapData(null)
     setMapDataIncludesAllMembers(false)
     setSelectedTraceId(null)
     setTraceListLimit(TRACE_PAGE_SIZE)
     setError(null)
-    const instance = map.current
-    if (!instance) return
-    const visualSource = instance.getSource('private-traces-visual') as GeoJSONSource | undefined
-    visualSource?.setData(memberFeatureCollection([]))
-    if (mapLoaded.current) {
-      instance.setFilter('private-traces-visual', memberFilter([]))
-    }
   }, [])
 
   const clearSessionState = useCallback(() => {
@@ -445,7 +443,7 @@ export default function GameApp() {
       }
       map.current?.on('render', onRender)
       visibleMemberIdsRef.current = selected
-      map.current?.setFilter('private-traces-visual', memberFilter(selected))
+      drawVisualDataRef.current()
       return
     }
     if (mapRequestInFlight.current) {
@@ -492,56 +490,31 @@ export default function GameApp() {
       )
       const processingStart = `game-map-response-to-source-${mapMeasureSequence.current}`
       performance.mark(processingStart)
-      const visualSource = map.current?.getSource('private-traces-visual') as
-        GeoJSONSource | undefined
       const colors = new globalThis.Map(
         competitions
           .find((competition) => competition.id === competitionId)
           ?.members.map((member) => [member.player_id, member.color] as [number, string]),
       )
-      if (visualSource && map.current) {
-        const sequence = mapMeasureSequence.current++
-        const startMark = `game-map-response-${sequence}`
-        performance.mark(startMark)
-        const loadedSources = new Set<string>()
-        let rendered = false
-        let finished = false
-        const finish = () => {
-          if (finished || !rendered || !loadedSources.has('private-traces-visual')) return
-          finished = true
-          map.current?.off('sourcedata', onSourceData)
-          map.current?.off('render', onRender)
-          window.requestAnimationFrame(() => {
-            performance.measure('game-map-update-to-render', startMark)
-            performance.clearMarks(startMark)
-          })
-        }
-        const onSourceData = (event: MapSourceDataEvent) => {
-          if (!event.isSourceLoaded || event.sourceId !== 'private-traces-visual') return
-          loadedSources.add(event.sourceId)
-          finish()
-        }
-        const onRender = () => {
-          rendered = true
-          finish()
-        }
-        map.current.on('sourcedata', onSourceData)
-        map.current.on('render', onRender)
-        mapInteractionActivitiesRef.current = result.data.activities
-        const visualData = memberFeatureCollection(result.data.activities, colors, {
-          maxCoordinates: MAX_RENDER_COORDINATES,
-          zoom: current.zoom,
-        })
-        performance.measure('game-map-response-to-source', processingStart)
-        performance.clearMarks(processingStart)
-        const setDataStart = `game-map-source-set-data-${sequence}`
-        performance.mark(setDataStart)
-        visualSource.setData(visualData)
-        performance.measure('game-map-source-set-data', setDataStart)
-        performance.clearMarks(setDataStart)
-        visibleMemberIdsRef.current = selected
-        map.current.setFilter('private-traces-visual', memberFilter(selected))
-      }
+      const sequence = mapMeasureSequence.current++
+      const startMark = `game-map-response-${sequence}`
+      performance.mark(startMark)
+      mapInteractionActivitiesRef.current = result.data.activities
+      visualDataRef.current = memberFeatureCollection(result.data.activities, colors, {
+        maxCoordinates: MAX_RENDER_COORDINATES,
+        zoom: current.zoom,
+      })
+      performance.measure('game-map-response-to-source', processingStart)
+      performance.clearMarks(processingStart)
+      const overlayUpdateStart = `game-map-overlay-update-${sequence}`
+      performance.mark(overlayUpdateStart)
+      visibleMemberIdsRef.current = selected
+      drawVisualDataRef.current()
+      performance.measure('game-map-overlay-update', overlayUpdateStart)
+      performance.clearMarks(overlayUpdateStart)
+      window.requestAnimationFrame(() => {
+        performance.measure('game-map-update-to-render', startMark)
+        performance.clearMarks(startMark)
+      })
     } catch {
       if (latestMapRequestKey.current === requestKey) {
         // Permit the visible Retry action to resend the same viewport after a
@@ -612,28 +585,87 @@ export default function GameApp() {
         north: current.getNorth(),
         zoom: instance.getZoom(),
       }
-      // The endpoint clips traces to the current viewport and simplifies them
-      // for the requested zoom.  Only the member-grouped visual source is
-      // copied into the MapLibre worker. Activity geometry stays in this
-      // authorized response and is resolved on demand for a clicked member
-      // line, so a fresh response never parses a second full activity source.
+      // Activity geometry stays in the authorized response and is resolved on
+      // demand for clicks. The bounded, tolerance-simplified grouped geometry
+      // is drawn in an overlay canvas so a fresh response does not wait for a
+      // GeoJSON worker parse before becoming visible. MapLibre still owns
+      // navigation, attribution, projection, and the base map.
+      const overlay = document.createElement('canvas')
+      overlay.className = 'game-map-render-overlay'
+      overlay.setAttribute('aria-hidden', 'true')
+      overlay.style.pointerEvents = 'none'
+      overlay.style.position = 'absolute'
+      overlay.style.inset = '0'
+      overlay.style.width = '100%'
+      overlay.style.height = '100%'
+      instance.getContainer().appendChild(overlay)
+      // Keep an empty, hidden source as a stable style anchor. It is never
+      // populated with activity geometry; the canvas above is the visual path.
       instance.addSource('private-traces-visual', {
         type: 'geojson',
         data: memberFeatureCollection([]),
-        buffer: 0,
-        tolerance: 1,
       })
       instance.addLayer({
         id: 'private-traces-visual',
         type: 'line',
         source: 'private-traces-visual',
-        paint: {
-          'line-color': ['coalesce', ['get', 'color'], '#2B8C76'],
-          'line-width': ['interpolate', ['linear'], ['zoom'], 5, 2, 14, 4],
-          'line-opacity': 0.78,
-        },
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: { visibility: 'none' },
+        paint: { 'line-opacity': 0 },
       })
+      const drawVisualData = () => {
+        const mapCanvas = instance.getCanvas()
+        const width = mapCanvas.clientWidth || instance.getContainer().clientWidth || 1024
+        const height = mapCanvas.clientHeight || instance.getContainer().clientHeight || 768
+        const scale = window.devicePixelRatio || 1
+        if (
+          overlay.width !== Math.round(width * scale) ||
+          overlay.height !== Math.round(height * scale)
+        ) {
+          overlay.width = Math.round(width * scale)
+          overlay.height = Math.round(height * scale)
+        }
+        const context = overlay.getContext('2d')
+        if (!context) return
+        context.setTransform(scale, 0, 0, scale, 0, 0)
+        context.clearRect(0, 0, width, height)
+        const visible = new Set(visibleMemberIdsRef.current)
+        const lineWidth = Math.max(2, Math.min(4, (instance.getZoom() - 5) / 3 + 2))
+        for (const feature of visualDataRef.current.features) {
+          const playerId = Number(feature.properties?.player_id)
+          if (!visible.has(playerId)) continue
+          context.strokeStyle = String(feature.properties?.color ?? '#2B8C76')
+          context.lineWidth = lineWidth
+          context.lineCap = 'round'
+          context.lineJoin = 'round'
+          for (const line of feature.geometry.coordinates) {
+            context.beginPath()
+            let previousX: number | undefined
+            let hasPoint = false
+            for (const coordinate of line) {
+              const projected = instance.project({
+                lng: coordinate[0] ?? 0,
+                lat: coordinate[1] ?? 0,
+              })
+              if (previousX !== undefined && Math.abs(projected.x - previousX) > width / 2) {
+                context.stroke()
+                context.beginPath()
+                hasPoint = false
+              }
+              if (!hasPoint) {
+                context.moveTo(projected.x, projected.y)
+                hasPoint = true
+              } else {
+                context.lineTo(projected.x, projected.y)
+              }
+              previousX = projected.x
+            }
+            context.stroke()
+          }
+        }
+      }
+      drawVisualDataRef.current = drawVisualData
+      instance.on('move', drawVisualData)
+      instance.on('resize', drawVisualData)
       setMapReady(true)
       const selectActivityAtPoint = (point: { lng: number; lat: number }) => {
         const interactionSequence = mapMeasureSequence.current++
@@ -643,6 +675,7 @@ export default function GameApp() {
           mapInteractionActivitiesRef.current,
           visibleMemberIdsRef.current,
           point,
+          0.03 / 2 ** Math.max(0, instance.getZoom() - 8),
         )
         if (id) {
           originatingTraceRef.current = id
@@ -655,7 +688,7 @@ export default function GameApp() {
           performance.clearMarks(interactionStart)
         }
       }
-      instance.on('click', 'private-traces-visual', (event) => {
+      instance.on('click', (event) => {
         selectActivityAtPoint(event.lngLat)
       })
       benchmarkInteraction = (event: Event) => {
@@ -665,14 +698,14 @@ export default function GameApp() {
       if (benchmarkFullUpdate) {
         window.addEventListener('bikemapy:benchmark-map-click', benchmarkInteraction)
       }
-      instance.on('mouseenter', 'private-traces-visual', (event) => {
-        const playerId = event.features?.[0]?.properties?.player_id
-        instance.getCanvas().style.cursor = visibleMemberIdsRef.current.includes(Number(playerId))
-          ? 'pointer'
-          : ''
-      })
-      instance.on('mouseleave', 'private-traces-visual', () => {
-        instance.getCanvas().style.cursor = ''
+      instance.on('mousemove', (event) => {
+        const hit = nearestActivityId(
+          mapInteractionActivitiesRef.current,
+          visibleMemberIdsRef.current,
+          event.lngLat,
+          0.03 / 2 ** Math.max(0, instance.getZoom() - 8),
+        )
+        instance.getCanvas().style.cursor = hit ? 'pointer' : ''
       })
       instance.once('idle', () => {
         mapCanRequest.current = true
@@ -689,6 +722,8 @@ export default function GameApp() {
       fullMapDataRef.current = null
       fullMapRequestKey.current = null
       mapInteractionActivitiesRef.current = []
+      visualDataRef.current = memberFeatureCollection([])
+      drawVisualDataRef.current = () => undefined
       if (benchmarkFullUpdate && benchmarkInteraction) {
         window.removeEventListener('bikemapy:benchmark-map-click', benchmarkInteraction)
       }

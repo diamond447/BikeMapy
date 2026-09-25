@@ -190,16 +190,16 @@ def browser_runs(
         raise RuntimeError("browser benchmark did not return 30 samples")
     stages: dict[str, list[float]] = {
         "response_to_source": [],
-        "source_set_data": [],
-        "source_to_visible": [],
+        "overlay_update": [],
+        "render_to_visible": [],
     }
     for sample in stage_samples:
         if not isinstance(sample, dict):
             raise RuntimeError("browser benchmark returned an invalid stage sample")
         for source_key, result_key in (
             ("responseToSource", "response_to_source"),
-            ("sourceSetData", "source_set_data"),
-            ("updateToRender", "source_to_visible"),
+            ("overlayUpdate", "overlay_update"),
+            ("updateToRender", "render_to_visible"),
         ):
             value = sample.get(source_key)
             if not isinstance(value, (float, int)):
