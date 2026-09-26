@@ -26,7 +26,11 @@ type Projection = {
   completion_percent: string
   error?: string
   covered_geometry?: unknown
-  monthly?: Array<{ month: string; covered_length_meters: string }>
+  monthly?: Array<{
+    month: string
+    covered_length_meters: string
+    gain_length_meters?: string
+  }>
   partial?: boolean
   sync_status?: string
 }
@@ -652,7 +656,10 @@ export function CompletionDashboard({
                 <dt>{copy.gameCompletionNewDistance}</dt>
                 <dd>
                   {currentMonthDistance
-                    ? `${Number(currentMonthDistance.covered_length_meters).toFixed(1)} m`
+                    ? `${Number(
+                        currentMonthDistance.gain_length_meters ??
+                          currentMonthDistance.covered_length_meters,
+                      ).toFixed(1)} m`
                     : '—'}
                 </dd>
               </div>

@@ -591,6 +591,15 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     body = response.json()
     assert body["player"]["status"] == "fresh"
     assert body["player"]["covered_length_meters"] != "0.000"
+    if connection.vendor == "postgresql":
+        assert body["player"]["covered_geometry"] is not None
+    assert body["player"]["monthly"]
+    assert (
+        body["player"]["monthly"][0]["gain_length_meters"]
+        == body["player"]["monthly"][0]["covered_length_meters"]
+    )
+    assert body["geometry"]["type"] == "LineString"
+    assert body["attribution"]["attribution_text"] == "Test"
     assert body["competition"]["status"] == "pending"
     assert body["player"]["partial"] is True
     assert body["player"]["sync_status"] == "paused"

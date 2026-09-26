@@ -13,6 +13,7 @@ const competition = {
   created_at: '2026-09-21T00:00:00Z',
   members: [
     { player_id: 7, display_name: 'Rider', nickname: null, color: '#F4B942', is_owner: true },
+    { player_id: 8, display_name: 'Rider two', nickname: null, color: '#527A66', is_owner: false },
   ],
 }
 const activity = {
@@ -37,6 +38,7 @@ const largeCompetition = {
     is_owner: index === 0,
   })),
 }
+const CAPTURE_SOURCE_COMPLETION_BUDGET_MS = 1000
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/styles/liberty*', (route) =>
@@ -71,6 +73,80 @@ test.beforeEach(async ({ page }) => {
       }),
     }),
   )
+  await page.route('**/api/v1/game/competitions/*/capture/**', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'fresh',
+        is_final: true,
+        competition_id: competition.id,
+        generation: 3,
+        snapshot_generation: 3,
+        calculated_at: '2026-09-21T12:00:00Z',
+        has_published_snapshot: true,
+        faces: [
+          {
+            id: 9,
+            geometry: {
+              type: 'Polygon',
+              coordinates: [
+                [
+                  [14, 49],
+                  [14.1, 49],
+                  [14.1, 49.1],
+                  [14, 49],
+                ],
+              ],
+            },
+            area_m2: '100.000',
+            effective_date: '2026-09-21',
+            shared: true,
+            owners: [
+              {
+                player_id: 7,
+                display_name: 'Rider',
+                nickname: null,
+                color: '#F4B942',
+                shared_area_m2: '50.000',
+              },
+              {
+                player_id: 8,
+                display_name: 'Rider two',
+                nickname: null,
+                color: '#527A66',
+                shared_area_m2: '50.000',
+              },
+            ],
+          },
+        ],
+        members: [
+          {
+            player_id: 7,
+            display_name: 'Rider',
+            nickname: null,
+            color: '#F4B942',
+            is_owner: true,
+            area_m2: '50.000',
+            rank: 1,
+            monthly_net_change_m2: [{ month: '2026-09', net_change_m2: '12.300' }],
+          },
+          {
+            player_id: 8,
+            display_name: 'Rider two',
+            nickname: null,
+            color: '#527A66',
+            is_owner: false,
+            area_m2: '50.000',
+            rank: 2,
+            monthly_net_change_m2: [{ month: '2026-09', net_change_m2: '-4.500' }],
+          },
+        ],
+        help: {},
+        limits: { max_faces: 1200, max_response_bytes: 4000000 },
+      }),
+    }),
+  )
 })
 
 test('game map keeps competition controls outside the public catalogue URL', async ({ page }) => {
@@ -81,7 +157,11 @@ test('game map keeps competition controls outside the public catalogue URL', asy
   await page.goto('/game')
   await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
   await expect(page.locator('[data-map-source-loaded="true"]')).toBeVisible()
-  await expect(page.locator('.maplibregl-canvas')).toBeVisible()
+  await expect(
+    page
+      .getByRole('region', { name: 'Private competition activity map' })
+      .locator('.maplibregl-canvas'),
+  ).toBeVisible()
   await expect(page.getByLabel('Competition', { exact: true })).toHaveValue(competition.id)
   const trace = page.getByRole('button', { name: activity.calendar_date })
   await trace.focus()
@@ -105,11 +185,11 @@ test('game map controls remain usable on a narrow viewport', async ({ page }) =>
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/game')
   await expect(page.getByRole('group', { name: 'Member traces' })).toBeVisible()
-  const member = page.getByRole('checkbox')
+  const member = page.getByRole('checkbox').first()
   await expect(member).toBeChecked()
   await member.uncheck()
   await page.reload()
-  await expect(page.getByRole('checkbox')).not.toBeChecked()
+  await expect(page.getByRole('checkbox').first()).not.toBeChecked()
 })
 
 test('game map has no automated accessibility violations and honors reduced motion', async ({
@@ -124,17 +204,491 @@ test('game map has no automated accessibility violations and honors reduced moti
   )
 })
 
-test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
+test('capture mode keeps global ranks while member visibility changes', async ({ page }) => {
+  await page.goto('/game')
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
+  await expect(page.locator('[data-capture-response-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-source-data-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-feature-count="1"]')).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(() => performance.getEntriesByName('capture-response-to-source').length),
+    )
+    .toBeGreaterThan(0)
+  const captureSourceDuration = await page.evaluate(() =>
+    Math.max(
+      ...performance.getEntriesByName('capture-response-to-source').map((entry) => entry.duration),
+    ),
+  )
+  expect(captureSourceDuration).toBeLessThanOrEqual(CAPTURE_SOURCE_COMPLETION_BUDGET_MS)
+  await expect(page.getByText('Area leaderboard')).toBeVisible()
+  await expect(page.getByText('+12.3')).toBeVisible()
+  await expect(page.getByText('-4.5')).toBeVisible()
+  await expect(page.locator('.capture-map-legend')).toContainText('Shared')
+  const captureA11y = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze()
+  expect(captureA11y.violations, captureA11y.violations.map((item) => item.id).join(', ')).toEqual(
+    [],
+  )
+
+  const secondMember = page.getByRole('checkbox', { name: 'Rider two' })
+  await secondMember.uncheck()
+  await expect(secondMember).not.toBeChecked()
+  const secondRow = page.locator('.capture-ranking-row').filter({ hasText: 'Rider two' })
+  await expect(secondRow).toContainText('2')
+
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('.capture-map-stage')).toBeVisible()
+  await expect(page.locator('.capture-ledger')).toBeVisible()
+})
+
+test('capture mode renders bounded multi-face data accessibly on mobile', async ({ page }) => {
+  const owner = competition.members[0]
+  const second = competition.members[1]
+  const face = (id: number, shared: boolean, coordinates: number[][][], owners: unknown[]) => ({
+    id,
+    geometry: { type: 'Polygon', coordinates },
+    area_m2: '100.000',
+    effective_date: '2026-09-21',
+    shared,
+    owners,
+  })
+  const ownerPayload = {
+    player_id: owner.player_id,
+    display_name: owner.display_name,
+    nickname: owner.nickname,
+    color: owner.color,
+    shared_area_m2: '100.000',
+  }
+  const secondPayload = {
+    player_id: second.player_id,
+    display_name: second.display_name,
+    nickname: second.nickname,
+    color: second.color,
+    shared_area_m2: '50.000',
+  }
+  await page.unroute('**/api/v1/game/competitions/*/capture/**')
+  await page.route('**/api/v1/game/competitions/*/capture/**', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'fresh',
+        is_final: true,
+        competition_id: competition.id,
+        generation: 3,
+        snapshot_generation: 3,
+        calculated_at: '2026-09-21T12:00:00Z',
+        has_published_snapshot: true,
+        faces: [
+          face(
+            1,
+            false,
+            [
+              [
+                [14, 49],
+                [14.1, 49],
+                [14.1, 49.1],
+                [14, 49],
+              ],
+            ],
+            [ownerPayload],
+          ),
+          face(
+            2,
+            true,
+            [
+              [
+                [14.2, 49],
+                [14.3, 49],
+                [14.3, 49.1],
+                [14.2, 49],
+              ],
+            ],
+            [ownerPayload, secondPayload],
+          ),
+          face(
+            3,
+            false,
+            [
+              [
+                [14.4, 49],
+                [14.5, 49],
+                [14.5, 49.1],
+                [14.4, 49],
+              ],
+            ],
+            [{ ...secondPayload, shared_area_m2: '100.000' }],
+          ),
+        ],
+        returned_face_count: 3,
+        truncated: false,
+        members: [
+          {
+            ...owner,
+            area_m2: '200.000',
+            rank: 1,
+            monthly_net_change_m2: [{ month: '2026-09', net_change_m2: '12.300' }],
+          },
+          {
+            ...second,
+            area_m2: '100.000',
+            rank: 2,
+            monthly_net_change_m2: [{ month: '2026-09', net_change_m2: '-4.500' }],
+          },
+        ],
+        help: {},
+        limits: { max_faces: 1200, max_response_bytes: 4000000 },
+      }),
+    }),
+  )
+
+  await page.goto('/game')
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await expect(page.locator('[data-capture-feature-count="3"]')).toBeVisible()
+  await expect(page.locator('[data-capture-visible-feature-count="3"]')).toBeVisible()
+  await expect(page.locator('[data-capture-shared-count="1"]')).toBeVisible()
+  await expect(page.locator('[data-capture-source-data-loaded="true"]')).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(() => performance.getEntriesByName('capture-response-to-source').length),
+    )
+    .toBeGreaterThan(0)
+  const sourceDuration = await page.evaluate(() =>
+    Math.max(
+      ...performance.getEntriesByName('capture-response-to-source').map((entry) => entry.duration),
+    ),
+  )
+  expect(sourceDuration).toBeLessThanOrEqual(CAPTURE_SOURCE_COMPLETION_BUDGET_MS)
+  const a11y = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze()
+  expect(a11y.violations, a11y.violations.map((item) => item.id).join(', ')).toEqual([])
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('.capture-map-stage')).toBeVisible()
+  await expect(page.locator('.capture-ledger')).toBeVisible()
+  await page.getByRole('checkbox', { name: 'Rider two' }).uncheck()
+  await expect(page.locator('[data-capture-visible-feature-count="2"]')).toBeVisible()
+  await page.getByRole('checkbox', { name: 'Rider two' }).check()
+  await expect(page.locator('[data-capture-visible-feature-count="3"]')).toBeVisible()
+})
+
+test('game mode switching reuses real-browser map and dashboard responses', async ({ page }) => {
+  const calls = { map: 0, capture: 0, routes: 0 }
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.endsWith('/map/')) calls.map += 1
+    if (path.endsWith('/capture/')) calls.capture += 1
+    if (path.endsWith('/reference-routes/')) calls.routes += 1
+  })
+
+  await page.goto('/game')
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await page.getByRole('tab', { name: 'Activity' }).click()
+
+  await expect.poll(() => calls).toEqual({ map: 1, capture: 1, routes: 1 })
+})
+
+test('private game journey joins by invite, syncs activity, switches maps, and removes a member', async ({
+  page,
+}) => {
+  let activeMembers = [competition.members[0]]
+  const joinedMember = {
+    player_id: 9,
+    display_name: 'New rider',
+    nickname: null,
+    color: '#D34D32',
+    is_owner: false,
+  }
+  const joinedActivity = {
+    ...activity,
+    id: '44444444-4444-4444-8444-444444444444',
+    player_id: joinedMember.player_id,
+    calendar_date: '2026-09-22',
+  }
   await page.unroute('**/api/v1/game/competitions/')
   await page.route('**/api/v1/game/competitions/', async (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        competitions: [largeCompetition],
-        active_competition_id: largeCompetition.id,
+        competitions: [{ ...competition, is_owner: false, members: activeMembers }],
+        active_competition_id: competition.id,
       }),
     }),
+  )
+  await page.route('**/api/v1/game/auth/session/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        player: {
+          id: 'player-9',
+          athlete_id: '9',
+          display_name: 'New rider',
+          profile_image_url: null,
+          nickname: null,
+          lifecycle: 'connected',
+          competition_game_enabled: true,
+          connected_at: '2026-09-21T00:00:00Z',
+        },
+      }),
+    }),
+  )
+  await page.route('**/api/v1/game/account/activities/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sync: {
+          status: 'idle',
+          mode: 'incremental',
+          imported_count: 4,
+          rejected_count: 0,
+          processed_count: 4,
+          cursor_page: 2,
+          last_error: '',
+          completed_at: '2026-09-21T00:00:00Z',
+        },
+      }),
+    }),
+  )
+  await page.route('**/api/v1/game/account/activities/full-history/', async (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sync: {
+          status: 'queued',
+          mode: 'full_history',
+          imported_count: 4,
+          rejected_count: 0,
+          processed_count: 4,
+          cursor_page: 0,
+          last_error: '',
+          completed_at: null,
+        },
+      }),
+    }),
+  )
+  await page.route('**/api/v1/game/competitions/join/', async (route) => {
+    activeMembers = [...activeMembers, joinedMember]
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        competition: { ...competition, is_owner: false, members: activeMembers },
+      }),
+    })
+  })
+  await page.route('**/api/v1/game/competitions/*/leave/', async (route) => {
+    activeMembers = activeMembers.filter((member) => member.player_id !== joinedMember.player_id)
+    await route.fulfill({ status: 204 })
+  })
+  await page.unroute('**/api/v1/game/competitions/*/map/**')
+  await page.route('**/api/v1/game/competitions/*/map/**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'loaded',
+        competition_id: competition.id,
+        members: activeMembers,
+        activities: activeMembers.some((member) => member.player_id === joinedMember.player_id)
+          ? [activity, joinedActivity]
+          : [activity],
+        truncated: false,
+        limits: { max_features: 1200, max_coordinates: 120000 },
+      }),
+    })
+  })
+  await page.route('**/api/v1/game/competitions/*/capture/**', async (route) => {
+    const owners = activeMembers.filter(
+      (member) => member.player_id === 7 || member.player_id === joinedMember.player_id,
+    )
+    const faceOwners = owners.map((member) => ({
+      player_id: member.player_id,
+      display_name: member.display_name,
+      nickname: member.nickname,
+      color: member.color,
+      shared_area_m2: owners.length > 1 ? '50.000' : '100.000',
+    }))
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'fresh',
+        is_final: true,
+        competition_id: competition.id,
+        generation: activeMembers.length,
+        snapshot_generation: activeMembers.length,
+        calculated_at: '2026-09-21T12:00:00Z',
+        has_published_snapshot: true,
+        faces: faceOwners.length
+          ? [
+              {
+                id: 9,
+                geometry: {
+                  type: 'Polygon',
+                  coordinates: [
+                    [
+                      [14, 49],
+                      [14.1, 49],
+                      [14.1, 49.1],
+                      [14, 49],
+                    ],
+                  ],
+                },
+                area_m2: '100.000',
+                effective_date: '2026-09-21',
+                shared: owners.length > 1,
+                owners: faceOwners,
+              },
+            ]
+          : [],
+        members: activeMembers.map((member, index) => ({
+          ...member,
+          area_m2: member.player_id === 7 ? '100.000' : '0.000',
+          rank: index + 1,
+          monthly_net_change_m2: [],
+        })),
+        help: {},
+        limits: { max_faces: 1200, max_response_bytes: 4000000 },
+      }),
+    })
+  })
+
+  const routeId = '33333333-3333-4333-8333-333333333333'
+  const routeGeometry = {
+    type: 'LineString',
+    coordinates: [
+      [14, 49],
+      [14.2, 49.2],
+    ],
+  }
+  await page.route('**/api/v1/game/reference-routes/**', async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith('/completion/')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          route_id: routeId,
+          version: 1,
+          title: 'Via Czechia north',
+          route_number: '1',
+          source_kind: 'via_czechia',
+          geometry: routeGeometry,
+          attribution: { attribution_text: 'Via Czechia', licence: 'ODbL' },
+          player: {
+            status: 'fresh',
+            total_length_meters: '20000.000',
+            covered_length_meters: '7400.000',
+            completion_percent: '37.000',
+            calculated_at: '2026-09-21T00:00:00Z',
+            error: '',
+            covered_geometry: routeGeometry,
+            monthly: [],
+          },
+          competition: {
+            status: 'pending',
+            total_length_meters: '20000.000',
+            covered_length_meters: '0.000',
+            completion_percent: '0.000',
+            calculated_at: null,
+            error: '',
+            covered_geometry: null,
+            monthly: [],
+          },
+          stages: [],
+        }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        next: null,
+        previous: null,
+        results: [
+          {
+            id: routeId,
+            source_identifier: 'vc-1',
+            route_number: '1',
+            title: 'Via Czechia north',
+            operator: 'Via Czechia',
+            network: 'via-czechia',
+            publication_status: 'approved',
+            source_kind: 'via_czechia',
+            attribution: { attribution_text: 'Via Czechia' },
+            stages: [],
+          },
+        ],
+      }),
+    })
+  })
+
+  await page.goto('/game')
+  await page.getByRole('button', { name: 'Player account' }).click()
+  await expect(page.getByRole('heading', { name: 'Your rides, kept private' })).toBeVisible()
+  await page.getByPlaceholder('Enter invite code').fill('JOIN-9')
+  await page.getByRole('button', { name: 'Join competition' }).click()
+  await expect(page.getByRole('button', { name: 'Leave competition', exact: true })).toBeVisible()
+
+  await expect(page.getByText('Up to date')).toBeVisible()
+  await page.getByRole('button', { name: 'Import my full Strava history' }).click()
+  await expect(page.getByText(/Full history is queued/)).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
+  await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-map-source-data-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-map-feature-count="2"]')).toBeVisible()
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
+  await page.getByRole('button', { name: /1 Via Czechia north/ }).click()
+  await expect(page.locator('.completion-detail').getByText('37.0%')).toBeVisible()
+  await page.getByRole('tab', { name: 'Capture' }).click()
+  await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
+  await expect(page.locator('[data-capture-response-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-source-data-loaded="true"]')).toBeVisible()
+  await expect(page.locator('[data-capture-feature-count="1"]')).toBeVisible()
+  await expect(page.locator('[data-capture-shared-count="1"]')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Leave competition', exact: true }).click()
+  await expect(
+    page.locator('.game-competition-member').filter({ hasText: 'New rider' }),
+  ).toHaveCount(0)
+  await expect(page.locator('[data-capture-shared-count="0"]')).toBeVisible()
+  await expect(page.locator('.capture-members').getByText('New rider')).toHaveCount(0)
+  await page.getByRole('tab', { name: 'Activity' }).click()
+  await expect(page.locator('[data-map-feature-count="1"]')).toBeVisible()
+})
+
+test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/')
+  await page.route(
+    '**/api/v1/game/competitions/',
+    async (route) =>
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          competitions: [largeCompetition],
+          active_competition_id: largeCompetition.id,
+        }),
+      }),
   )
   await page.unroute('**/api/v1/game/competitions/*/map/**')
   let mapCalls = 0
@@ -168,7 +722,8 @@ test('game map applies the latest member filter after an in-flight response', as
 
   await page.goto('/game')
   await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
-  const member = page.getByRole('checkbox').first()
+  const member = page.getByRole('group', { name: 'Member traces' }).getByRole('checkbox').first()
+  await expect(member).toBeChecked()
   const toggleRequest = page.waitForRequest(
     (request) =>
       request.url().includes('/api/v1/game/competitions/') && request.url().includes('/map/'),
@@ -182,7 +737,10 @@ test('game map applies the latest member filter after an in-flight response', as
 test('game map resolves a grouped line click to an authorized activity', async ({ page }) => {
   await page.goto('/game')
   await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
-  const canvas = await page.locator('.game-map-canvas').boundingBox()
+  const canvas = await page
+    .getByRole('region', { name: 'Private competition activity map' })
+    .locator('.game-map-canvas')
+    .boundingBox()
   expect(canvas).not.toBeNull()
   if (!canvas) return
   await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2)

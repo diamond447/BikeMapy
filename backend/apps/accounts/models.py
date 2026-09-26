@@ -471,6 +471,9 @@ class CaptureCalculation(models.Model):
     requested_at = models.DateTimeField(default=timezone.now)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    # Set once when this immutable generation is first published as current.
+    # It remains populated after a later generation supersedes it.
+    published_at = models.DateTimeField(null=True, blank=True)
     is_current = models.BooleanField(default=False)
     attempts = models.PositiveSmallIntegerField(default=0)
     next_attempt_at = models.DateTimeField(default=timezone.now)
