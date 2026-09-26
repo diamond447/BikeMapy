@@ -47,15 +47,12 @@ async function installFixtures(page: Page, requests: string[]) {
   const releaseInitialViewports: Array<() => void> = []
   page.on('requestfailed', (request) => {
     const requestUrl = new URL(request.url())
-    if (
-      (!requestUrl.pathname.endsWith('/routes/') && !requestUrl.pathname.endsWith('/viewport/')) ||
-      requestUrl.searchParams.has('search')
-    )
-      return
     // Let the intercepted handler finish only after the browser has cancelled it. Releasing
     // it from the final response races cancellation and can leak the stale initial result.
-    releaseInitialLists.splice(0).forEach((release) => release())
-    releaseInitialViewports.splice(0).forEach((release) => release())
+    if (requestUrl.pathname.endsWith('/routes/') && !requestUrl.searchParams.has('search'))
+      releaseInitialLists.splice(0).forEach((release) => release())
+    if (requestUrl.pathname.endsWith('/viewport/') && !requestUrl.searchParams.has('search'))
+      releaseInitialViewports.splice(0).forEach((release) => release())
   })
   await page.route('**/api/v1/routes/**', async (route) => {
     const requestUrl = new URL(route.request().url())
@@ -143,6 +140,11 @@ test('debounces catalogue typing, cancels the old list, and keeps final list and
   expect(
     abortedRequests.some(
       (url) => url.includes('/viewport/') && !new URL(url).searchParams.has('search'),
+    ),
+  ).toBe(true)
+  expect(
+    abortedRequests.some(
+      (url) => !url.includes('/viewport/') && !new URL(url).searchParams.has('search'),
     ),
   ).toBe(true)
   expect(listRequests.filter((url) => !new URL(url).searchParams.has('search'))).toHaveLength(2)
