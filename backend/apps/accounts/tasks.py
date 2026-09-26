@@ -9,10 +9,11 @@ from uuid import uuid4
 from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
 from django.db import connection, transaction
-from django.db.models import F, Q
+from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
 from .capture_services import (
+    CAPTURE_ALGORITHM_VERSION,
     CAPTURE_RETRY_SECONDS,
     MAX_CAPTURE_ATTEMPTS,
     CaptureCalculationBusy,
@@ -73,10 +74,21 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             lease_token="",
             lease_until=None,
         )
+    live_recomputation_owner = (
+        CompetitionRecomputation.objects.filter(
+            competition_id=OuterRef("competition_id"),
+            capture_generation=OuterRef("generation"),
+        )
+        .exclude(status=CompetitionRecomputation.Status.COMPLETED)
+        .exclude(
+            status=CompetitionRecomputation.Status.FAILED,
+            attempts__gte=MAX_DISPATCH_ATTEMPTS,
+        )
+    )
     CaptureCalculation.objects.filter(
         status__in=(CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED),
         generation__lt=F("competition__capture_revision"),
-    ).update(
+    ).filter(~Exists(live_recomputation_owner)).update(
         status=CaptureCalculation.Status.FAILED,
         attempts=MAX_CAPTURE_ATTEMPTS,
         error="Capture generation superseded by a newer revision.",
@@ -216,6 +228,25 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
                 job.lease_until = None
                 job.save(update_fields=("status", "error", "lease_token", "lease_until"))
                 return {"status": "failed", "job_id": job_id, "error": job.error}
+            # A newer membership/activity event may have advanced the capture
+            # revision while this durable score job was waiting in the queue.
+            # Keep the score job as the owner of its work, but atomically move
+            # its capture pointer to the newest generation before it claims a
+            # calculation. This prevents the standalone capture dispatcher
+            # from orphaning a live score job by exhausting its old snapshot.
+            capture_generation = job.capture_generation
+            if capture_generation is None or capture_generation < competition.capture_revision:
+                capture_generation = competition.capture_revision
+                CaptureCalculation.objects.get_or_create(
+                    competition=competition,
+                    generation=capture_generation,
+                    defaults={
+                        "algorithm_version": CAPTURE_ALGORITHM_VERSION,
+                        "status": CaptureCalculation.Status.PENDING,
+                    },
+                )
+                job.capture_generation = capture_generation
+                job.save(update_fields=("capture_generation",))
             if job.status != CompetitionRecomputation.Status.RUNNING and job.next_attempt_at > now:
                 return {"status": "retry_scheduled", "job_id": job_id, "updated": 0}
             lease_token = uuid4().hex
@@ -254,8 +285,7 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
         # while preserving the previous current snapshot.
         if connection.vendor == "postgresql":
             capture_calculation, capture_token = claim_capture_calculation(
-                competition,
-                generation=job.capture_generation or competition.capture_revision,
+                competition, generation=capture_generation
             )
             if capture_token is not None:
                 calculate_capture(

@@ -37,6 +37,7 @@ from apps.accounts.models import (
     CapturePlayerArea,
     Competition,
     CompetitionRecomputation,
+    CompetitionResult,
     ImportedActivity,
     Player,
 )
@@ -588,8 +589,69 @@ def test_standalone_dispatcher_uses_capture_generation_when_revisions_diverge() 
     stale = CaptureCalculation.objects.get(
         competition=competition, generation=job.capture_generation
     )
-    assert stale.status == CaptureCalculation.Status.FAILED
-    assert stale.attempts == 5
+    assert stale.status == CaptureCalculation.Status.PENDING
+    assert stale.attempts == 0
+    job.refresh_from_db()
+    assert job.status == CompetitionRecomputation.Status.PENDING
+
+
+def test_stale_linked_score_job_relinks_to_current_capture_and_completes() -> None:
+    owner = _player(1064)
+    member = _player(1065)
+    competition, _ = create_competition(owner, name="Stale linked score job")
+    _grant_capture_consent(owner, competition)
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "linked-owner", square, 2)
+    calculate_capture(competition)
+
+    # An activity change queues generation 1. The member joins before that
+    # worker runs, advancing capture_revision and creating a newer capture.
+    first_job = schedule_recomputation(competition)
+    join_competition(member, invite_code=competition.invite_code)
+    current_job = schedule_recomputation(competition)
+    _activity(member, "linked-member", square, 3)
+    _grant_capture_consent(member, competition)
+    replacement = schedule_capture_calculation(competition, force_new_generation=True)
+
+    competition.refresh_from_db()
+    assert first_job.capture_generation is not None
+    assert first_job.capture_generation < competition.capture_revision
+    current_generation = competition.capture_revision
+    current_job.refresh_from_db()
+    assert current_job.capture_generation is not None
+    assert current_job.capture_generation < current_generation
+    assert replacement.generation == current_generation
+
+    # The standalone worker may publish the newest capture first, but it must
+    # leave the older linked generation owned by the score job.
+    assert dispatch_capture_calculations_task.apply(args=[10]).get() == {
+        "processed": 1,
+        "failed": 0,
+    }
+    stale_capture = CaptureCalculation.objects.get(
+        competition=competition, generation=first_job.capture_generation
+    )
+    assert stale_capture.status == CaptureCalculation.Status.PENDING
+
+    assert (
+        recompute_competition_results_task.apply(args=[first_job.pk]).get()["status"] == "completed"
+    )
+    first_job.refresh_from_db()
+    assert first_job.capture_generation == current_generation
+    assert first_job.status == CompetitionRecomputation.Status.COMPLETED
+
+    assert (
+        recompute_competition_results_task.apply(args=[current_job.pk]).get()["status"]
+        == "completed"
+    )
+    current = current_capture(competition)
+    assert current is not None
+    assert current.generation == current_generation
+    assert current.status == CaptureCalculation.Status.FRESH
+    assert current.trace_count == 2
+    results = CompetitionResult.objects.filter(competition=competition)
+    assert set(results.values_list("player_id", flat=True)) == {owner.pk, member.pk}
+    assert set(results.values_list("computed_revision", flat=True)) == {current_job.generation}
 
 
 def test_dispatcher_respects_retryable_failed_recomputation_backoff() -> None:
