@@ -203,8 +203,7 @@ export function CompletionDashboard({
 
   const loadRoutes = useCallback(async () => {
     if (!competitionId) {
-      setRoutes([])
-      setCatalogueIncomplete(false)
+      invalidateData()
       setLoading(false)
       return
     }
@@ -245,7 +244,7 @@ export function CompletionDashboard({
     } finally {
       if (requestSequence === routeRequestSequence.current) setLoading(false)
     }
-  }, [competitionId, copy.gameCompletionError])
+  }, [competitionId, copy.gameCompletionError, invalidateData])
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadRoutes(), 0)

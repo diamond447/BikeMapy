@@ -615,6 +615,7 @@ export default function GameApp() {
     drawVisualDataRef.current()
     setMapData(null)
     setMapDataIncludesAllMembers(false)
+    setMapSourceLoaded(false)
     setSelectedTraceId(null)
     setTraceListLimit(TRACE_PAGE_SIZE)
     setError(null)

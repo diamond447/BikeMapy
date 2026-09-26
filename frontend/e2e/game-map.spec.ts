@@ -272,6 +272,32 @@ test('capture mode renders bounded multi-face data accessibly on mobile', async 
     color: second.color,
     shared_area_m2: '50.000',
   }
+  const faces = Array.from({ length: 24 }, (_, index) => {
+    const column = index % 6
+    const row = Math.floor(index / 6)
+    const west = 14 + column * 0.12
+    const south = 49 + row * 0.12
+    const shared = index % 3 === 0
+    const ownerOnly = index % 3 === 1
+    return face(
+      index + 1,
+      shared,
+      [
+        [
+          [west, south],
+          [west + 0.08, south],
+          [west + 0.08, south + 0.08],
+          [west + 0.04, south + 0.1],
+          [west, south],
+        ],
+      ],
+      shared
+        ? [ownerPayload, secondPayload]
+        : ownerOnly
+          ? [ownerPayload]
+          : [{ ...secondPayload, shared_area_m2: '100.000' }],
+    )
+  })
   await page.unroute('**/api/v1/game/competitions/*/capture/**')
   await page.route('**/api/v1/game/competitions/*/capture/**', async (route) =>
     route.fulfill({
@@ -285,48 +311,8 @@ test('capture mode renders bounded multi-face data accessibly on mobile', async 
         snapshot_generation: 3,
         calculated_at: '2026-09-21T12:00:00Z',
         has_published_snapshot: true,
-        faces: [
-          face(
-            1,
-            false,
-            [
-              [
-                [14, 49],
-                [14.1, 49],
-                [14.1, 49.1],
-                [14, 49],
-              ],
-            ],
-            [ownerPayload],
-          ),
-          face(
-            2,
-            true,
-            [
-              [
-                [14.2, 49],
-                [14.3, 49],
-                [14.3, 49.1],
-                [14.2, 49],
-              ],
-            ],
-            [ownerPayload, secondPayload],
-          ),
-          face(
-            3,
-            false,
-            [
-              [
-                [14.4, 49],
-                [14.5, 49],
-                [14.5, 49.1],
-                [14.4, 49],
-              ],
-            ],
-            [{ ...secondPayload, shared_area_m2: '100.000' }],
-          ),
-        ],
-        returned_face_count: 3,
+        faces,
+        returned_face_count: 24,
         truncated: false,
         members: [
           {
@@ -350,9 +336,9 @@ test('capture mode renders bounded multi-face data accessibly on mobile', async 
 
   await page.goto('/game')
   await page.getByRole('tab', { name: 'Capture' }).click()
-  await expect(page.locator('[data-capture-feature-count="3"]')).toBeVisible()
-  await expect(page.locator('[data-capture-visible-feature-count="3"]')).toBeVisible()
-  await expect(page.locator('[data-capture-shared-count="1"]')).toBeVisible()
+  await expect(page.locator('[data-capture-feature-count="24"]')).toBeVisible()
+  await expect(page.locator('[data-capture-visible-feature-count="24"]')).toBeVisible()
+  await expect(page.locator('[data-capture-shared-count="8"]')).toBeVisible()
   await expect(page.locator('[data-capture-source-data-loaded="true"]')).toBeVisible()
   await expect
     .poll(() =>
@@ -372,9 +358,9 @@ test('capture mode renders bounded multi-face data accessibly on mobile', async 
   await expect(page.locator('.capture-map-stage')).toBeVisible()
   await expect(page.locator('.capture-ledger')).toBeVisible()
   await page.getByRole('checkbox', { name: 'Rider two' }).uncheck()
-  await expect(page.locator('[data-capture-visible-feature-count="2"]')).toBeVisible()
+  await expect(page.locator('[data-capture-visible-feature-count="16"]')).toBeVisible()
   await page.getByRole('checkbox', { name: 'Rider two' }).check()
-  await expect(page.locator('[data-capture-visible-feature-count="3"]')).toBeVisible()
+  await expect(page.locator('[data-capture-visible-feature-count="24"]')).toBeVisible()
 })
 
 test('game mode switching reuses real-browser map and dashboard responses', async ({ page }) => {
@@ -403,7 +389,8 @@ test('game mode switching reuses real-browser map and dashboard responses', asyn
 test('private game journey joins by invite, syncs activity, switches maps, and removes a member', async ({
   page,
 }) => {
-  let activeMembers = [competition.members[0]]
+  let activeMembers: typeof competition.members = []
+  let competitionVisible = false
   const joinedMember = {
     player_id: 9,
     display_name: 'New rider',
@@ -423,8 +410,10 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        competitions: [{ ...competition, is_owner: false, members: activeMembers }],
-        active_competition_id: competition.id,
+        competitions: competitionVisible
+          ? [{ ...competition, is_owner: false, members: activeMembers }]
+          : [],
+        active_competition_id: competitionVisible ? competition.id : null,
       }),
     }),
   )
@@ -483,7 +472,8 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
     }),
   )
   await page.route('**/api/v1/game/competitions/join/', async (route) => {
-    activeMembers = [...activeMembers, joinedMember]
+    activeMembers = [competition.members[0], joinedMember]
+    competitionVisible = true
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -493,11 +483,16 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
     })
   })
   await page.route('**/api/v1/game/competitions/*/leave/', async (route) => {
-    activeMembers = activeMembers.filter((member) => member.player_id !== joinedMember.player_id)
+    activeMembers = []
+    competitionVisible = false
     await route.fulfill({ status: 204 })
   })
   await page.unroute('**/api/v1/game/competitions/*/map/**')
   await page.route('**/api/v1/game/competitions/*/map/**', async (route) => {
+    if (!competitionVisible) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
+      return
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -514,6 +509,10 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
     })
   })
   await page.route('**/api/v1/game/competitions/*/capture/**', async (route) => {
+    if (!competitionVisible) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
+      return
+    }
     const owners = activeMembers.filter(
       (member) => member.player_id === 7 || member.player_id === joinedMember.player_id,
     )
@@ -578,6 +577,10 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
     ],
   }
   await page.route('**/api/v1/game/reference-routes/**', async (route) => {
+    if (!competitionVisible) {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
+      return
+    }
     if (new URL(route.request().url()).pathname.endsWith('/completion/')) {
       await route.fulfill({
         status: 200,
@@ -642,6 +645,8 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
   await page.goto('/game')
   await page.getByRole('button', { name: 'Player account' }).click()
   await expect(page.getByRole('heading', { name: 'Your rides, kept private' })).toBeVisible()
+  await expect(page.locator('.game-competition-switcher')).toHaveCount(0)
+  await expect(page.locator('.game-competition-member')).toHaveCount(0)
   await page.getByPlaceholder('Enter invite code').fill('JOIN-9')
   await page.getByRole('button', { name: 'Join competition' }).click()
   await expect(page.getByRole('button', { name: 'Leave competition', exact: true })).toBeVisible()
@@ -667,13 +672,32 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
   await expect(page.locator('[data-capture-shared-count="1"]')).toBeVisible()
 
   await page.getByRole('button', { name: 'Leave competition', exact: true }).click()
+  await expect(page.locator('.game-competition-switcher')).toHaveCount(0)
   await expect(
     page.locator('.game-competition-member').filter({ hasText: 'New rider' }),
   ).toHaveCount(0)
-  await expect(page.locator('[data-capture-shared-count="0"]')).toBeVisible()
+  await expect(page.locator('[data-capture-feature-count="0"]')).toBeVisible()
+  await expect(page.locator('[data-capture-visible-feature-count="0"]')).toBeVisible()
+  await expect(page.locator('[data-capture-source-data-loaded="false"]')).toBeVisible()
+  await expect(page.locator('.capture-ranking-row')).toHaveCount(0)
   await expect(page.locator('.capture-members').getByText('New rider')).toHaveCount(0)
+  const privateEndpoints = await page.evaluate(async (competitionId) => {
+    const paths = [
+      `/api/v1/game/competitions/${competitionId}/map/`,
+      `/api/v1/game/competitions/${competitionId}/capture/`,
+    ]
+    const responses = await Promise.all(paths.map((path) => fetch(path)))
+    return responses.map((response) => response.status)
+  }, competition.id)
+  expect(privateEndpoints).toEqual([404, 404])
   await page.getByRole('tab', { name: 'Activity' }).click()
-  await expect(page.locator('[data-map-feature-count="1"]')).toBeVisible()
+  await expect(page.locator('[data-map-feature-count="0"]')).toBeVisible()
+  await expect(page.locator('[data-map-response-loaded="true"]')).toHaveCount(0)
+  await expect(page.locator('[data-map-source-data-loaded="false"]')).toBeVisible()
+  await expect(page.locator('.game-trace-list')).toHaveCount(0)
+  await page.getByRole('tab', { name: 'Completion' }).click()
+  await expect(page.locator('.completion-route')).toHaveCount(0)
+  await expect(page.locator('.completion-detail')).toHaveCount(0)
 })
 
 test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
