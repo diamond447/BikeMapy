@@ -179,6 +179,7 @@ describe('capture territory presentation', () => {
     )
 
     await screen.findByText('Area leaderboard')
+    await waitFor(() => expect(document.querySelectorAll('.capture-rider small')).toHaveLength(2))
     expect(document.querySelectorAll('.capture-rider small')[0]).toHaveTextContent('+12.3 m²')
     expect(document.querySelectorAll('.capture-rider small')[1]).toHaveTextContent('-4.5 m²')
     expect(screen.getAllByText('Rider two')).not.toHaveLength(0)

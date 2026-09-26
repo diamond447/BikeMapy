@@ -167,7 +167,11 @@ def _monthly_area(
         if calculation.published_at is None:
             continue
         month = calculation.published_at.astimezone(prague).strftime("%Y-%m")
-        current = {area.player_id: area.owned_area_m2 for area in calculation.player_areas.all()}
+        current = {
+            area.player_id: area.owned_area_m2
+            for area in calculation.player_areas.all()
+            if area.player_id is not None
+        }
         for player_id in set(previous) | set(current):
             totals[player_id][month] += current.get(player_id, Decimal("0")) - previous.get(
                 player_id, Decimal("0")
@@ -225,7 +229,7 @@ class CompetitionCaptureView(GameEndpoint):
         memberships = list(competition.memberships.all())
         selected_ids = _capture_member_ids(request, memberships)
         latest = CaptureCalculation.objects.filter(
-            competition=competition, generation=competition.revision
+            competition=competition, generation=competition.capture_revision
         ).first()
         current = (
             CaptureCalculation.objects.filter(
@@ -269,7 +273,9 @@ class CompetitionCaptureView(GameEndpoint):
                 if any(owner.player_id in selected_ids for owner in face.owners.all())
             ]
             area_by_player = {
-                area.player_id: area.owned_area_m2 for area in calculation.player_areas.all()
+                area.player_id: area.owned_area_m2
+                for area in calculation.player_areas.all()
+                if area.player_id is not None
             }
             snapshot_generation = calculation.generation
             calculated_at = calculation.completed_at
@@ -303,36 +309,45 @@ class CompetitionCaptureView(GameEndpoint):
             )
             for index, membership in enumerate(ranked_members)
         ]
-        owner_by_id = {membership.player_id: membership for membership in memberships}
+        owner_by_id = {
+            membership.player_id: membership
+            for membership in memberships
+            if membership.player_id is not None
+        }
         face_payload = []
         for face in faces:
-            owners = [owner for owner in face.owners.all() if owner.player_id in owner_by_id]
+            owner_payload = []
+            for owner in face.owners.all():
+                owner_id = owner.player_id
+                if owner_id is None or owner_id not in owner_by_id:
+                    continue
+                membership = owner_by_id[owner_id]
+                owner_payload.append(
+                    {
+                        "player_id": owner_id,
+                        "display_name": membership.player.strava_display_name,
+                        "nickname": membership.player.nickname or None,
+                        "color": membership.color,
+                        "shared_area_m2": owner.shared_area_m2,
+                    }
+                )
             face_payload.append(
                 {
                     "id": face.face_id,
                     "geometry": geometry_payload(face.geometry),
                     "area_m2": face.area_m2,
                     "effective_date": face.effective_date,
-                    "shared": len(owners) > 1,
-                    "owners": [
-                        {
-                            "player_id": owner.player_id,
-                            "display_name": owner_by_id[owner.player_id].player.strava_display_name,
-                            "nickname": owner_by_id[owner.player_id].player.nickname or None,
-                            "color": owner_by_id[owner.player_id].color,
-                            "shared_area_m2": owner.shared_area_m2,
-                        }
-                        for owner in owners
-                    ],
+                    "shared": len(owner_payload) > 1,
+                    "owners": owner_payload,
                 }
             )
         payload = {
             "status": status,
             "is_final": status == "fresh"
             and current is not None
-            and current.generation == competition.revision,
+            and current.generation == competition.capture_revision,
             "competition_id": competition.pk,
-            "generation": competition.revision,
+            "generation": competition.capture_revision,
             "snapshot_generation": snapshot_generation,
             "calculated_at": calculated_at,
             "faces": face_payload,

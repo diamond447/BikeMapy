@@ -17,7 +17,7 @@ def preserve_publication_history(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0013_capturecalculation_attempts_and_more"),
+        ("accounts", "0022_preserve_capture_owner_keys"),
     ]
 
     operations = [

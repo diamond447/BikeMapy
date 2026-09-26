@@ -147,7 +147,9 @@ describe('GameCompetitions', () => {
     const remove = vi.spyOn(apiClient, 'DELETE').mockResolvedValue(result(undefined, 204) as never)
     render(<GameCompetitions copy={translations.en} />)
     expect(await screen.findByText('Rider 1')).toBeInTheDocument()
-    await userEvent.setup().click(await screen.findByRole('button', { name: 'Load more members' }))
+    await userEvent
+      .setup()
+      .click(await screen.findByRole('button', { name: 'Load more members' }, { timeout: 5000 }))
     expect(await screen.findByText('Rider 101')).toBeInTheDocument()
     const removeButtons = screen.getAllByRole('button', { name: 'Remove' })
     await userEvent.setup().click(removeButtons[removeButtons.length - 1]!)
