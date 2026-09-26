@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("accounts", "0012_capture_calculation_captureface_capturefaceowner_and_more"),
+        ("accounts", "0017_capture_calculation_captureface_capturefaceowner_and_more"),
     ]
 
     operations = [

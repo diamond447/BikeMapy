@@ -100,6 +100,8 @@ def _wkt(trace: CaptureTrace) -> str:
 
 
 def _validate_input(traces: tuple[CaptureTrace, ...]) -> int:
+    if not traces:
+        return 0
     # Keep module importable for the lightweight SQLite suite, whose runners
     # intentionally do not install the optional GDAL runtime. Geometry
     # validation still uses Django's GEOS wrapper when this harness executes.

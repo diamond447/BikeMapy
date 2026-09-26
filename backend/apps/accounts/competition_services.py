@@ -526,6 +526,12 @@ def schedule_recomputation(
     schedule_competition_completions(
         competition, reason="competition-membership-or-activity-change"
     )
+    # Capture has its own immutable projection, but shares this durable
+    # generation so activity and membership changes cannot publish mismatched
+    # completion/capture snapshots.
+    from .capture_services import schedule_capture_calculation
+
+    schedule_capture_calculation(competition, reason="recomputation")
     return job
 
 
@@ -542,6 +548,9 @@ def create_competition(
     from apps.reference_routes.completion_services import schedule_competition_completions
 
     schedule_competition_completions(competition, reason="competition-created")
+    from .capture_services import schedule_capture_calculation
+
+    schedule_capture_calculation(competition, reason="competition-created")
     if player.active_competition_id is None:
         Player.objects.filter(pk=player.pk).update(active_competition=competition)
         player.active_competition = competition
@@ -577,6 +586,9 @@ def join_competition(
     from apps.reference_routes.completion_services import schedule_competition_completions
 
     schedule_competition_completions(competition, reason="competition-member-joined")
+    # A membership change is a new chronological generation even when there is
+    # no published snapshot yet.
+    schedule_recomputation(competition)
     if player.active_competition_id is None:
         Player.objects.filter(pk=player.pk).update(active_competition=competition)
         player.active_competition = competition
