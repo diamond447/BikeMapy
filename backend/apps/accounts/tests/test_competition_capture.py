@@ -12,7 +12,12 @@ from django.urls import reverse
 from apps.accounts import competition_capture_api
 from apps.accounts.activity_services import remove_activity
 from apps.accounts.capture_services import calculate_capture
-from apps.accounts.competition_services import create_competition, join_competition
+from apps.accounts.competition_services import (
+    CURRENT_SHARING_DISCLOSURE_VERSION,
+    create_competition,
+    grant_sharing_consent,
+    join_competition,
+)
 from apps.accounts.models import CaptureCalculation, CapturePlayerArea, ImportedActivity, Player
 from apps.accounts.tasks import recompute_competition_results_task
 
@@ -77,14 +82,25 @@ def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
     assert response["Cache-Control"] == "private, no-store"
 
     payload = session_client(owner).get(url, viewport()).json()
-    assert payload["status"] == "pending"
+    assert payload["status"] == "empty"
     assert payload["is_final"] is False
+    assert payload["has_published_snapshot"] is False
     assert payload["faces"] == []
     assert payload["truncated"] is False
     assert payload["returned_face_count"] == 0
     assert float(payload["members"][0]["area_m2"]) == 0
     assert "connection_rule" in payload["help"]
     assert payload["limits"]["max_faces"] > 0
+
+    calculation = CaptureCalculation.objects.get(
+        competition=competition, generation=competition.capture_revision
+    )
+    calculation.status = CaptureCalculation.Status.FAILED
+    calculation.error = "test failure"
+    calculation.save(update_fields=("status", "error"))
+    failed = session_client(owner).get(url, viewport()).json()
+    assert failed["status"] == "failed"
+    assert failed["has_published_snapshot"] is False
 
 
 @pytest.mark.skipif(connection.vendor != "postgresql", reason="capture API requires PostGIS")
@@ -96,6 +112,14 @@ def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks(
     member = make_player(604)
     competition, _ = create_competition(owner, name="Capture ranking", color="#123456")
     join_competition(member, invite_code=competition.invite_code, color="#654321")
+    for player in (owner, member):
+        grant_sharing_consent(
+            player,
+            competition,
+            scope="full_history",
+            disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+            confirmed=True,
+        )
     square = [(14.1, 49.1), (14.2, 49.1), (14.2, 49.2), (14.1, 49.2), (14.1, 49.1)]
     activity = ImportedActivity.objects.create(
         player=owner,
@@ -120,7 +144,7 @@ def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks(
     initial_calculation.save(update_fields=("completed_at", "published_at"))
     stale = CaptureCalculation.objects.create(
         competition=competition,
-        generation=competition.revision + 100,
+        generation=competition.capture_revision + 100,
         algorithm_version="test-stale",
         status=CaptureCalculation.Status.FRESH,
         completed_at=datetime(2099, 1, 15, tzinfo=UTC),

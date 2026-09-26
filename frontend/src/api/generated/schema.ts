@@ -604,9 +604,7 @@ export interface components {
       /** Format: decimal */
       area_m2: string
       rank: number
-      monthly_net_change_m2: {
-        [key: string]: unknown
-      }[]
+      monthly_net_change_m2: components['schemas']['MonthlyChange'][]
     }
     CaptureOwner: {
       player_id: number
@@ -625,6 +623,7 @@ export interface components {
       snapshot_generation: number | null
       /** Format: date-time */
       calculated_at: string | null
+      has_published_snapshot: boolean
       faces: components['schemas']['CaptureFace'][]
       returned_face_count: number
       truncated: boolean
@@ -820,6 +819,11 @@ export interface components {
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
+    MonthlyChange: {
+      month: string
+      /** Format: decimal */
+      net_change_m2: string
+    }
     PaginatedReferenceRouteListList: {
       /**
        * Format: uri
@@ -1799,6 +1803,34 @@ export interface operations {
         content: {
           'application/json': components['schemas']['CaptureResponse']
         }
+      }
+      /** @description Invalid or unbounded capture viewport. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Competition not found. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Capture response exceeds the response limit. */
+      413: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }

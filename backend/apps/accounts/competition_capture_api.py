@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from django.db import connection
 from django.db.models import Prefetch
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers
 from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
@@ -66,7 +66,12 @@ class CaptureMemberSerializer(serializers.Serializer[dict[str, Any]]):
     is_owner = serializers.BooleanField()
     area_m2 = serializers.DecimalField(max_digits=20, decimal_places=3)
     rank = serializers.IntegerField()
-    monthly_net_change_m2 = serializers.ListField(child=serializers.DictField())
+
+    class MonthlyChangeSerializer(serializers.Serializer[dict[str, Any]]):
+        month = serializers.RegexField(regex=r"^\d{4}-\d{2}$")
+        net_change_m2 = serializers.DecimalField(max_digits=20, decimal_places=3)
+
+    monthly_net_change_m2 = MonthlyChangeSerializer(many=True)
 
 
 class CaptureResponseSerializer(serializers.Serializer[dict[str, Any]]):
@@ -76,6 +81,7 @@ class CaptureResponseSerializer(serializers.Serializer[dict[str, Any]]):
     generation = serializers.IntegerField(allow_null=True)
     snapshot_generation = serializers.IntegerField(allow_null=True)
     calculated_at = serializers.DateTimeField(allow_null=True)
+    has_published_snapshot = serializers.BooleanField()
     faces = CaptureFaceSerializer(many=True)
     returned_face_count = serializers.IntegerField()
     truncated = serializers.BooleanField()
@@ -190,7 +196,13 @@ def _monthly_area(
 
 @extend_schema(
     parameters=CAPTURE_PARAMETERS,
-    responses={200: CaptureResponseSerializer},
+    responses={
+        200: CaptureResponseSerializer,
+        400: OpenApiResponse(description="Invalid or unbounded capture viewport."),
+        401: OpenApiResponse(description="Authentication required."),
+        404: OpenApiResponse(description="Competition not found."),
+        413: OpenApiResponse(description="Capture response exceeds the response limit."),
+    },
     auth=[{"cookieAuth": []}],  # type: ignore[list-item]
     tags=["game-capture"],
 )
@@ -231,6 +243,11 @@ class CompetitionCaptureView(GameEndpoint):
         latest = CaptureCalculation.objects.filter(
             competition=competition, generation=competition.capture_revision
         ).first()
+        has_published_snapshot = CaptureCalculation.objects.filter(
+            competition=competition,
+            status=CaptureCalculation.Status.FRESH,
+            published_at__isnull=False,
+        ).exists()
         current = (
             CaptureCalculation.objects.filter(
                 competition=competition,
@@ -246,7 +263,7 @@ class CompetitionCaptureView(GameEndpoint):
             CaptureCalculation.Status.PENDING,
             CaptureCalculation.Status.RUNNING,
         }:
-            status = "pending"
+            status = "pending" if has_published_snapshot else "empty"
         elif latest is not None and latest.status == CaptureCalculation.Status.FAILED:
             status = "failed"
         elif current is not None:
@@ -350,6 +367,7 @@ class CompetitionCaptureView(GameEndpoint):
             "generation": competition.capture_revision,
             "snapshot_generation": snapshot_generation,
             "calculated_at": calculated_at,
+            "has_published_snapshot": has_published_snapshot,
             "faces": face_payload,
             "returned_face_count": len(face_payload),
             "truncated": face_truncated,

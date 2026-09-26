@@ -9,6 +9,7 @@ import type { GeoJSONSource, MapSourceDataEvent } from 'maplibre-gl'
 
 import { apiClient, rememberCsrfToken } from '../api/client'
 import type { components } from '../api/generated/schema'
+import { subscribeToGameDataRefresh } from '../gameState'
 import { MAP_PROVIDER } from '../mapProvider'
 import { setMapLibreWorker } from '../maplibreWorker'
 import type { Copy } from '../i18n/types'
@@ -31,8 +32,22 @@ function signedNumber(value: string) {
   })}`
 }
 
-function latestMonthlyChange(member: CaptureResponse['members'][number]) {
-  const value = member.monthly_net_change_m2.at(-1)?.net_change_m2
+export function currentPragueMonth(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Prague',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(now)
+  const year = parts.find((part) => part.type === 'year')?.value
+  const month = parts.find((part) => part.type === 'month')?.value
+  return year && month ? `${year}-${month}` : ''
+}
+
+export function latestMonthlyChange(
+  member: CaptureResponse['members'][number],
+  month = currentPragueMonth(),
+) {
+  const value = member.monthly_net_change_m2.find((item) => item.month === month)?.net_change_m2
   return typeof value === 'string' ? value : undefined
 }
 
@@ -158,6 +173,13 @@ export function CaptureDashboard({
     loadCaptureRef.current = loadCapture
   }, [loadCapture])
 
+  useEffect(() => {
+    const unsubscribe = subscribeToGameDataRefresh(() => {
+      if (mapLoaded.current) void loadCaptureRef.current()
+    })
+    return unsubscribe
+  }, [])
+
   useLayoutEffect(() => {
     requestSequence.current += 1
     const source = map.current?.getSource('capture-territory') as GeoJSONSource | undefined
@@ -252,7 +274,7 @@ export function CaptureDashboard({
       complete()
     }
     const onIdle = () => {
-      if (activeMap.isSourceLoaded('capture-territory')) complete()
+      if (activeMap.isSourceLoaded?.('capture-territory') ?? true) complete()
     }
     activeMap.on('sourcedata', onSourceData)
     activeMap.on('idle', onIdle)
@@ -311,7 +333,11 @@ export function CaptureDashboard({
         </div>
         {activeCapture && activeCapture.status !== 'fresh' && activeCapture.status !== 'empty' && (
           <p className={`capture-state capture-state-${activeCapture.status}`} role="status">
-            {activeCapture.status === 'pending' ? copy.gameCapturePending : copy.gameCaptureFailed}
+            {activeCapture.status === 'pending'
+              ? copy.gameCapturePending
+              : activeCapture.has_published_snapshot
+                ? copy.gameCaptureFailed
+                : copy.gameCaptureFailedEmpty}
           </p>
         )}
         {activeCapture?.truncated && (
@@ -388,6 +414,7 @@ export function CaptureDashboard({
           aria-label={copy.gameMapInteractive}
           data-capture-source-data-loaded={activeCapture && captureSourceLoaded ? 'true' : 'false'}
           data-capture-feature-count={activeCapture?.faces.length ?? 0}
+          data-capture-shared-count={activeCapture?.faces.filter((face) => face.shared).length ?? 0}
         />
         {activeCapture?.is_final && (
           <span className="capture-map-status">{copy.gameCaptureFinal}</span>

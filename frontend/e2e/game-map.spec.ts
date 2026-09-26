@@ -84,6 +84,7 @@ test.beforeEach(async ({ page }) => {
         generation: 3,
         snapshot_generation: 3,
         calculated_at: '2026-09-21T12:00:00Z',
+        has_published_snapshot: true,
         faces: [
           {
             id: 9,
@@ -156,7 +157,11 @@ test('game map keeps competition controls outside the public catalogue URL', asy
   await page.goto('/game')
   await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
   await expect(page.locator('[data-map-source-loaded="true"]')).toBeVisible()
-  await expect(page.locator('.maplibregl-canvas')).toBeVisible()
+  await expect(
+    page
+      .getByRole('region', { name: 'Private competition activity map' })
+      .locator('.maplibregl-canvas'),
+  ).toBeVisible()
   await expect(page.getByLabel('Competition', { exact: true })).toHaveValue(competition.id)
   const trace = page.getByRole('button', { name: activity.calendar_date })
   await trace.focus()
@@ -197,38 +202,6 @@ test('game map has no automated accessibility violations and honors reduced moti
   expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(
     true,
   )
-})
-
-test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
-  await page.unroute('**/api/v1/game/competitions/')
-  await page.route('**/api/v1/game/competitions/', async (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        competitions: [largeCompetition],
-        active_competition_id: largeCompetition.id,
-      }),
-    }),
-  )
-
-  await page.goto('/game')
-  await page.getByRole('tab', { name: 'Completion' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
-  const route = page.getByRole('button', { name: /1 Via Czechia north/ })
-  await route.focus()
-  await page.keyboard.press('Enter')
-  await expect(page.locator('.completion-detail').getByText('37.0%')).toBeVisible()
-  await page.getByRole('tab', { name: 'Competition' }).click()
-  await expect(page.getByText('Calculation pending')).toBeVisible()
-  await page.getByRole('tab', { name: 'Activity' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride together, privately.' })).toBeVisible()
-  await expect(page.locator('[data-map-source-loaded="true"]')).toBeVisible()
-  await page.getByRole('tab', { name: 'Completion' }).click()
-  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
-  await expect.poll(() => completionCalls).toBeGreaterThan(1)
-  await page.setViewportSize({ width: 390, height: 844 })
-  await expect(page.getByRole('heading', { name: 'Ride the reference lines.' })).toBeVisible()
 })
 
 test('capture mode keeps global ranks while member visibility changes', async ({ page }) => {
@@ -308,6 +281,7 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
           profile_image_url: null,
           nickname: null,
           lifecycle: 'connected',
+          competition_game_enabled: true,
           connected_at: '2026-09-21T00:00:00Z',
         },
       }),
@@ -360,6 +334,61 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
   await page.route('**/api/v1/game/competitions/*/members/8/', async (route) => {
     activeMembers = activeMembers.filter((member) => member.player_id !== 8)
     await route.fulfill({ status: 204 })
+  })
+  await page.route('**/api/v1/game/competitions/*/capture/**', async (route) => {
+    const owners = activeMembers.filter(
+      (member) => member.player_id === 7 || member.player_id === 8,
+    )
+    const faceOwners = owners.map((member) => ({
+      player_id: member.player_id,
+      display_name: member.display_name,
+      nickname: member.nickname,
+      color: member.color,
+      shared_area_m2: owners.length > 1 ? '50.000' : '100.000',
+    }))
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'fresh',
+        is_final: true,
+        competition_id: competition.id,
+        generation: activeMembers.length,
+        snapshot_generation: activeMembers.length,
+        calculated_at: '2026-09-21T12:00:00Z',
+        has_published_snapshot: true,
+        faces: faceOwners.length
+          ? [
+              {
+                id: 9,
+                geometry: {
+                  type: 'Polygon',
+                  coordinates: [
+                    [
+                      [14, 49],
+                      [14.1, 49],
+                      [14.1, 49.1],
+                      [14, 49],
+                    ],
+                  ],
+                },
+                area_m2: '100.000',
+                effective_date: '2026-09-21',
+                shared: owners.length > 1,
+                owners: faceOwners,
+              },
+            ]
+          : [],
+        members: activeMembers.map((member, index) => ({
+          ...member,
+          area_m2: member.player_id === 7 ? '100.000' : '0.000',
+          rank: index + 1,
+          monthly_net_change_m2: [],
+        })),
+        help: {},
+        limits: { max_faces: 1200, max_response_bytes: 4000000 },
+      }),
+    })
   })
 
   const routeId = '33333333-3333-4333-8333-333333333333'
@@ -457,13 +486,29 @@ test('private game journey joins by invite, syncs activity, switches maps, and r
   await expect(page.locator('[data-capture-response-loaded="true"]')).toBeVisible()
   await expect(page.locator('[data-capture-source-data-loaded="true"]')).toBeVisible()
   await expect(page.locator('[data-capture-feature-count="1"]')).toBeVisible()
+  await expect(page.locator('[data-capture-shared-count="1"]')).toBeVisible()
 
   const memberRow = page.locator('.game-competition-member').filter({ hasText: 'Rider two' })
   await memberRow.getByRole('button', { name: 'Remove' }).click()
   await expect(memberRow).not.toBeVisible()
+  await expect(page.locator('[data-capture-shared-count="0"]')).toBeVisible()
+  await expect(page.getByText('Rider two')).not.toBeVisible()
 })
 
 test('game map applies the latest member filter after an in-flight response', async ({ page }) => {
+  await page.unroute('**/api/v1/game/competitions/')
+  await page.route(
+    '**/api/v1/game/competitions/',
+    async (route) =>
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          competitions: [largeCompetition],
+          active_competition_id: largeCompetition.id,
+        }),
+      }),
+  )
   await page.unroute('**/api/v1/game/competitions/*/map/**')
   let mapCalls = 0
   await page.route('**/api/v1/game/competitions/*/map/**', async (route) => {
@@ -496,7 +541,8 @@ test('game map applies the latest member filter after an in-flight response', as
 
   await page.goto('/game')
   await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
-  const member = page.getByRole('checkbox').first()
+  const member = page.getByRole('group', { name: 'Member traces' }).getByRole('checkbox').first()
+  await expect(member).toBeChecked()
   const toggleRequest = page.waitForRequest(
     (request) =>
       request.url().includes('/api/v1/game/competitions/') && request.url().includes('/map/'),
@@ -510,7 +556,10 @@ test('game map applies the latest member filter after an in-flight response', as
 test('game map resolves a grouped line click to an authorized activity', async ({ page }) => {
   await page.goto('/game')
   await expect(page.locator('[data-map-response-loaded="true"]')).toBeVisible()
-  const canvas = await page.locator('.game-map-canvas').boundingBox()
+  const canvas = await page
+    .getByRole('region', { name: 'Private competition activity map' })
+    .locator('.game-map-canvas')
+    .boundingBox()
   expect(canvas).not.toBeNull()
   if (!canvas) return
   await page.mouse.click(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2)

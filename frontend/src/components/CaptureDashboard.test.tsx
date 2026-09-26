@@ -77,7 +77,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { apiClient } from '../api/client'
-import { CaptureDashboard } from './CaptureDashboard'
+import { CaptureDashboard, currentPragueMonth, latestMonthlyChange } from './CaptureDashboard'
 import { translations } from '../i18n/translations'
 
 const get = apiClient.GET as unknown as ReturnType<typeof vi.fn>
@@ -90,6 +90,7 @@ const capture = {
   generation: 3,
   snapshot_generation: 3,
   calculated_at: '2026-09-22T12:00:00Z',
+  has_published_snapshot: true,
   faces: [
     {
       id: 9,
@@ -167,6 +168,33 @@ beforeEach(() => {
 })
 
 describe('capture territory presentation', () => {
+  it('selects the current Prague month instead of the last historical change', () => {
+    expect(currentPragueMonth(new Date('2026-09-30T22:30:00Z'))).toBe('2026-10')
+    const member = capture.members[0]!
+    expect(latestMonthlyChange(member, '2026-09')).toBe('12.300')
+    expect(
+      latestMonthlyChange(
+        {
+          ...member,
+          monthly_net_change_m2: [
+            { month: '2026-08', net_change_m2: '99.000' },
+            { month: '2026-09', net_change_m2: '12.300' },
+          ],
+        },
+        '2026-09',
+      ),
+    ).toBe('12.300')
+    expect(
+      latestMonthlyChange(
+        {
+          ...member,
+          monthly_net_change_m2: [{ month: '2026-08', net_change_m2: '99.000' }],
+        },
+        '2026-09',
+      ),
+    ).toBeUndefined()
+  })
+
   it('keeps all global ranks visible and renders multi-owner hatch data', async () => {
     render(
       <CaptureDashboard
@@ -227,6 +255,21 @@ describe('capture territory presentation', () => {
       />,
     )
     expect(await screen.findByText(copy.gameCaptureFailed)).toBeInTheDocument()
+
+    cleanup()
+    get.mockResolvedValueOnce(
+      apiResult({ ...capture, status: 'failed', is_final: false, has_published_snapshot: false }),
+    )
+    render(
+      <CaptureDashboard
+        copy={copy}
+        competitions={[competition as never]}
+        competitionId={competition.id}
+        setCompetitionId={vi.fn()}
+        signedOut={false}
+      />,
+    )
+    expect(await screen.findByText(copy.gameCaptureFailedEmpty)).toBeInTheDocument()
   })
 
   it('clears the previous competition before a delayed response and failed switch', async () => {
