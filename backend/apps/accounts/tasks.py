@@ -92,17 +92,16 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             break
         try:
             calculation = CaptureCalculation.objects.get(pk=candidate.pk)
-            if (
-                calculation.generation == calculation.competition.revision
-                and CompetitionRecomputation.objects.filter(
-                    competition=calculation.competition,
-                    generation=calculation.competition.revision,
-                    status__in=(
-                        CompetitionRecomputation.Status.PENDING,
-                        CompetitionRecomputation.Status.RUNNING,
-                    ),
-                ).exists()
-            ):
+            if calculation.generation < calculation.competition.capture_revision:
+                continue
+            if CompetitionRecomputation.objects.filter(
+                competition_id=calculation.competition_id,
+                capture_generation=calculation.generation,
+                status__in=(
+                    CompetitionRecomputation.Status.PENDING,
+                    CompetitionRecomputation.Status.RUNNING,
+                ),
+            ).exists():
                 continue
             calculation, token = claim_capture_calculation(
                 calculation.competition, generation=calculation.generation

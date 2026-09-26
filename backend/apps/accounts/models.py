@@ -522,6 +522,7 @@ class CaptureFaceOwner(models.Model):
     """One current owner of a face; shared faces have one row per owner."""
 
     face = models.ForeignKey(CaptureFace, on_delete=models.CASCADE, related_name="owners")
+    owner_key = models.CharField(max_length=64)
     player = models.ForeignKey(
         Player,
         null=True,
@@ -534,7 +535,7 @@ class CaptureFaceOwner(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("face", "player"), name="accounts_capture_face_owner_unique"
+                fields=("face", "owner_key"), name="accounts_capture_face_owner_unique"
             )
         ]
         indexes = [models.Index(fields=("player", "face"))]
@@ -549,6 +550,7 @@ class CapturePlayerArea(models.Model):
     calculation = models.ForeignKey(
         CaptureCalculation, on_delete=models.CASCADE, related_name="player_areas"
     )
+    owner_key = models.CharField(max_length=64)
     player = models.ForeignKey(
         Player,
         null=True,
@@ -561,7 +563,7 @@ class CapturePlayerArea(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("calculation", "player"), name="accounts_capture_player_area_unique"
+                fields=("calculation", "owner_key"), name="accounts_capture_player_area_unique"
             )
         ]
         indexes = [models.Index(fields=("player", "calculation"))]

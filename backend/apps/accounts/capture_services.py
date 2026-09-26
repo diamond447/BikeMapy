@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.db import connection, transaction
+from django.db.models import Func, IntegerField, Max, Sum, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .models import (
@@ -32,6 +34,13 @@ ALGORITHM_VERSION = CAPTURE_ALGORITHM_VERSION
 AREA_QUANTUM = Decimal("0.001")
 CAPTURE_RETRY_SECONDS = (30, 120, 600, 1800, 3600)
 MAX_CAPTURE_ATTEMPTS = 5
+
+
+def _capture_owner_key(competition_id: object, player_id: int) -> str:
+    """Return a stable pseudonym that remains after the player is deleted."""
+
+    value = f"capture-owner:{competition_id}:{player_id}".encode()
+    return hashlib.sha256(value).hexdigest()
 
 
 class CaptureCalculationError(RuntimeError):
@@ -98,16 +107,39 @@ def _line_coordinates(
 def _activities_for_competition(competition: Competition) -> Any:
     """Stream only activities the competition is currently allowed to use."""
 
+    from .capture_validation import MAX_COORDINATES, MAX_TRACES
     from .competition_services import authorized_activity_queryset
 
     memberships = competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
         sharing_scope="none"
     )
-    return (
-        authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
-        .order_by("calendar_date", "started_at", "pk")
-        .iterator(chunk_size=32)
-    )
+    activities = authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
+    if connection.vendor == "postgresql":
+        point_count = Func("geometry", function="ST_NPoints", output_field=IntegerField())
+        trace_count = Func("geometry", function="ST_NumGeometries", output_field=IntegerField())
+        preflight = activities.annotate(
+            _capture_point_count=point_count,
+            _capture_trace_count=trace_count,
+        )
+        limits = preflight.aggregate(
+            total_points=Coalesce(
+                Sum("_capture_point_count"), Value(0), output_field=IntegerField()
+            ),
+            max_points=Coalesce(Max("_capture_point_count"), Value(0), output_field=IntegerField()),
+            total_traces=Coalesce(
+                Sum("_capture_trace_count"), Value(0), output_field=IntegerField()
+            ),
+        )
+        max_points = int(limits["max_points"] or 0)
+        total_points = int(limits["total_points"] or 0)
+        total_traces = int(limits["total_traces"] or 0)
+        if max_points > MAX_COORDINATES:
+            raise CaptureCalculationError(f"activity coordinate limit exceeded: {MAX_COORDINATES}")
+        if total_points > MAX_COORDINATES:
+            raise CaptureCalculationError(f"coordinate limit exceeded: {MAX_COORDINATES}")
+        if total_traces > MAX_TRACES:
+            raise CaptureCalculationError(f"trace limit exceeded: {MAX_TRACES}")
+    return activities.order_by("calendar_date", "started_at", "pk").iterator(chunk_size=32)
 
 
 def capture_traces(competition: Competition) -> tuple[CaptureTrace, ...]:
@@ -215,6 +247,16 @@ def schedule_capture_calculation(
             )
         )
     return calculation
+
+
+def invalidate_current_capture(competition: Competition) -> int:
+    """Hide a published snapshot immediately while retaining its evidence rows."""
+
+    return CaptureCalculation.objects.filter(
+        competition=competition,
+        is_current=True,
+        status=CaptureCalculation.Status.FRESH,
+    ).update(is_current=False)
 
 
 def schedule_algorithm_version_rebuilds(*, limit: int | None = None) -> int:
@@ -366,12 +408,16 @@ def _persist_faces(
             shared_area = _decimal(face.area_m2 / len(owners))
             for owner_id in sorted(set(owners)):
                 CaptureFaceOwner.objects.create(
-                    face=stored_face, player_id=owner_id, shared_area_m2=shared_area
+                    face=stored_face,
+                    owner_key=_capture_owner_key(competition.pk, owner_id),
+                    player_id=owner_id,
+                    shared_area_m2=shared_area,
                 )
                 area_totals[owner_id] = area_totals.get(owner_id, Decimal("0")) + shared_area
         for player_id, area in sorted(area_totals.items()):
             CapturePlayerArea.objects.create(
                 calculation=calculation,
+                owner_key=_capture_owner_key(competition.pk, player_id),
                 player_id=player_id,
                 owned_area_m2=_decimal(area),
             )

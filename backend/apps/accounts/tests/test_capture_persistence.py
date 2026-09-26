@@ -17,8 +17,10 @@ from apps.accounts.capture_services import (
     CaptureCalculationError,
     _line_coordinates,
     calculate_capture,
+    capture_traces,
     claim_capture_calculation,
     current_capture,
+    schedule_capture_calculation,
 )
 from apps.accounts.competition_services import (
     CURRENT_SHARING_DISCLOSURE_VERSION,
@@ -27,9 +29,11 @@ from apps.accounts.competition_services import (
     join_competition,
     remove_member,
     schedule_recomputation,
+    withdraw_sharing_consent,
 )
 from apps.accounts.models import (
     CaptureCalculation,
+    CaptureFaceOwner,
     CapturePlayerArea,
     Competition,
     CompetitionRecomputation,
@@ -99,7 +103,9 @@ def test_capture_excludes_unconsented_and_out_of_window_activity() -> None:
     calculation = calculate_capture(competition)
 
     assert calculation.trace_count == 1
-    assert {trace.player_id for trace in calculation.faces.first().owners.all()} == {owner.pk}
+    face = calculation.faces.first()
+    assert face is not None
+    assert {trace.player_id for trace in face.owners.all()} == {owner.pk}
 
 
 def test_recent_consent_excludes_activity_before_the_cutoff() -> None:
@@ -142,6 +148,21 @@ def test_capture_rejects_oversized_geometry_before_coordinate_materialization() 
 
     with pytest.raises(CaptureCalculationError, match="coordinate limit"):
         _line_coordinates(geometry, max_coordinates=30_000, max_parts=1)
+
+
+def test_capture_rejects_oversized_database_geometry_before_fetching_it() -> None:
+    owner = _player(1008)
+    competition, _ = create_competition(owner, name="Database geometry bounds")
+    _grant_capture_consent(owner, competition)
+    points = tuple((14.0 + index * 0.000001, 50.0) for index in range(30_001))
+    _activity(owner, "oversized-database-geometry", points, 2)
+
+    with patch(
+        "apps.accounts.capture_services._line_coordinates",
+        side_effect=AssertionError("geometry was materialized before preflight"),
+    ):
+        with pytest.raises(CaptureCalculationError, match="coordinate limit"):
+            capture_traces(competition)
 
 
 def _projection_signature(calculation: CaptureCalculation) -> tuple[object, ...]:
@@ -219,7 +240,8 @@ def test_newer_inner_claim_wins_and_failed_rebuild_preserves_current() -> None:
 
     first = calculate_capture(competition)
     assert {
-        tuple(sorted(row.player_id for row in face.owners.all())) for face in first.faces.all()
+        tuple(sorted(row.player_id for row in face.owners.all() if row.player_id is not None))
+        for face in first.faces.all()
     } == {
         (owner.pk,),
         (member.pk,),
@@ -248,9 +270,12 @@ def test_membership_capture_generation_is_bounded_and_dispatched() -> None:
     points = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     _activity(owner, "queued-boundary", points, 2)
 
-    outcome = dispatch_capture_calculations_task.apply(args=[1]).get()
+    job = CompetitionRecomputation.objects.get(
+        competition=competition, generation=competition.revision
+    )
+    outcome = recompute_competition_results_task.apply(args=[job.pk]).get()
 
-    assert outcome == {"processed": 1, "failed": 0}
+    assert outcome["status"] == "completed"
     current = current_capture(competition)
     assert current is not None
     assert current.status == CaptureCalculation.Status.FRESH
@@ -266,10 +291,10 @@ def test_join_after_current_snapshot_queues_and_publishes_new_generation() -> No
     _activity(owner, "owner-boundary", square, 2)
     _activity(member, "member-boundary", square, 4)
 
-    assert dispatch_capture_calculations_task.apply(args=[1]).get() == {
-        "processed": 1,
-        "failed": 0,
-    }
+    job = CompetitionRecomputation.objects.get(
+        competition=competition, generation=competition.revision
+    )
+    assert recompute_competition_results_task.apply(args=[job.pk]).get()["status"] == "completed"
     competition.refresh_from_db()
     first = current_capture(competition)
     assert first is not None
@@ -285,7 +310,10 @@ def test_join_after_current_snapshot_queues_and_publishes_new_generation() -> No
         competition=competition, generation=competition.capture_revision
     )
     assert queued.status == CaptureCalculation.Status.PENDING
-    dispatch_capture_calculations_task.apply(args=[1]).get()
+    job = CompetitionRecomputation.objects.get(
+        competition=competition, generation=competition.revision
+    )
+    assert recompute_competition_results_task.apply(args=[job.pk]).get()["status"] == "completed"
 
     current = current_capture(competition)
     assert current is not None
@@ -293,6 +321,58 @@ def test_join_after_current_snapshot_queues_and_publishes_new_generation() -> No
     face = current.faces.first()
     assert face is not None
     assert set(face.owners.values_list("player_id", flat=True)) == {member.pk}
+
+
+def test_withdrawal_masks_current_capture_when_rebuild_fails() -> None:
+    owner = _player(1035)
+    competition, _ = create_competition(owner, name="Withdrawal masking")
+    _grant_capture_consent(owner, competition)
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "withdrawal-mask", square, 2)
+    first = calculate_capture(competition)
+    first_face = first.faces.first()
+    assert first_face is not None
+    assert current_capture(competition) is not None
+
+    withdraw_sharing_consent(owner, competition)
+    competition.refresh_from_db()
+    assert current_capture(competition) is None
+    replacement = CaptureCalculation.objects.get(
+        competition=competition, generation=competition.capture_revision
+    )
+    with patch(
+        "apps.accounts.capture_services.capture_traces",
+        side_effect=RuntimeError("rebuild unavailable"),
+    ):
+        with pytest.raises(CaptureCalculationError):
+            calculate_capture(competition, generation=replacement.generation)
+
+    first.refresh_from_db()
+    assert not first.is_current
+    assert first.status == CaptureCalculation.Status.FRESH
+    assert first.faces.exists()
+    assert CaptureFaceOwner.objects.filter(face=first_face, player=owner).exists()
+    assert current_capture(competition) is None
+
+
+def test_scope_downgrade_masks_current_capture_before_rebuild() -> None:
+    owner = _player(1036)
+    competition, _ = create_competition(owner, name="Scope downgrade masking")
+    _grant_capture_consent(owner, competition)
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "scope-downgrade-mask", square, 2)
+    calculate_capture(competition)
+    assert current_capture(competition) is not None
+
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+
+    assert current_capture(competition) is None
 
 
 def test_activity_removal_publishes_generation_without_removed_trace() -> None:
@@ -364,6 +444,18 @@ def test_account_deletion_publishes_generation_without_deleted_member_input() ->
     _activity(owner, "deletion-owner", square, 2)
     _activity(member, "deletion-member", square, 4)
     first = calculate_capture(competition)
+    member_face_keys = set(
+        CaptureFaceOwner.objects.filter(face__calculation=first, player=member).values_list(
+            "owner_key", flat=True
+        )
+    )
+    member_area_keys = set(
+        CapturePlayerArea.objects.filter(calculation=first, player=member).values_list(
+            "owner_key", flat=True
+        )
+    )
+    assert member_face_keys
+    assert member_area_keys
 
     member_id = member.pk
     delete_player(member)
@@ -372,6 +464,23 @@ def test_account_deletion_publishes_generation_without_deleted_member_input() ->
     assert any(
         owner_row.player_id is None for face in first.faces.all() for owner_row in face.owners.all()
     )
+    assert (
+        set(
+            CaptureFaceOwner.objects.filter(
+                face__calculation=first, player__isnull=True
+            ).values_list("owner_key", flat=True)
+        )
+        >= member_face_keys
+    )
+    assert (
+        set(
+            CapturePlayerArea.objects.filter(calculation=first, player__isnull=True).values_list(
+                "owner_key", flat=True
+            )
+        )
+        >= member_area_keys
+    )
+    assert current_capture(competition) is None
     competition.refresh_from_db()
     job = CompetitionRecomputation.objects.get(
         competition=competition, generation=competition.revision
@@ -459,6 +568,22 @@ def test_standalone_dispatcher_skips_recomputation_owned_generation() -> None:
     }
     queued.refresh_from_db()
     assert queued.status == CaptureCalculation.Status.PENDING
+
+
+def test_standalone_dispatcher_uses_capture_generation_when_revisions_diverge() -> None:
+    owner = _player(1062)
+    competition, _ = create_competition(owner, name="Dispatcher capture generation")
+    dispatch_capture_calculations_task.apply(args=[1]).get()
+    job = schedule_recomputation(competition)
+    replacement = schedule_capture_calculation(competition, force_new_generation=True)
+
+    assert replacement.generation != job.capture_generation
+    assert dispatch_capture_calculations_task.apply(args=[1]).get() == {
+        "processed": 1,
+        "failed": 0,
+    }
+    replacement.refresh_from_db()
+    assert replacement.status == CaptureCalculation.Status.FRESH
 
 
 def test_algorithm_rollout_limit_counts_only_mismatched_snapshots() -> None:

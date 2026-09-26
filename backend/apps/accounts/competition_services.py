@@ -335,7 +335,10 @@ def grant_sharing_consent(
     if previous_scope != normalized:
         from apps.reference_routes.completion_services import reset_competition_completion_data
 
+        from .capture_services import invalidate_current_capture
+
         reset_competition_completion_data(locked, player_id=player.pk)
+        invalidate_current_capture(locked)
     schedule_recomputation(locked, affected_player_id=player.pk, bump_revision=False)
     return membership
 
@@ -371,7 +374,10 @@ def withdraw_sharing_consent(player: Player, competition: Competition) -> Compet
     CompetitionResult.objects.filter(competition=locked, player=player).delete()
     from apps.reference_routes.completion_services import reset_competition_completion_data
 
+    from .capture_services import invalidate_current_capture
+
     reset_competition_completion_data(locked, player_id=player.pk)
+    invalidate_current_capture(locked)
     schedule_recomputation(locked, affected_player_id=player.pk, bump_revision=False)
     return membership
 
@@ -695,6 +701,9 @@ def remove_member(
 
     reset_competition_completion_data(locked, player_id=member.pk)
     membership.delete()
+    from .capture_services import invalidate_current_capture
+
+    invalidate_current_capture(locked)
     if member.active_competition_id == locked.pk:
         replacement = (
             CompetitionMembership.objects.select_for_update()
@@ -724,6 +733,9 @@ def leave_competition(player: Player, competition: Competition) -> CompetitionRe
 
     reset_competition_completion_data(locked, player_id=player.pk)
     CompetitionMembership.objects.filter(competition=locked, player=player).delete()
+    from .capture_services import invalidate_current_capture
+
+    invalidate_current_capture(locked)
     if player.active_competition_id == locked.pk:
         replacement = (
             CompetitionMembership.objects.select_for_update()
