@@ -687,4 +687,84 @@ describe('private game map presentation', () => {
       await screen.findByRole('heading', { name: 'Ride together, privately.' }),
     ).toBeInTheDocument()
   })
+
+  it('keeps activity, completion, and capture responses cached while switching modes', async () => {
+    const competition = {
+      id: 'competition-cache',
+      name: 'Cached crew',
+      invite_code: 'CACHE123',
+      owner_player_id: 7,
+      is_owner: true,
+      is_active: true,
+      is_selected: true,
+      color: '#F4B942',
+      created_at: '2026-09-21T00:00:00Z',
+      members: [
+        { player_id: 7, display_name: 'Rider', nickname: null, color: '#F4B942', is_owner: true },
+      ],
+    }
+    const calls = { map: 0, completion: 0, capture: 0 }
+    vi.spyOn(apiClient, 'GET').mockImplementation(((path: string) => {
+      if (path.includes('/map/')) {
+        calls.map += 1
+        return Promise.resolve({
+          data: {
+            status: 'empty',
+            competition_id: competition.id,
+            members: competition.members,
+            activities: [],
+            truncated: false,
+            limits: { max_features: 1200, max_coordinates: 120000 },
+          },
+          response: new Response(),
+        })
+      }
+      if (path.includes('/capture/')) {
+        calls.capture += 1
+        return Promise.resolve({
+          data: {
+            status: 'empty',
+            is_final: false,
+            competition_id: competition.id,
+            generation: 0,
+            snapshot_generation: null,
+            calculated_at: null,
+            has_published_snapshot: false,
+            faces: [],
+            returned_face_count: 0,
+            truncated: false,
+            members: [],
+            help: {},
+            limits: { max_faces: 1200, max_response_bytes: 4000000 },
+          },
+          response: new Response(),
+        })
+      }
+      if (path === '/api/v1/game/competitions/') {
+        return Promise.resolve({
+          data: { competitions: [competition], active_competition_id: competition.id },
+          response: new Response(),
+        })
+      }
+      if (path.includes('/reference-routes/')) calls.completion += 1
+      return Promise.resolve({
+        data: { next: null, previous: null, results: [] },
+        response: new Response(),
+      })
+    }) as never)
+
+    const user = userEvent.setup()
+    render(<GameApp />)
+    await waitFor(() => {
+      expect(calls.map).toBeGreaterThan(0)
+      expect(calls.completion).toBeGreaterThan(0)
+      expect(calls.capture).toBeGreaterThan(0)
+    })
+    const initial = { ...calls }
+    await user.click(screen.getByRole('tab', { name: 'Completion' }))
+    await user.click(screen.getByRole('tab', { name: 'Capture' }))
+    await user.click(screen.getByRole('tab', { name: 'Activity' }))
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+    expect(calls).toEqual(initial)
+  })
 })

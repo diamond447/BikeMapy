@@ -32,6 +32,12 @@ PARTIAL_SYNC_STATUSES = ("queued", "running", "paused", "failed")
 PUBLIC_COMPLETION_ERROR = "completion_unavailable"
 
 
+class CompletionMonthlySerializer(serializers.Serializer[dict[str, Any]]):
+    month = serializers.DateField()
+    covered_length_meters = serializers.DecimalField(max_digits=14, decimal_places=3)
+    gain_length_meters = serializers.DecimalField(max_digits=14, decimal_places=3)
+
+
 class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
     status = serializers.CharField()
     total_length_meters = serializers.DecimalField(max_digits=14, decimal_places=3)
@@ -40,7 +46,7 @@ class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
     calculated_at = serializers.DateTimeField(allow_null=True)
     error = serializers.CharField()
     covered_geometry = serializers.JSONField(allow_null=True)
-    monthly = serializers.ListField(child=serializers.DictField())
+    monthly = CompletionMonthlySerializer(many=True)
     partial = serializers.BooleanField()
     sync_status = serializers.CharField()
 
@@ -115,6 +121,9 @@ def _projection(
             {
                 "month": item.month,
                 "covered_length_meters": item.covered_length_meters,
+                # Keep the original field for backwards compatibility while
+                # naming the projection's semantic value explicitly for clients.
+                "gain_length_meters": item.covered_length_meters,
             }
             for item in monthly_query.order_by("month")
         ]
