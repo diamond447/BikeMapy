@@ -11,7 +11,7 @@ from django.urls import reverse
 
 from apps.accounts import competition_capture_api
 from apps.accounts.activity_services import remove_activity
-from apps.accounts.capture_services import calculate_capture
+from apps.accounts.capture_services import calculate_capture, invalidate_current_capture
 from apps.accounts.competition_services import (
     CURRENT_SHARING_DISCLOSURE_VERSION,
     create_competition,
@@ -82,7 +82,7 @@ def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
     assert response["Cache-Control"] == "private, no-store"
 
     payload = session_client(owner).get(url, viewport()).json()
-    assert payload["status"] == "empty"
+    assert payload["status"] == "pending"
     assert payload["is_final"] is False
     assert payload["has_published_snapshot"] is False
     assert payload["faces"] == []
@@ -101,6 +101,40 @@ def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
     failed = session_client(owner).get(url, viewport()).json()
     assert failed["status"] == "failed"
     assert failed["has_published_snapshot"] is False
+
+
+@override_settings(**SETTINGS)
+def test_capture_pending_after_invalidation_does_not_advertise_an_old_snapshot() -> None:
+    owner = make_player(605)
+    competition, _ = create_competition(owner, name="Invalidated capture")
+    current = CaptureCalculation.objects.get(
+        competition=competition, generation=competition.capture_revision
+    )
+    current.status = CaptureCalculation.Status.FRESH
+    current.is_current = True
+    current.published_at = datetime(2026, 9, 20, tzinfo=UTC)
+    current.completed_at = current.published_at
+    current.save(update_fields=("status", "is_current", "published_at", "completed_at"))
+
+    invalidate_current_capture(competition)
+    competition.capture_revision += 1
+    competition.save(update_fields=("capture_revision", "updated_at"))
+    CaptureCalculation.objects.create(
+        competition=competition,
+        generation=competition.capture_revision,
+        algorithm_version="test-pending",
+        status=CaptureCalculation.Status.PENDING,
+    )
+
+    payload = (
+        session_client(owner)
+        .get(reverse("game-competition-capture", args=[competition.pk]), viewport())
+        .json()
+    )
+    assert payload["status"] == "pending"
+    assert payload["snapshot_generation"] is None
+    assert payload["has_published_snapshot"] is False
+    assert payload["faces"] == []
 
 
 @pytest.mark.skipif(connection.vendor != "postgresql", reason="capture API requires PostGIS")

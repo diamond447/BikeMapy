@@ -585,6 +585,10 @@ export interface components {
     AnalyticsEvent: {
       event: components['schemas']['EventEnum']
     }
+    CaptureErrorResponse: {
+      detail: string
+      code?: string
+    }
     CaptureFace: {
       id: number
       geometry: unknown
@@ -1804,33 +1808,37 @@ export interface operations {
           'application/json': components['schemas']['CaptureResponse']
         }
       }
-      /** @description Invalid or unbounded capture viewport. */
       400: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
       }
-      /** @description Authentication required. */
       401: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
       }
-      /** @description Competition not found. */
       404: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
       }
-      /** @description Capture response exceeds the response limit. */
       413: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
       }
     }
   }

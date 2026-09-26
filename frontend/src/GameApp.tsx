@@ -573,6 +573,10 @@ export default function GameApp() {
   const lastMapRequestKey = useRef<string | null>(null)
   const latestMapRequestKey = useRef<string | null>(null)
   const mapRequestPending = useRef(false)
+  const pendingMapRequestKeys = useRef(new Set<string>())
+  const initialCompetitionsLoadStarted = useRef(false)
+  const suppressMapMoveRequests = useRef(false)
+  const previousViewMode = useRef(viewMode)
   const mapMeasureSequence = useRef(0)
   const visibleMemberIdsRef = useRef<number[]>([])
   const rosterMembersRef = useRef<RosterMember[]>([])
@@ -596,10 +600,15 @@ export default function GameApp() {
   const clearMapData = useCallback(() => {
     fullMapDataRef.current = null
     fullMapRequestKey.current = null
-    lastMapRequestKey.current = null
-    latestMapRequestKey.current = null
     mapRequestPending.current = false
-    mapRequestInFlight.current = false
+    // Keep an in-flight request deduplicated across StrictMode remounts and
+    // competition refreshes. Its response will be accepted only if the next
+    // load selects the same request key.
+    if (mapRequestInFlight.current) latestMapRequestKey.current = null
+    else {
+      lastMapRequestKey.current = null
+      latestMapRequestKey.current = null
+    }
     visibleMemberIdsRef.current = []
     activityIndexRef.current = buildActivitySpatialIndex([])
     visualDataRef.current = memberFeatureCollection([])
@@ -620,43 +629,52 @@ export default function GameApp() {
     setRosterCursor(null)
   }, [clearMapData])
 
-  const loadCompetitions = useCallback(async () => {
-    clearMapData()
-    setLoading(true)
-    setError(null)
-    setCompetitionDisabled(false)
-    try {
-      const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
-      rememberCsrfToken(result.response)
-      if (result.response?.status === 401) {
-        clearSessionState()
-        setSignedOut(true)
-        setCompetitions([])
-        return
+  const loadCompetitions = useCallback(
+    async (force = false) => {
+      if (!force) {
+        if (initialCompetitionsLoadStarted.current) return
+        initialCompetitionsLoadStarted.current = true
       }
-      if (result.response?.status === 404) {
-        setSignedOut(false)
-        setCompetitions([])
-        setCompetitionId(undefined)
-        setCompetitionDisabled(true)
-        return
-      }
-      if (!result.data) throw new Error('competition-load')
-      setSignedOut(false)
+      clearMapData()
+      setLoading(true)
+      setError(null)
       setCompetitionDisabled(false)
-      setRosterMembers([])
-      setRosterCursor(null)
-      setCompetitions(result.data.competitions)
-      setCompetitionId((current) => {
-        const selected = result.data.competitions.find((item) => item.id === current)
-        return selected?.id ?? result.data.active_competition_id ?? result.data.competitions[0]?.id
-      })
-    } catch {
-      setError(copy.gameMapError)
-    } finally {
-      setLoading(false)
-    }
-  }, [clearMapData, clearSessionState, copy.gameMapError])
+      try {
+        const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
+        rememberCsrfToken(result.response)
+        if (result.response?.status === 401) {
+          clearSessionState()
+          setSignedOut(true)
+          setCompetitions([])
+          return
+        }
+        if (result.response?.status === 404) {
+          setSignedOut(false)
+          setCompetitions([])
+          setCompetitionId(undefined)
+          setCompetitionDisabled(true)
+          return
+        }
+        if (!result.data) throw new Error('competition-load')
+        setSignedOut(false)
+        setCompetitionDisabled(false)
+        setRosterMembers([])
+        setRosterCursor(null)
+        setCompetitions(result.data.competitions)
+        setCompetitionId((current) => {
+          const selected = result.data.competitions.find((item) => item.id === current)
+          return (
+            selected?.id ?? result.data.active_competition_id ?? result.data.competitions[0]?.id
+          )
+        })
+      } catch {
+        setError(copy.gameMapError)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [clearMapData, clearSessionState, copy.gameMapError],
+  )
 
   const loadRosterPage = useCallback(async (competition: Competition, cursor?: string) => {
     try {
@@ -702,7 +720,7 @@ export default function GameApp() {
         clearMapData()
       }
     })
-    const unsubscribeRefresh = subscribeToGameDataRefresh(() => void loadCompetitions())
+    const unsubscribeRefresh = subscribeToGameDataRefresh(() => void loadCompetitions(true))
     return () => {
       unsubscribeReset()
       unsubscribeRefresh()
@@ -768,12 +786,14 @@ export default function GameApp() {
       drawVisualDataRef.current()
       return
     }
+    if (pendingMapRequestKeys.current.has(requestKey)) return
     if (mapRequestInFlight.current) {
       if (lastMapRequestKey.current !== requestKey) mapRequestPending.current = true
       return
     }
     if (lastMapRequestKey.current === requestKey) return
     lastMapRequestKey.current = requestKey
+    pendingMapRequestKeys.current.add(requestKey)
     mapRequestInFlight.current = true
     setMapSourceLoaded(false)
     setMapLoading(true)
@@ -850,6 +870,7 @@ export default function GameApp() {
         setError(copy.gameMapError)
       }
     } finally {
+      pendingMapRequestKeys.current.delete(requestKey)
       const followUp = mapRequestPending.current || latestMapRequestKey.current !== requestKey
       mapRequestPending.current = false
       mapRequestInFlight.current = false
@@ -889,6 +910,13 @@ export default function GameApp() {
     let pendingInteractionPoint: { lng: number; lat: number } | null = null
     instance.addControl(new NavigationControl({ showCompass: true }), 'top-right')
     instance.addControl(new AttributionControl({ customAttribution: MAP_PROVIDER.attribution }))
+    const enableMapRequests = () => {
+      suppressMapMoveRequests.current = false
+    }
+    instance.on('dragstart', enableMapRequests)
+    instance.on('zoomstart', enableMapRequests)
+    instance.on('rotatestart', enableMapRequests)
+    instance.on('pitchstart', enableMapRequests)
     instance.on('moveend', () => {
       const current = instance.getBounds()
       bounds.current = normalizeMapBounds({
@@ -899,6 +927,7 @@ export default function GameApp() {
         zoom: instance.getZoom(),
       })
       if (!mapCanRequest.current) return
+      if (suppressMapMoveRequests.current) return
       scheduleMapLoad()
     })
     instance.on('load', () => {
@@ -1064,10 +1093,6 @@ export default function GameApp() {
     return () => {
       mapLoaded.current = false
       mapCanRequest.current = false
-      mapRequestInFlight.current = false
-      lastMapRequestKey.current = null
-      latestMapRequestKey.current = null
-      mapRequestPending.current = false
       fullMapDataRef.current = null
       fullMapRequestKey.current = null
       activityIndexRef.current = buildActivitySpatialIndex([])
@@ -1091,7 +1116,12 @@ export default function GameApp() {
   }, [benchmarkFullUpdate, scheduleMapLoad])
 
   useEffect(() => {
-    if (viewMode === 'activity') map.current?.resize?.()
+    if (previousViewMode.current === viewMode) return
+    previousViewMode.current = viewMode
+    // Mode panels stay mounted. Ignore any synthetic MapLibre moveend emitted
+    // while the browser hides or reveals the activity panel; user navigation
+    // clears this guard through drag/zoom/rotate start events.
+    suppressMapMoveRequests.current = true
   }, [viewMode])
 
   useEffect(() => {
@@ -1312,7 +1342,7 @@ export default function GameApp() {
               ) : error ? (
                 <div className="game-map-state">
                   <p role="alert">{error}</p>
-                  <button type="button" onClick={() => void loadCompetitions()}>
+                  <button type="button" onClick={() => void loadCompetitions(true)}>
                     {copy.gameMapRetry}
                   </button>
                 </div>

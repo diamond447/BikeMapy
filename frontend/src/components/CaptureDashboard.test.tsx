@@ -228,7 +228,14 @@ describe('capture territory presentation', () => {
 
   it('announces pending and failed results without hiding the last leaderboard', async () => {
     get.mockResolvedValueOnce(
-      apiResult({ ...capture, status: 'pending', is_final: false, truncated: true }),
+      apiResult({
+        ...capture,
+        status: 'pending',
+        is_final: false,
+        snapshot_generation: null,
+        has_published_snapshot: false,
+        truncated: true,
+      }),
     )
     render(
       <CaptureDashboard

@@ -125,49 +125,66 @@ export function CaptureDashboard({
   const mapNode = useRef<HTMLDivElement>(null)
   const map = useRef<MapLibreMap | null>(null)
   const mapLoaded = useRef(false)
-  const loadCaptureRef = useRef<() => Promise<void>>(() => Promise.resolve())
+  const loadCaptureRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
   const requestSequence = useRef(0)
+  const lastRequestKey = useRef<string | null>(null)
+  const suppressMoveRequestUntil = useRef(0)
   const renderSequence = useRef(0)
   const bounds = useRef(DEFAULT_VIEW)
 
-  const loadCapture = useCallback(async () => {
-    if (!competitionId || !mapLoaded.current || !map.current) return
-    const sequence = ++requestSequence.current
-    setLoading(true)
-    setError(null)
-    const current = bounds.current
-    const visibleIds = visibility.competitionId === competitionId ? visibility.members : null
-    try {
-      const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/capture/', {
-        params: {
-          path: { competition_id: competitionId },
-          query: {
-            west: current.west,
-            south: current.south,
-            east: current.east,
-            north: current.north,
-            zoom: Math.round(current.zoom),
-            member: visibleIds === null ? undefined : visibleIds.size ? [...visibleIds] : [0],
+  const loadCapture = useCallback(
+    async (force = false) => {
+      if (!competitionId || !mapLoaded.current || !map.current) return
+      const current = bounds.current
+      const visibleIds = visibility.competitionId === competitionId ? visibility.members : null
+      const requestKey = JSON.stringify([
+        competitionId,
+        Math.round(current.west * 1000),
+        Math.round(current.south * 1000),
+        Math.round(current.east * 1000),
+        Math.round(current.north * 1000),
+        Math.round(current.zoom * 10),
+        visibleIds ? [...visibleIds].sort((a, b) => a - b) : null,
+      ])
+      if (!force && lastRequestKey.current === requestKey) return
+      lastRequestKey.current = requestKey
+      const sequence = ++requestSequence.current
+      setLoading(true)
+      setError(null)
+      try {
+        const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/capture/', {
+          params: {
+            path: { competition_id: competitionId },
+            query: {
+              west: current.west,
+              south: current.south,
+              east: current.east,
+              north: current.north,
+              zoom: Math.round(current.zoom),
+              member: visibleIds === null ? undefined : visibleIds.size ? [...visibleIds] : [0],
+            },
           },
-        },
-        credentials: 'include',
-      })
-      rememberCsrfToken(result.response)
-      if (sequence !== requestSequence.current) return
-      if (result.response?.status === 401) return
-      if (result.response?.status === 404 || !result.data) throw new Error('capture')
-      if (result.data.competition_id !== competitionId) return
-      setCaptureSourceLoaded(false)
-      setCapture(result.data)
-    } catch {
-      if (sequence === requestSequence.current) {
-        setErrorCompetitionId(competitionId)
-        setError(copy.gameCaptureError)
+          credentials: 'include',
+        })
+        rememberCsrfToken(result.response)
+        if (sequence !== requestSequence.current) return
+        if (result.response?.status === 401) return
+        if (result.response?.status === 404 || !result.data) throw new Error('capture')
+        if (result.data.competition_id !== competitionId) return
+        setCaptureSourceLoaded(false)
+        setCapture(result.data)
+      } catch {
+        if (sequence === requestSequence.current) {
+          lastRequestKey.current = null
+          setErrorCompetitionId(competitionId)
+          setError(copy.gameCaptureError)
+        }
+      } finally {
+        if (sequence === requestSequence.current) setLoading(false)
       }
-    } finally {
-      if (sequence === requestSequence.current) setLoading(false)
-    }
-  }, [competitionId, copy.gameCaptureError, visibility])
+    },
+    [competitionId, copy.gameCaptureError, visibility],
+  )
 
   useEffect(() => {
     loadCaptureRef.current = loadCapture
@@ -175,13 +192,14 @@ export function CaptureDashboard({
 
   useEffect(() => {
     const unsubscribe = subscribeToGameDataRefresh(() => {
-      if (mapLoaded.current) void loadCaptureRef.current()
+      if (mapLoaded.current) void loadCaptureRef.current(true)
     })
     return unsubscribe
   }, [])
 
   useLayoutEffect(() => {
     requestSequence.current += 1
+    lastRequestKey.current = null
     const source = map.current?.getSource('capture-territory') as GeoJSONSource | undefined
     source?.setData({ type: 'FeatureCollection', features: [] })
     mapNode.current?.removeAttribute('data-capture-response-loaded')
@@ -224,6 +242,7 @@ export function CaptureDashboard({
       void loadCaptureRef.current()
     })
     instance.on('moveend', () => {
+      if (performance.now() < suppressMoveRequestUntil.current) return
       const current = instance.getBounds()
       bounds.current = {
         west: current.getWest(),
@@ -233,6 +252,12 @@ export function CaptureDashboard({
         zoom: instance.getZoom(),
       }
       void loadCaptureRef.current()
+    })
+    instance.on('resize', () => {
+      // Hidden mode panels resize their MapLibre canvas as they are revealed.
+      // The resulting moveend changes only the measured viewport, not user
+      // intent, so it must not invalidate the cached capture response.
+      suppressMoveRequestUntil.current = performance.now() + 250
     })
     return () => {
       mapLoaded.current = false
@@ -248,6 +273,11 @@ export function CaptureDashboard({
   const activeCapture = capture?.competition_id === competitionId ? capture : null
   const activeError = errorCompetitionId === competitionId ? error : null
   const visibleMembers = visibility.competitionId === competitionId ? visibility.members : null
+  const visibleFaceCount =
+    activeCapture?.faces.filter(
+      (face) =>
+        visibleMembers === null || face.owners.some((owner) => visibleMembers.has(owner.player_id)),
+    ).length ?? 0
 
   useEffect(() => {
     const activeMap = map.current
@@ -414,6 +444,7 @@ export function CaptureDashboard({
           aria-label={copy.gameMapInteractive}
           data-capture-source-data-loaded={activeCapture && captureSourceLoaded ? 'true' : 'false'}
           data-capture-feature-count={activeCapture?.faces.length ?? 0}
+          data-capture-visible-feature-count={visibleFaceCount}
           data-capture-shared-count={activeCapture?.faces.filter((face) => face.shared).length ?? 0}
         />
         {activeCapture?.is_final && (

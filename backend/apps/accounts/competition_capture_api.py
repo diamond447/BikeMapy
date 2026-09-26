@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from django.db import connection
 from django.db.models import Prefetch
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers
 from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
@@ -88,6 +88,11 @@ class CaptureResponseSerializer(serializers.Serializer[dict[str, Any]]):
     members = CaptureMemberSerializer(many=True)
     help = serializers.DictField(child=serializers.CharField())
     limits = serializers.DictField(child=serializers.IntegerField())
+
+
+class CaptureErrorResponseSerializer(serializers.Serializer[dict[str, str]]):
+    detail = serializers.CharField()
+    code = serializers.CharField(required=False)
 
 
 CAPTURE_PARAMETERS = [
@@ -198,10 +203,10 @@ def _monthly_area(
     parameters=CAPTURE_PARAMETERS,
     responses={
         200: CaptureResponseSerializer,
-        400: OpenApiResponse(description="Invalid or unbounded capture viewport."),
-        401: OpenApiResponse(description="Authentication required."),
-        404: OpenApiResponse(description="Competition not found."),
-        413: OpenApiResponse(description="Capture response exceeds the response limit."),
+        400: CaptureErrorResponseSerializer,
+        401: CaptureErrorResponseSerializer,
+        404: CaptureErrorResponseSerializer,
+        413: CaptureErrorResponseSerializer,
     },
     auth=[{"cookieAuth": []}],  # type: ignore[list-item]
     tags=["game-capture"],
@@ -243,11 +248,6 @@ class CompetitionCaptureView(GameEndpoint):
         latest = CaptureCalculation.objects.filter(
             competition=competition, generation=competition.capture_revision
         ).first()
-        has_published_snapshot = CaptureCalculation.objects.filter(
-            competition=competition,
-            status=CaptureCalculation.Status.FRESH,
-            published_at__isnull=False,
-        ).exists()
         current = (
             CaptureCalculation.objects.filter(
                 competition=competition,
@@ -258,12 +258,16 @@ class CompetitionCaptureView(GameEndpoint):
             .first()
         )
         calculation = current
+        # Availability describes the snapshot served in this response. Older
+        # published generations remain useful for monthly deltas, but they do
+        # not make an invalidated current snapshot available to the map.
+        has_published_snapshot = calculation is not None and calculation.published_at is not None
         status = "empty"
         if latest is not None and latest.status in {
             CaptureCalculation.Status.PENDING,
             CaptureCalculation.Status.RUNNING,
         }:
-            status = "pending" if has_published_snapshot else "empty"
+            status = "pending"
         elif latest is not None and latest.status == CaptureCalculation.Status.FAILED:
             status = "failed"
         elif current is not None:
