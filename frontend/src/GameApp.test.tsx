@@ -657,4 +657,34 @@ describe('private game map presentation', () => {
     expect(lateRequest).toHaveLength(100)
     expect(screen.getByText(/up to 100/i)).toBeInTheDocument()
   })
+
+  it('switches between private activity and official completion views', async () => {
+    const competition = {
+      id: 'competition-dashboard',
+      name: 'Dashboard crew',
+      members: [],
+    }
+    vi.spyOn(apiClient, 'GET').mockImplementation(((path: string) => {
+      if (path.includes('/reference-routes/')) {
+        return Promise.resolve({
+          data: { next: null, previous: null, results: [] },
+          response: new Response(),
+        })
+      }
+      return Promise.resolve({
+        data: { competitions: [competition], active_competition_id: competition.id },
+        response: new Response(),
+      })
+    }) as never)
+    const user = userEvent.setup()
+    render(<GameApp />)
+    await user.click(await screen.findByRole('tab', { name: 'Completion' }))
+    expect(
+      await screen.findByRole('heading', { name: 'Ride the reference lines.' }),
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Activity' }))
+    expect(
+      await screen.findByRole('heading', { name: 'Ride together, privately.' }),
+    ).toBeInTheDocument()
+  })
 })

@@ -214,7 +214,12 @@ test('game map Retry repeats a failed map request', async ({ page }) => {
     })
   })
 
+  const failedMapRequest = page.waitForRequest(
+    (request) =>
+      request.url().includes('/api/v1/game/competitions/') && request.url().includes('/map/'),
+  )
   await page.goto('/game')
+  await failedMapRequest
   await expect(page.getByRole('alert')).toBeVisible()
   await page.getByRole('button', { name: /retry/i }).click()
   await expect(page.getByRole('button', { name: activity.calendar_date })).toBeVisible()

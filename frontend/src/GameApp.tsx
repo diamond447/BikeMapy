@@ -11,6 +11,7 @@ import type { FilterSpecification } from 'maplibre-gl'
 import { apiClient, rememberCsrfToken } from './api/client'
 import type { components } from './api/generated/schema'
 import { GameAccount } from './components/GameAccount'
+import { CompletionDashboard } from './components/CompletionDashboard'
 import { subscribeToGameDataRefresh, subscribeToGameMapReset } from './gameState'
 import { MAP_PROVIDER } from './mapProvider'
 import { setMapLibreWorker } from './maplibreWorker'
@@ -547,7 +548,17 @@ export default function GameApp() {
   const [mapLoading, setMapLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [signedOut, setSignedOut] = useState(false)
+  const [competitionDisabled, setCompetitionDisabled] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<'activity' | 'completion'>(() => {
+    try {
+      return sessionStorage.getItem('bikemapy:game-view') === 'completion'
+        ? 'completion'
+        : 'activity'
+    } catch {
+      return 'activity'
+    }
+  })
   const [traceListLimit, setTraceListLimit] = useState(TRACE_PAGE_SIZE)
   const [mapReady, setMapReady] = useState(false)
   const traceCloseRef = useRef<HTMLButtonElement>(null)
@@ -612,6 +623,7 @@ export default function GameApp() {
     clearMapData()
     setLoading(true)
     setError(null)
+    setCompetitionDisabled(false)
     try {
       const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
       rememberCsrfToken(result.response)
@@ -621,8 +633,16 @@ export default function GameApp() {
         setCompetitions([])
         return
       }
+      if (result.response?.status === 404) {
+        setSignedOut(false)
+        setCompetitions([])
+        setCompetitionId(undefined)
+        setCompetitionDisabled(true)
+        return
+      }
       if (!result.data) throw new Error('competition-load')
       setSignedOut(false)
+      setCompetitionDisabled(false)
       setRosterMembers([])
       setRosterCursor(null)
       setCompetitions(result.data.competitions)
@@ -849,7 +869,7 @@ export default function GameApp() {
   }, [loadMap])
 
   useEffect(() => {
-    if (!mapNode.current || map.current) return
+    if (viewMode !== 'activity' || !mapNode.current || map.current) return
     setMapLibreWorker(setWorkerUrl)
     const instance = new MapLibreMap({
       container: mapNode.current,
@@ -1065,7 +1085,7 @@ export default function GameApp() {
       instance.remove()
       map.current = null
     }
-  }, [benchmarkFullUpdate, scheduleMapLoad])
+  }, [benchmarkFullUpdate, scheduleMapLoad, viewMode])
 
   useEffect(() => {
     if (!competitionId) return
@@ -1181,6 +1201,15 @@ export default function GameApp() {
       )
     })
 
+  const changeViewMode = (mode: 'activity' | 'completion') => {
+    setViewMode(mode)
+    try {
+      sessionStorage.setItem('bikemapy:game-view', mode)
+    } catch {
+      /* Private browsing can disable session storage. */
+    }
+  }
+
   return (
     <main className="game-shell">
       <header className="game-topbar">
@@ -1202,157 +1231,195 @@ export default function GameApp() {
           <GameAccount copy={copy} />
         </div>
       </header>
-      <section className="game-map-layout" aria-labelledby="game-map-title">
-        <aside className="game-map-controls">
-          <span className="game-account-kicker">{copy.gameMapKicker}</span>
-          <h1 id="game-map-title">{copy.gameMapTitle}</h1>
-          <p>{copy.gameMapDescription}</p>
-          {signedOut ? (
-            <div className="game-map-state">
-              <strong>{copy.gameMapSignedOut}</strong>
-              <p>{copy.gameMapSignedOutDescription}</p>
-            </div>
-          ) : loading ? (
-            <p role="status">{copy.gameMapLoading}</p>
-          ) : error ? (
-            <div className="game-map-state">
-              <p role="alert">{error}</p>
-              <button type="button" onClick={() => void loadCompetitions()}>
-                {copy.gameMapRetry}
-              </button>
-            </div>
-          ) : competitions.length === 0 ? (
-            <p>{copy.gameMapNoCompetitions}</p>
-          ) : (
-            <>
-              <label className="game-map-label" htmlFor="game-competition">
-                {copy.gameMapCompetition}
-              </label>
-              <select
-                id="game-competition"
-                value={competitionId ?? ''}
-                onChange={(event) => {
-                  clearMapData()
-                  setRosterMembers([])
-                  setRosterCursor(null)
-                  setCompetitionId(event.target.value)
-                }}
-              >
-                {competitions.map((competition) => (
-                  <option value={competition.id} key={competition.id}>
-                    {competition.name}
-                  </option>
-                ))}
-              </select>
-              <fieldset className="game-member-list">
-                <legend>{copy.gameMapMembers}</legend>
-                {mapMembers.map((member) => (
-                  <label key={member.player_id}>
-                    <input
-                      type="checkbox"
-                      checked={
-                        visibleMembers === null
-                          ? defaultMapMemberIds.has(member.player_id)
-                          : visibleMembers.includes(member.player_id)
-                      }
-                      onChange={() => toggleMember(member.player_id)}
-                    />
-                    <span
-                      className="member-swatch"
-                      style={{ backgroundColor: member.color }}
-                      aria-hidden="true"
-                    />
-                    {member.nickname || member.display_name}
-                  </label>
-                ))}
-                {mapMembers.length > MAX_MAP_MEMBERS && (
-                  <p className="game-map-member-limit" role="status">
-                    {copy.gameMapMemberLimit}
-                  </p>
-                )}
-                {selectedCompetition?.roster_truncated && rosterCursor && (
-                  <button
-                    type="button"
-                    className="game-map-more-traces"
-                    onClick={() => void loadRosterPage(selectedCompetition, rosterCursor)}
-                  >
-                    {copy.gameCompetitionMemberLoadMore}
-                  </button>
-                )}
-              </fieldset>
-              {mapData && (
-                <p className="game-map-status" role="status">
-                  {statusMessage(mapData.status, copy)}
-                  {mapData.truncated ? ` ${copy.gameMapTruncated}` : ''}
-                </p>
-              )}
-              {mapData && mapData.activities.length > 0 && (
-                <section className="game-trace-list" aria-labelledby="game-trace-list-title">
-                  <h2 id="game-trace-list-title">{copy.gameMapTraceList}</h2>
-                  <div id="game-trace-viewport" ref={traceListRef} className="game-trace-viewport">
-                    {traceButtons}
-                  </div>
-                  {traceListLimit < traceActivities.length && (
+      <div className="game-view-switch" role="tablist" aria-label="Game view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === 'activity'}
+          className={viewMode === 'activity' ? 'is-active' : ''}
+          onClick={() => changeViewMode('activity')}
+        >
+          {copy.gameActivityMode}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === 'completion'}
+          className={viewMode === 'completion' ? 'is-active' : ''}
+          onClick={() => changeViewMode('completion')}
+        >
+          {copy.gameCompletionMode}
+        </button>
+      </div>
+      {viewMode === 'completion' ? (
+        <CompletionDashboard
+          copy={copy}
+          competitions={competitions}
+          competitionId={competitionId}
+          setCompetitionId={(id) => {
+            clearMapData()
+            setCompetitionId(id)
+          }}
+          signedOut={signedOut}
+          competitionDisabled={competitionDisabled}
+        />
+      ) : (
+        <section className="game-map-layout" aria-labelledby="game-map-title">
+          <aside className="game-map-controls">
+            <span className="game-account-kicker">{copy.gameMapKicker}</span>
+            <h1 id="game-map-title">{copy.gameMapTitle}</h1>
+            <p>{copy.gameMapDescription}</p>
+            {signedOut ? (
+              <div className="game-map-state">
+                <strong>{copy.gameMapSignedOut}</strong>
+                <p>{copy.gameMapSignedOutDescription}</p>
+              </div>
+            ) : loading ? (
+              <p role="status">{copy.gameMapLoading}</p>
+            ) : error ? (
+              <div className="game-map-state">
+                <p role="alert">{error}</p>
+                <button type="button" onClick={() => void loadCompetitions()}>
+                  {copy.gameMapRetry}
+                </button>
+              </div>
+            ) : competitions.length === 0 ? (
+              <p>{copy.gameMapNoCompetitions}</p>
+            ) : (
+              <>
+                <label className="game-map-label" htmlFor="game-competition">
+                  {copy.gameMapCompetition}
+                </label>
+                <select
+                  id="game-competition"
+                  value={competitionId ?? ''}
+                  onChange={(event) => {
+                    clearMapData()
+                    setRosterMembers([])
+                    setRosterCursor(null)
+                    setCompetitionId(event.target.value)
+                  }}
+                >
+                  {competitions.map((competition) => (
+                    <option value={competition.id} key={competition.id}>
+                      {competition.name}
+                    </option>
+                  ))}
+                </select>
+                <fieldset className="game-member-list">
+                  <legend>{copy.gameMapMembers}</legend>
+                  {mapMembers.map((member) => (
+                    <label key={member.player_id}>
+                      <input
+                        type="checkbox"
+                        checked={
+                          visibleMembers === null
+                            ? defaultMapMemberIds.has(member.player_id)
+                            : visibleMembers.includes(member.player_id)
+                        }
+                        onChange={() => toggleMember(member.player_id)}
+                      />
+                      <span
+                        className="member-swatch"
+                        style={{ backgroundColor: member.color }}
+                        aria-hidden="true"
+                      />
+                      {member.nickname || member.display_name}
+                    </label>
+                  ))}
+                  {mapMembers.length > MAX_MAP_MEMBERS && (
+                    <p className="game-map-member-limit" role="status">
+                      {copy.gameMapMemberLimit}
+                    </p>
+                  )}
+                  {selectedCompetition?.roster_truncated && rosterCursor && (
                     <button
                       type="button"
                       className="game-map-more-traces"
-                      aria-controls="game-trace-viewport"
-                      onClick={() => setTraceListLimit((limit) => limit + TRACE_PAGE_SIZE)}
+                      onClick={() => void loadRosterPage(selectedCompetition, rosterCursor)}
                     >
-                      {copy.gameMapShowMore}
+                      {copy.gameCompetitionMemberLoadMore}
                     </button>
                   )}
-                </section>
-              )}
-            </>
-          )}
-        </aside>
-        <section
-          className="game-map-stage"
-          aria-label={copy.gameMapInteractive}
-          data-map-source-loaded={mapReady ? 'true' : 'false'}
-          data-map-response-loaded={mapData ? 'true' : 'false'}
-        >
-          <div
-            ref={mapNode}
-            className="game-map-canvas"
-            role="application"
+                </fieldset>
+                {mapData && (
+                  <p className="game-map-status" role="status">
+                    {statusMessage(mapData.status, copy)}
+                    {mapData.truncated ? ` ${copy.gameMapTruncated}` : ''}
+                  </p>
+                )}
+                {mapData && mapData.activities.length > 0 && (
+                  <section className="game-trace-list" aria-labelledby="game-trace-list-title">
+                    <h2 id="game-trace-list-title">{copy.gameMapTraceList}</h2>
+                    <div
+                      id="game-trace-viewport"
+                      ref={traceListRef}
+                      className="game-trace-viewport"
+                    >
+                      {traceButtons}
+                    </div>
+                    {traceListLimit < traceActivities.length && (
+                      <button
+                        type="button"
+                        className="game-map-more-traces"
+                        aria-controls="game-trace-viewport"
+                        onClick={() => setTraceListLimit((limit) => limit + TRACE_PAGE_SIZE)}
+                      >
+                        {copy.gameMapShowMore}
+                      </button>
+                    )}
+                  </section>
+                )}
+              </>
+            )}
+          </aside>
+          <section
+            className="game-map-stage"
             aria-label={copy.gameMapInteractive}
-          />
-          {mapLoading && (
-            <span className="game-map-loading" role="status">
-              {copy.gameMapLoading}
-            </span>
-          )}
-          {selectedTrace && (
-            <aside
-              className="game-trace-detail"
-              aria-label={copy.gameMapTraceDetail}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  event.preventDefault()
-                  closeTrace()
-                }
-              }}
-            >
-              <button
-                ref={traceCloseRef}
-                type="button"
-                className="game-trace-close"
-                onClick={closeTrace}
-                aria-label={copy.gameMapCloseTrace}
+            data-map-source-loaded={mapReady ? 'true' : 'false'}
+            data-map-response-loaded={mapData ? 'true' : 'false'}
+          >
+            <div
+              ref={mapNode}
+              className="game-map-canvas"
+              role="application"
+              aria-label={copy.gameMapInteractive}
+            />
+            {mapLoading && (
+              <span className="game-map-loading" role="status">
+                {copy.gameMapLoading}
+              </span>
+            )}
+            {selectedTrace && (
+              <aside
+                className="game-trace-detail"
+                aria-label={copy.gameMapTraceDetail}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    closeTrace()
+                  }
+                }}
               >
-                ×
-              </button>
-              <span className="game-account-kicker">{copy.gameMapTraceDetail}</span>
-              <strong>{copy.gameMapRideDate}</strong>
-              <time dateTime={selectedTrace.calendar_date ?? undefined}>
-                {selectedTrace.calendar_date ?? copy.gameMapDateUnknown}
-              </time>
-            </aside>
-          )}
+                <button
+                  ref={traceCloseRef}
+                  type="button"
+                  className="game-trace-close"
+                  onClick={closeTrace}
+                  aria-label={copy.gameMapCloseTrace}
+                >
+                  ×
+                </button>
+                <span className="game-account-kicker">{copy.gameMapTraceDetail}</span>
+                <strong>{copy.gameMapRideDate}</strong>
+                <time dateTime={selectedTrace.calendar_date ?? undefined}>
+                  {selectedTrace.calendar_date ?? copy.gameMapDateUnknown}
+                </time>
+              </aside>
+            )}
+          </section>
         </section>
-      </section>
+      )}
     </main>
   )
 }

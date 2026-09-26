@@ -591,6 +591,13 @@ export interface components {
       roster_truncated: boolean
       sharing_scope: components['schemas']['SharingScopeEnum']
     }
+    /**
+     * @description * `available` - available
+     *     * `consent_required` - consent_required
+     *     * `competition_disabled` - competition_disabled
+     * @enum {string}
+     */
+    CompetitionAccessEnum: 'available' | 'consent_required' | 'competition_disabled'
     CompetitionCreate: {
       name: string
       color?: string
@@ -682,6 +689,12 @@ export interface components {
       /** Format: date-time */
       calculated_at: string | null
       error: string
+      covered_geometry: unknown
+      monthly: {
+        [key: string]: unknown
+      }[]
+      partial: boolean
+      sync_status: string
     }
     ElevationProfilePoint: {
       /** Format: double */
@@ -793,9 +806,17 @@ export interface components {
       version: number
       player: components['schemas']['CompletionProjection'] | null
       competition: components['schemas']['CompletionProjection'] | null
+      competition_access: components['schemas']['CompetitionAccessEnum']
       stages: {
         [key: string]: unknown
       }[]
+      title: string
+      route_number: string
+      source_kind: string
+      geometry: unknown
+      attribution: {
+        [key: string]: unknown
+      }
     }
     ReferenceRoute: {
       /** Format: uuid */
@@ -809,6 +830,7 @@ export interface components {
       readonly attribution: {
         [key: string]: unknown
       }
+      readonly source_kind: string
       readonly version: number
       readonly version_attribution_metadata: {
         [key: string]: unknown
@@ -828,6 +850,7 @@ export interface components {
       readonly attribution: {
         [key: string]: unknown
       }
+      readonly source_kind: string
     }
     ReferenceStage: {
       /** Format: uuid */
@@ -2334,6 +2357,7 @@ export interface operations {
   v1_game_reference_routes_list: {
     parameters: {
       query?: {
+        competition_id?: string
         cursor?: string
         page_size?: number
         route_number?: string
@@ -2378,7 +2402,9 @@ export interface operations {
   }
   v1_game_reference_routes_completion_retrieve: {
     parameters: {
-      query?: never
+      query?: {
+        competition_id?: string
+      }
       header?: never
       path: {
         route_id: string

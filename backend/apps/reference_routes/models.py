@@ -862,6 +862,7 @@ class RouteCompletion(models.Model):
     membership_revision = models.PositiveBigIntegerField(blank=True, null=True)
     evidence_digest = models.CharField(max_length=64, blank=True)
     evidence_generation = models.UUIDField(default=uuid.uuid4, editable=False)
+    covered_geometry = RouteCoverageGeometryField(blank=True, null=True)
     error = models.TextField(blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 

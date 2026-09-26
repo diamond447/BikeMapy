@@ -5,7 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -20,8 +20,11 @@ from apps.accounts.competition_services import (
     create_competition,
     grant_sharing_consent,
     join_competition,
+    leave_competition,
+    remove_member,
+    withdraw_sharing_consent,
 )
-from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
+from apps.accounts.models import CompetitionMembership, ImportedActivity, Player, StravaSyncState
 from apps.accounts.services import delete_player
 from apps.reference_routes.completion_services import (
     CompletionLeaseLost,
@@ -265,6 +268,7 @@ def test_activity_deletion_erases_immutable_completion_evidence() -> None:
     assert completion.status == CompletionStatus.PENDING
     assert completion.covered_length_meters == Decimal("0")
     assert completion.completion_percent == Decimal("0")
+    assert completion.covered_geometry is None
 
 
 @override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
@@ -305,6 +309,7 @@ def test_account_deletion_erases_surviving_competition_evidence() -> None:
     assert not RouteCompletionMonthly.objects.filter(
         route_version=version, competition=competition
     ).exists()
+    assert surviving_completion.covered_geometry is None
 
 
 @override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True)
@@ -571,6 +576,7 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
         confirmed=True,
     )
     _activity(player, "api", [[14, 50], [14.02, 50]], date(2026, 4, 1))
+    StravaSyncState.objects.create(player=player, status=StravaSyncState.Status.PAUSED)
     calculate_completion(version, CompletionSubject.PLAYER, player=player)
 
     client = Client()
@@ -586,6 +592,8 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     assert body["player"]["status"] == "fresh"
     assert body["player"]["covered_length_meters"] != "0.000"
     assert body["competition"]["status"] == "pending"
+    assert body["player"]["partial"] is True
+    assert body["player"]["sync_status"] == "paused"
     assert body["route_id"] == str(route.pk)
     assert competition.is_active
     assert response["Cache-Control"] == "private, no-store"
@@ -605,3 +613,155 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     collection.permission_granted = False
     collection.save(update_fields=("permission_granted", "updated_at"))
     assert client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/").status_code == 404
+
+
+@override_settings(
+    GAME_ENABLED=True,
+    COMPETITION_GAME_ENABLED=True,
+    STRAVA_OAUTH_CLIENT_ID="client",
+    STRAVA_OAUTH_CLIENT_SECRET="secret",
+    STRAVA_TOKEN_ENCRYPTION_KEY="token-key",
+    STRAVA_IDENTITY_GUARD_KEY="identity-key",
+    REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True,
+)
+def test_completion_group_sync_status_ignores_nonconsenting_members() -> None:
+    version = _version()
+    route = version.route
+    version.active = True
+    version.save(update_fields=("active",))
+    route.active = True
+    route.publication_status = "approved"
+    route.save(update_fields=("active", "publication_status", "updated_at"))
+    owner = _player(50)
+    active_member = _player(51)
+    nonconsenting_member = _player(52)
+    competition, _ = create_competition(owner, name="Sync status competition")
+    join_competition(active_member, invite_code=competition.invite_code)
+    join_competition(nonconsenting_member, invite_code=competition.invite_code)
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    grant_sharing_consent(
+        active_member,
+        competition,
+        scope="full_history",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    StravaSyncState.objects.update_or_create(
+        player=owner, defaults={"status": StravaSyncState.Status.PAUSED}
+    )
+    StravaSyncState.objects.update_or_create(
+        player=active_member, defaults={"status": StravaSyncState.Status.FAILED}
+    )
+    StravaSyncState.objects.update_or_create(
+        player=nonconsenting_member, defaults={"status": StravaSyncState.Status.FAILED}
+    )
+
+    client = Client()
+    client.force_login(owner.user)
+    session = client.session
+    session["player_id"] = owner.pk
+    session["player_session_epoch"] = owner.session_epoch
+    session.save()
+    url = f"/api/v1/game/reference-routes/{route.pk}/completion/"
+
+    assert client.get(url).json()["competition"]["sync_status"] == "failed"
+    withdraw_sharing_consent(active_member, competition)
+    body = client.get(url).json()
+    assert body["competition"]["sync_status"] == "paused"
+    assert body["competition"]["partial"] is True
+
+
+@override_settings(
+    GAME_ENABLED=True,
+    COMPETITION_GAME_ENABLED=True,
+    STRAVA_OAUTH_CLIENT_ID="client",
+    STRAVA_OAUTH_CLIENT_SECRET="secret",
+    STRAVA_TOKEN_ENCRYPTION_KEY="token-key",
+    STRAVA_IDENTITY_GUARD_KEY="identity-key",
+    REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=True,
+)
+@requires_gis_runtime
+@pytest.mark.parametrize("operation", ("withdraw", "leave", "remove"))
+@pytest.mark.parametrize(
+    "job_status", (RouteCompletionJob.Status.FAILED, RouteCompletionJob.Status.RUNNING)
+)
+def test_competition_privacy_reset_redacts_projection_before_recomputation(
+    operation: str, job_status: str
+) -> None:
+    version = _version()
+    route = version.route
+    version.active = True
+    version.save(update_fields=("active",))
+    route.active = True
+    route.publication_status = "approved"
+    route.save(update_fields=("active", "publication_status", "updated_at"))
+    owner = _player(60)
+    member = _player(61)
+    competition, _ = create_competition(owner, name=f"Privacy {operation}")
+    join_competition(member, invite_code=competition.invite_code)
+    for player, scope in (
+        (owner, "recent"),
+        (member, "full_history"),
+    ):
+        grant_sharing_consent(
+            player,
+            competition,
+            scope=scope,
+            disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+            confirmed=True,
+        )
+    _activity(owner, f"privacy-{operation}", [[14, 50], [14.03, 50]], date(2026, 8, 1))
+    completion = calculate_completion(
+        version, CompletionSubject.COMPETITION, competition=competition
+    )
+    assert completion.status == CompletionStatus.FRESH
+    assert completion.covered_geometry is not None
+    assert RouteCompletionMonthly.objects.filter(competition=competition).exists()
+    job = RouteCompletionJob.objects.filter(route_version=version, competition=competition).latest(
+        "pk"
+    )
+    job.status = job_status
+    job.error = (
+        "delayed worker" if job_status == RouteCompletionJob.Status.RUNNING else "worker failed"
+    )
+    job.lease_token = "delayed-worker" if job_status == RouteCompletionJob.Status.RUNNING else ""
+    job.save(update_fields=("status", "error", "lease_token"))
+
+    if operation == "withdraw":
+        withdraw_sharing_consent(owner, competition)
+    elif operation == "leave":
+        leave_competition(member, competition)
+    else:
+        remove_member(owner, competition, member)
+
+    completion.refresh_from_db()
+    redacted = cast(Any, completion)
+    assert redacted.status == CompletionStatus.PENDING
+    assert redacted.covered_geometry is None
+    assert redacted.covered_length_meters == Decimal("0")
+    assert redacted.completion_percent == Decimal("0")
+    assert not RouteCompletionMonthly.objects.filter(competition=competition).exists()
+    job.refresh_from_db()
+    assert job.status == RouteCompletionJob.Status.PENDING
+    assert job.lease_token == ""
+
+    client = Client()
+    client.force_login(owner.user)
+    session = client.session
+    session["player_id"] = owner.pk
+    session["player_session_epoch"] = owner.session_epoch
+    session.save()
+    response = client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/")
+    assert response.status_code == 200
+    projection = response.json()["competition"]
+    assert projection["status"] == "pending"
+    assert projection["covered_length_meters"] == "0.000"
+    assert projection["completion_percent"] == "0.000"
+    assert projection["covered_geometry"] is None
+    assert projection["monthly"] == []

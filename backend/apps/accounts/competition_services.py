@@ -664,6 +664,9 @@ def remove_member(
     except CompetitionMembership.DoesNotExist as exc:
         raise CompetitionError("Competition not found.", code="not_found") from exc
     CompetitionResult.objects.filter(competition=locked, player=member).delete()
+    from apps.reference_routes.completion_services import reset_competition_completion_data
+
+    reset_competition_completion_data(locked, player_id=member.pk)
     membership.delete()
     if member.active_competition_id == locked.pk:
         replacement = (
@@ -690,6 +693,9 @@ def leave_competition(player: Player, competition: Competition) -> CompetitionRe
             code="owner_cannot_leave",
         )
     CompetitionResult.objects.filter(competition=locked, player=player).delete()
+    from apps.reference_routes.completion_services import reset_competition_completion_data
+
+    reset_competition_completion_data(locked, player_id=player.pk)
     CompetitionMembership.objects.filter(competition=locked, player=player).delete()
     if player.active_competition_id == locked.pk:
         replacement = (
