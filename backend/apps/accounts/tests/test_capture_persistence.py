@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -14,12 +15,15 @@ from apps.accounts.activity_services import remove_activity
 from apps.accounts.capture_services import (
     CaptureCalculationBusy,
     CaptureCalculationError,
+    _line_coordinates,
     calculate_capture,
     claim_capture_calculation,
     current_capture,
 )
 from apps.accounts.competition_services import (
+    CURRENT_SHARING_DISCLOSURE_VERSION,
     create_competition,
+    grant_sharing_consent,
     join_competition,
     remove_member,
     schedule_recomputation,
@@ -27,6 +31,7 @@ from apps.accounts.competition_services import (
 from apps.accounts.models import (
     CaptureCalculation,
     CapturePlayerArea,
+    Competition,
     CompetitionRecomputation,
     ImportedActivity,
     Player,
@@ -68,8 +73,9 @@ def _activity(
     provider_id: str,
     points: tuple[tuple[float, float], ...],
     day: int,
+    year: int = 2025,
 ) -> ImportedActivity:
-    started_at = datetime(2025, 1, day, 12, tzinfo=UTC)
+    started_at = datetime(year, 1, day, 12, tzinfo=UTC)
     return ImportedActivity.objects.create(
         player=player,
         provider_activity_id=provider_id,
@@ -78,6 +84,64 @@ def _activity(
         geometry=_line(points),
         geometry_hash=provider_id,
     )
+
+
+def test_capture_excludes_unconsented_and_out_of_window_activity() -> None:
+    owner = _player(1005)
+    member = _player(1006)
+    competition, _ = create_competition(owner, name="Capture privacy")
+    _grant_capture_consent(owner, competition)
+    join_competition(member, invite_code=competition.invite_code)
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "owner-recent", square, 2, year=2026)
+    _activity(member, "member-without-consent", square, 3, year=2026)
+
+    calculation = calculate_capture(competition)
+
+    assert calculation.trace_count == 1
+    assert {trace.player_id for trace in calculation.faces.first().owners.all()} == {owner.pk}
+
+
+def test_recent_consent_excludes_activity_before_the_cutoff() -> None:
+    owner = _player(1007)
+    competition, _ = create_competition(owner, name="Recent capture privacy")
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
+    _activity(owner, "old-activity", square, 2, year=2024)
+    _activity(owner, "recent-activity", square, 3, year=2026)
+
+    calculation = calculate_capture(competition)
+
+    assert calculation.trace_count == 1
+
+
+def _grant_capture_consent(player: Player, competition: Competition) -> None:
+    grant_sharing_consent(
+        player,
+        competition,
+        scope="full_history",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+
+
+def test_capture_rejects_oversized_geometry_before_coordinate_materialization() -> None:
+    geometry = SimpleNamespace(
+        empty=False,
+        geom_type="LineString",
+        num_coords=30_001,
+        srid=4326,
+        coords=(),
+    )
+
+    with pytest.raises(CaptureCalculationError, match="coordinate limit"):
+        _line_coordinates(geometry, max_coordinates=30_000, max_parts=1)
 
 
 def _projection_signature(calculation: CaptureCalculation) -> tuple[object, ...]:
@@ -102,6 +166,8 @@ def test_persists_atomic_faces_shared_owners_and_equal_player_areas() -> None:
     member = _player(1002)
     competition, _ = create_competition(owner, name="Persistent capture")
     join_competition(member, invite_code=competition.invite_code)
+    _grant_capture_consent(owner, competition)
+    _grant_capture_consent(member, competition)
     outer = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     overlap = ((14.005, 50.0), (14.015, 50.0), (14.015, 50.01), (14.005, 50.01), (14.005, 50.0))
     _activity(owner, "outer", outer, 2)
@@ -136,6 +202,8 @@ def test_newer_inner_claim_wins_and_failed_rebuild_preserves_current() -> None:
     member = _player(1012)
     competition, _ = create_competition(owner, name="Chronology")
     join_competition(member, invite_code=competition.invite_code)
+    _grant_capture_consent(owner, competition)
+    _grant_capture_consent(member, competition)
     outer = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     inner = (
         (14.002, 50.002),
@@ -176,6 +244,7 @@ def test_newer_inner_claim_wins_and_failed_rebuild_preserves_current() -> None:
 def test_membership_capture_generation_is_bounded_and_dispatched() -> None:
     owner = _player(1021)
     competition, _ = create_competition(owner, name="Queued capture")
+    _grant_capture_consent(owner, competition)
     points = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     _activity(owner, "queued-boundary", points, 2)
 
@@ -192,6 +261,7 @@ def test_join_after_current_snapshot_queues_and_publishes_new_generation() -> No
     owner = _player(1031)
     member = _player(1032)
     competition, _ = create_competition(owner, name="Join after snapshot")
+    _grant_capture_consent(owner, competition)
     square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     _activity(owner, "owner-boundary", square, 2)
     _activity(member, "member-boundary", square, 4)
@@ -200,24 +270,26 @@ def test_join_after_current_snapshot_queues_and_publishes_new_generation() -> No
         "processed": 1,
         "failed": 0,
     }
+    competition.refresh_from_db()
     first = current_capture(competition)
     assert first is not None
-    assert first.generation == 0
+    assert first.generation == competition.capture_revision
 
     joined_competition, _ = join_competition(member, invite_code=competition.invite_code)
-    assert joined_competition.revision == 1
+    _grant_capture_consent(member, competition)
+    assert joined_competition.revision == 0
 
     competition.refresh_from_db()
-    assert competition.revision == 1
-    job = CompetitionRecomputation.objects.get(competition=competition, generation=1)
-    queued = CaptureCalculation.objects.get(competition=competition, generation=1)
-    assert job.status == CompetitionRecomputation.Status.PENDING
+    assert competition.revision == 0
+    queued = CaptureCalculation.objects.get(
+        competition=competition, generation=competition.capture_revision
+    )
     assert queued.status == CaptureCalculation.Status.PENDING
-    recompute_competition_results_task.apply(args=[job.pk]).get()
+    dispatch_capture_calculations_task.apply(args=[1]).get()
 
     current = current_capture(competition)
     assert current is not None
-    assert current.generation == 1
+    assert current.generation == competition.capture_revision
     face = current.faces.first()
     assert face is not None
     assert set(face.owners.values_list("player_id", flat=True)) == {member.pk}
@@ -228,18 +300,23 @@ def test_activity_removal_publishes_generation_without_removed_trace() -> None:
     member = _player(1082)
     competition, _ = create_competition(owner, name="Activity removal")
     join_competition(member, invite_code=competition.invite_code)
+    _grant_capture_consent(owner, competition)
+    _grant_capture_consent(member, competition)
     square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     _activity(owner, "activity-owner", square, 2)
     _activity(member, "activity-removed", square, 4)
     calculate_capture(competition)
 
     assert remove_activity(member, "activity-removed", reason="privacy")
-    job = CompetitionRecomputation.objects.get(competition=competition, generation=2)
+    competition.refresh_from_db()
+    job = CompetitionRecomputation.objects.get(
+        competition=competition, generation=competition.revision
+    )
     recompute_competition_results_task.apply(args=[job.pk]).get()
 
     current = current_capture(competition)
     assert current is not None
-    assert current.generation == 2
+    assert current.generation == competition.capture_revision
     assert current.trace_count == 1
     assert all(
         owner_row.player_id != member.pk
@@ -254,6 +331,8 @@ def test_member_removal_publishes_generation_without_removed_owner() -> None:
     member = _player(1092)
     competition, _ = create_competition(owner, name="Member removal")
     join_competition(member, invite_code=competition.invite_code)
+    _grant_capture_consent(owner, competition)
+    _grant_capture_consent(member, competition)
     square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     _activity(owner, "member-removal-owner", square, 2)
     _activity(member, "member-removal-member", square, 4)
@@ -262,9 +341,10 @@ def test_member_removal_publishes_generation_without_removed_owner() -> None:
     job = remove_member(owner, competition, member)
     recompute_competition_results_task.apply(args=[job.pk]).get()
 
+    competition.refresh_from_db()
     current = current_capture(competition)
     assert current is not None
-    assert current.generation == 2
+    assert current.generation == competition.capture_revision
     assert current.trace_count == 1
     assert all(
         owner_row.player_id != member.pk
@@ -278,19 +358,29 @@ def test_account_deletion_publishes_generation_without_deleted_member_input() ->
     member = _player(1102)
     competition, _ = create_competition(owner, name="Account deletion")
     join_competition(member, invite_code=competition.invite_code)
+    _grant_capture_consent(owner, competition)
+    _grant_capture_consent(member, competition)
     square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     _activity(owner, "deletion-owner", square, 2)
     _activity(member, "deletion-member", square, 4)
-    calculate_capture(competition)
+    first = calculate_capture(competition)
 
     member_id = member.pk
     delete_player(member)
-    job = CompetitionRecomputation.objects.get(competition=competition, generation=2)
+    first.refresh_from_db()
+    assert first.faces.exists()
+    assert any(
+        owner_row.player_id is None for face in first.faces.all() for owner_row in face.owners.all()
+    )
+    competition.refresh_from_db()
+    job = CompetitionRecomputation.objects.get(
+        competition=competition, generation=competition.revision
+    )
     recompute_competition_results_task.apply(args=[job.pk]).get()
 
     current = current_capture(competition)
     assert current is not None
-    assert current.generation == 2
+    assert current.generation == competition.capture_revision
     assert current.trace_count == 1
     assert not Player.objects.filter(pk=member_id).exists()
     assert all(
@@ -303,12 +393,13 @@ def test_account_deletion_publishes_generation_without_deleted_member_input() ->
 def test_stale_generation_is_persisted_without_replacing_current_snapshot() -> None:
     owner = _player(1041)
     competition, _ = create_competition(owner, name="Stale generation")
+    _grant_capture_consent(owner, competition)
     square = ((14.0, 50.0), (14.01, 50.0), (14.01, 50.01), (14.0, 50.01), (14.0, 50.0))
     _activity(owner, "stale-boundary", square, 2)
     first = calculate_capture(competition)
 
     older_job = schedule_recomputation(competition)
-    older, token = claim_capture_calculation(competition, generation=older_job.generation)
+    older, token = claim_capture_calculation(competition, generation=competition.capture_revision)
     assert token is not None
     schedule_recomputation(competition)
 

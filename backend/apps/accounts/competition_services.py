@@ -486,52 +486,64 @@ def schedule_recomputation(
     *,
     affected_player_id: int | None = None,
     bump_revision: bool = True,
+    completion_reason: str = "competition-membership-or-activity-change",
 ) -> CompetitionRecomputation:
-    if bump_revision:
-        competition.revision += 1
-        competition.save(update_fields=("revision", "updated_at"))
-    job, _ = CompetitionRecomputation.objects.get_or_create(
-        competition=competition,
-        generation=competition.revision,
-        defaults={"affected_player_id": affected_player_id},
-    )
-    if job.affected_player_id != affected_player_id:
-        job.affected_player_id = affected_player_id
-    if job.status != CompetitionRecomputation.Status.PENDING:
-        job.status = CompetitionRecomputation.Status.PENDING
-        job.completed_at = None
-        job.lease_token = ""
-        job.lease_until = None
-        job.dispatch_token = ""
-        job.dispatch_lease_until = None
-        job.next_attempt_at = timezone.now()
-        job.dispatched_at = None
-        job.error = ""
-    job.save(
-        update_fields=(
-            "affected_player_id",
-            "status",
-            "completed_at",
-            "lease_token",
-            "lease_until",
-            "dispatch_token",
-            "dispatch_lease_until",
-            "next_attempt_at",
-            "dispatched_at",
-            "error",
+    with transaction.atomic():
+        locked_competition = Competition.objects.select_for_update().get(pk=competition.pk)
+        if bump_revision:
+            locked_competition.revision += 1
+            locked_competition.capture_revision += 1
+            locked_competition.save(update_fields=("revision", "capture_revision", "updated_at"))
+        job, _ = CompetitionRecomputation.objects.get_or_create(
+            competition=locked_competition,
+            generation=locked_competition.revision,
+            defaults={"affected_player_id": affected_player_id},
         )
-    )
-    from apps.reference_routes.completion_services import schedule_competition_completions
+        if job.affected_player_id != affected_player_id:
+            job.affected_player_id = affected_player_id
+        if job.status != CompetitionRecomputation.Status.PENDING:
+            job.status = CompetitionRecomputation.Status.PENDING
+            job.completed_at = None
+            job.lease_token = ""
+            job.lease_until = None
+            job.dispatch_token = ""
+            job.dispatch_lease_until = None
+            job.next_attempt_at = timezone.now()
+            job.dispatched_at = None
+            job.error = ""
+        job.save(
+            update_fields=(
+                "affected_player_id",
+                "status",
+                "completed_at",
+                "lease_token",
+                "lease_until",
+                "dispatch_token",
+                "dispatch_lease_until",
+                "next_attempt_at",
+                "dispatched_at",
+                "error",
+            )
+        )
+        from apps.reference_routes.completion_services import schedule_competition_completions
 
-    schedule_competition_completions(
-        competition, reason="competition-membership-or-activity-change"
-    )
-    # Capture has its own immutable projection, but shares this durable
-    # generation so activity and membership changes cannot publish mismatched
-    # completion/capture snapshots.
-    from .capture_services import schedule_capture_calculation
+        schedule_competition_completions(locked_competition, reason=completion_reason)
+        # Capture has its own immutable projection, but shares this durable
+        # generation so activity and membership changes cannot publish mismatched
+        # completion/capture snapshots.
+        from .capture_services import schedule_capture_calculation
 
-    schedule_capture_calculation(competition, reason="recomputation")
+        capture_calculation = schedule_capture_calculation(
+            locked_competition,
+            reason="recomputation",
+            force_new_generation=not bump_revision,
+        )
+        job.capture_generation = capture_calculation.generation
+        job.save(update_fields=("capture_generation",))
+    # Keep callers' model instances coherent with the committed revision.
+    competition.revision = locked_competition.revision
+    competition.capture_revision = locked_competition.capture_revision
+    competition.updated_at = locked_competition.updated_at
     return job
 
 
@@ -586,9 +598,12 @@ def join_competition(
     from apps.reference_routes.completion_services import schedule_competition_completions
 
     schedule_competition_completions(competition, reason="competition-member-joined")
-    # A membership change is a new chronological generation even when there is
-    # no published snapshot yet.
-    schedule_recomputation(competition)
+    # Joining does not create a score recomputation generation. Its route
+    # completion job keeps the member-specific reason, while capture dispatch
+    # handles the new eligible activity set separately.
+    from .capture_services import schedule_capture_calculation
+
+    schedule_capture_calculation(competition, reason="membership-change", force_new_generation=True)
     if player.active_competition_id is None:
         Player.objects.filter(pk=player.pk).update(active_competition=competition)
         player.active_competition = competition

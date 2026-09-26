@@ -9,7 +9,7 @@ from uuid import uuid4
 from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
 from django.db import connection, transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Q
 from django.utils import timezone
 
 from .capture_services import (
@@ -56,22 +56,11 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
     """Claim and retry capture-only generations, such as a new membership."""
 
     now = timezone.now()
-    stale = (
-        CaptureCalculation.objects.filter(
-            status=CaptureCalculation.Status.RUNNING,
-            lease_until__isnull=False,
-            lease_until__lte=now,
-        )
-        .filter(
-            ~Exists(
-                CompetitionRecomputation.objects.filter(
-                    competition_id=OuterRef("competition_id"),
-                    generation=OuterRef("generation"),
-                )
-            )
-        )
-        .order_by("pk")[: max(1, limit)]
-    )
+    stale = CaptureCalculation.objects.filter(
+        status=CaptureCalculation.Status.RUNNING,
+        lease_until__isnull=False,
+        lease_until__lte=now,
+    ).order_by("pk")[: max(1, limit)]
     for stale_calculation in stale:
         CaptureCalculation.objects.filter(
             pk=stale_calculation.pk,
@@ -91,19 +80,30 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             attempts__lt=MAX_CAPTURE_ATTEMPTS,
             next_attempt_at__lte=now,
         )
-        .filter(
-            ~Exists(
-                CompetitionRecomputation.objects.filter(
-                    competition_id=OuterRef("competition_id"),
-                    generation=OuterRef("generation"),
-                )
-            )
-        )
-        .order_by("requested_at", "pk")[: max(1, limit)]
+        .order_by("-generation", "requested_at", "pk")
+        .iterator(chunk_size=32)
     )
+    inspected = 0
     for candidate in candidates:
+        if processed + failed >= max(1, limit):
+            break
+        inspected += 1
+        if inspected > max(100, max(1, limit) * 4):
+            break
         try:
             calculation = CaptureCalculation.objects.get(pk=candidate.pk)
+            if (
+                calculation.generation == calculation.competition.revision
+                and CompetitionRecomputation.objects.filter(
+                    competition=calculation.competition,
+                    generation=calculation.competition.revision,
+                    status__in=(
+                        CompetitionRecomputation.Status.PENDING,
+                        CompetitionRecomputation.Status.RUNNING,
+                    ),
+                ).exists()
+            ):
+                continue
             calculation, token = claim_capture_calculation(
                 calculation.competition, generation=calculation.generation
             )
@@ -238,7 +238,8 @@ def recompute_competition_results_task(job_id: int) -> dict[str, Any]:
         # while preserving the previous current snapshot.
         if connection.vendor == "postgresql":
             capture_calculation, capture_token = claim_capture_calculation(
-                competition, generation=job.generation
+                competition,
+                generation=job.capture_generation or competition.capture_revision,
             )
             if capture_token is not None:
                 calculate_capture(

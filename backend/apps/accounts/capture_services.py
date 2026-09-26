@@ -54,7 +54,9 @@ def _aware(value: datetime | None) -> datetime:
     return value
 
 
-def _line_coordinates(value: Any) -> list[tuple[tuple[float, float], ...]]:
+def _line_coordinates(
+    value: Any, *, max_coordinates: int, max_parts: int
+) -> list[tuple[tuple[float, float], ...]]:
     from django.contrib.gis.geos import GEOSGeometry
 
     if value is None:
@@ -71,6 +73,8 @@ def _line_coordinates(value: Any) -> list[tuple[tuple[float, float], ...]]:
         geometry.srid = 4326
     if geometry.srid != 4326:
         geometry.transform(4326)
+    if getattr(geometry, "num_coords", 0) > max_coordinates:
+        raise CaptureCalculationError(f"coordinate limit exceeded: {max_coordinates}")
     if geometry.geom_type == "LineString":
         parts = [geometry.coords]
     elif geometry.geom_type == "MultiLineString":
@@ -79,7 +83,11 @@ def _line_coordinates(value: Any) -> list[tuple[tuple[float, float], ...]]:
         raise CaptureCalculationError("Activity geometry must be a line.")
     result: list[tuple[tuple[float, float], ...]] = []
     for part in parts:
+        if len(result) >= max_parts:
+            raise CaptureCalculationError(f"trace limit exceeded: {max_parts}")
         coordinates = tuple((float(point[0]), float(point[1])) for point in part)
+        if len(coordinates) > max_coordinates - sum(len(item) for item in result):
+            raise CaptureCalculationError(f"coordinate limit exceeded: {max_coordinates}")
         if len(coordinates) >= 2:
             result.append(coordinates)
     if not result:
@@ -87,26 +95,37 @@ def _line_coordinates(value: Any) -> list[tuple[tuple[float, float], ...]]:
     return result
 
 
-def _activities_for_competition(competition: Competition) -> list[ImportedActivity]:
-    member_ids = competition.memberships.values_list("player_id", flat=True)
-    return list(
-        ImportedActivity.objects.filter(
-            player_id__in=member_ids,
-            removed_at__isnull=True,
-        )
-        .exclude(geometry__isnull=True)
+def _activities_for_competition(competition: Competition) -> Any:
+    """Stream only activities the competition is currently allowed to use."""
+
+    from .competition_services import authorized_activity_queryset
+
+    memberships = competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
+        sharing_scope="none"
+    )
+    return (
+        authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
         .order_by("calendar_date", "started_at", "pk")
+        .iterator(chunk_size=32)
     )
 
 
 def capture_traces(competition: Competition) -> tuple[CaptureTrace, ...]:
     """Build deterministic traces from the current eligible membership set."""
 
-    from .capture_validation import CaptureTrace
+    from .capture_validation import MAX_COORDINATES, MAX_TRACES, CaptureTrace
 
     traces: list[CaptureTrace] = []
+    coordinates_seen = 0
     for activity in _activities_for_competition(competition):
-        parts = _line_coordinates(activity.geometry)
+        remaining_traces = MAX_TRACES - len(traces)
+        if remaining_traces <= 0:
+            raise CaptureCalculationError(f"trace limit exceeded: {MAX_TRACES}")
+        parts = _line_coordinates(
+            activity.geometry,
+            max_coordinates=MAX_COORDINATES - coordinates_seen,
+            max_parts=remaining_traces,
+        )
         recorded_at = _aware(activity.started_at or activity.imported_at)
         for part_index, coordinates in enumerate(parts):
             trace_id = f"{activity.pk}:{part_index}"
@@ -118,6 +137,9 @@ def capture_traces(competition: Competition) -> tuple[CaptureTrace, ...]:
                     coordinates=coordinates,
                 )
             )
+            coordinates_seen += len(coordinates)
+        if len(traces) > MAX_TRACES:
+            raise CaptureCalculationError(f"trace limit exceeded: {MAX_TRACES}")
     return tuple(traces)
 
 
@@ -145,22 +167,34 @@ def _input_digest(competition: Competition, traces: Iterable[CaptureTrace]) -> s
 
 
 def schedule_capture_calculation(
-    competition: Competition, *, reason: str = "activity-change"
+    competition: Competition,
+    *,
+    reason: str = "activity-change",
+    force_new_generation: bool = False,
 ) -> CaptureCalculation:
     """Create or reopen the generation matching the competition revision."""
 
     del reason  # Kept in the API for audit callers; generation is the durable reason.
     with transaction.atomic():
         competition = Competition.objects.select_for_update().get(pk=competition.pk)
+        generation = competition.capture_revision
+        if force_new_generation:
+            generation += 1
+            competition.capture_revision = generation
+            competition.save(update_fields=("capture_revision", "updated_at"))
         calculation, _ = CaptureCalculation.objects.get_or_create(
             competition=competition,
-            generation=competition.revision,
+            generation=generation,
             defaults={
                 "algorithm_version": CAPTURE_ALGORITHM_VERSION,
                 "status": CaptureCalculation.Status.PENDING,
             },
         )
-        if calculation.is_current and calculation.status == CaptureCalculation.Status.FRESH:
+        if (
+            not force_new_generation
+            and calculation.is_current
+            and calculation.status == CaptureCalculation.Status.FRESH
+        ):
             return calculation
         calculation.status = CaptureCalculation.Status.PENDING
         calculation.algorithm_version = CAPTURE_ALGORITHM_VERSION
@@ -227,7 +261,7 @@ def claim_capture_calculation(
     with transaction.atomic():
         if generation is None:
             competition = Competition.objects.get(pk=competition.pk)
-            generation = competition.revision
+            generation = competition.capture_revision
         calculation, _ = CaptureCalculation.objects.get_or_create(
             competition=competition,
             generation=generation,
@@ -341,7 +375,7 @@ def _persist_faces(
                 player_id=player_id,
                 owned_area_m2=_decimal(area),
             )
-        if calculation.generation == competition.revision and (
+        if calculation.generation == competition.capture_revision and (
             current is None or current.generation <= calculation.generation
         ):
             CaptureCalculation.objects.filter(competition=competition, is_current=True).exclude(
@@ -387,8 +421,8 @@ def calculate_capture(
     """Rebuild one immutable capture generation and publish it atomically."""
 
     if generation is None:
-        competition.refresh_from_db(fields=("revision",))
-        generation = competition.revision
+        competition.refresh_from_db(fields=("capture_revision",))
+        generation = competition.capture_revision
     if lease_token is None:
         calculation, lease_token = claim_capture_calculation(competition, generation=generation)
     else:

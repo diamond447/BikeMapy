@@ -122,6 +122,7 @@ class Competition(models.Model):
     invite_code = models.CharField(max_length=32, unique=True, db_index=True)
     is_active = models.BooleanField(default=True)
     revision = models.PositiveBigIntegerField(default=0)
+    capture_revision = models.PositiveBigIntegerField(default=0)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -420,6 +421,7 @@ class CompetitionRecomputation(models.Model):
         Competition, on_delete=models.CASCADE, related_name="recomputations"
     )
     generation = models.PositiveBigIntegerField()
+    capture_generation = models.PositiveBigIntegerField(null=True, blank=True)
     affected_player_id = models.PositiveBigIntegerField(null=True, blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     created_at = models.DateTimeField(default=timezone.now)
@@ -521,7 +523,11 @@ class CaptureFaceOwner(models.Model):
 
     face = models.ForeignKey(CaptureFace, on_delete=models.CASCADE, related_name="owners")
     player = models.ForeignKey(
-        Player, on_delete=models.CASCADE, related_name="capture_face_ownerships"
+        Player,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="capture_face_ownerships",
     )
     shared_area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
 
@@ -543,7 +549,13 @@ class CapturePlayerArea(models.Model):
     calculation = models.ForeignKey(
         CaptureCalculation, on_delete=models.CASCADE, related_name="player_areas"
     )
-    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="capture_areas")
+    player = models.ForeignKey(
+        Player,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="capture_areas",
+    )
     owned_area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
 
     class Meta:
