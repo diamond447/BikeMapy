@@ -340,6 +340,33 @@ def test_dateline_projection_keeps_greenwich_ring_disjoint() -> None:
     assert by_owner[("bob",)].area_m2 == pytest.approx(1_210_000_000, rel=0.08)
 
 
+def test_cross_seam_endpoint_joins_select_safe_projection() -> None:
+    alice = [
+        _trace(
+            "alice-east",
+            "alice",
+            [[179.9998, 0.0], [179.9998, 0.005], [179.9998, 0.01]],
+        ),
+        _trace(
+            "alice-west",
+            "alice",
+            [[-179.9998, 0.0], [-179.9998, 0.005], [-179.9998, 0.01]],
+        ),
+    ]
+    bob = _edges(
+        [[-0.001, 0.004], [0.001, 0.004], [0.001, 0.006], [-0.001, 0.006], [-0.001, 0.004]],
+        "bob",
+        prefix="bob",
+    )
+
+    result = validate_capture(alice + bob)
+
+    by_owner = {face.owner_ids: face for face in result.faces}
+    assert set(by_owner) == {("alice",), ("bob",)}
+    assert by_owner[("alice",)].area_m2 == pytest.approx(24_618, rel=0.2)
+    assert by_owner[("bob",)].area_m2 > 0
+
+
 def test_invalid_input_and_bounded_safe_failure_preserve_last_valid_result() -> None:
     previous = ValidationResult((), 1, 2)
     invalid = [_trace("invalid", "rider", [[14.0, 50.0], [float("nan"), 50.0]])]

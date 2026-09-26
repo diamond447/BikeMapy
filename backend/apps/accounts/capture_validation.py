@@ -198,6 +198,13 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                    input_raw.geom_wgs AS geom_wgs
             FROM input_raw
         ),
+        projection_endpoints AS (
+            SELECT ST_StartPoint(geom_wgs) AS geom_wgs
+            FROM normalized_input
+            UNION ALL
+            SELECT ST_EndPoint(geom_wgs) AS geom_wgs
+            FROM normalized_input
+        ),
         longitude_values AS (
             SELECT DISTINCT ST_X(points.geom) AS longitude
             FROM input_raw
@@ -225,6 +232,17 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                            WHERE ST_XMax(input_raw.geom_wgs)
                                  - ST_XMin(input_raw.geom_wgs) > 180
                        )
+                            OR EXISTS (
+                                SELECT 1
+                                FROM projection_endpoints AS west
+                                CROSS JOIN projection_endpoints AS east
+                                WHERE ST_X(west.geom_wgs) - ST_X(east.geom_wgs) > 180
+                                  AND ST_DWithin(
+                                      west.geom_wgs::geography,
+                                      east.geom_wgs::geography,
+                                      (SELECT join_tolerance FROM settings)
+                                  )
+                            )
                        THEN '+proj=cea +lat_ts=30 +lon_0='
                             || (
                                 CASE
