@@ -546,8 +546,10 @@ def _delete_player_once(
         for competition in surviving_competitions:
             CompetitionResult.objects.filter(competition=competition, player=player).delete()
             CompetitionMembership.objects.filter(competition=competition, player=player).delete()
+            from .capture_services import invalidate_current_capture
             from .competition_services import schedule_recomputation
 
+            invalidate_current_capture(competition)
             schedule_recomputation(competition, affected_player_id=player.pk)
         for competition in affected_competitions:
             if competition.owner_id == player.pk:

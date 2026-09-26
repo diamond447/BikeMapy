@@ -474,6 +474,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.accounts.dispatch_competition_recomputations",
         "schedule": 60,
     },
+    "dispatch-capture-calculations": {
+        "task": "bikemapy.accounts.dispatch_capture_calculations",
+        "schedule": 60,
+    },
     "dispatch-strava-sync": {
         "task": "bikemapy.accounts.dispatch_strava_sync",
         "schedule": 60,
