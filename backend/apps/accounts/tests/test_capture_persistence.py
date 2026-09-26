@@ -577,6 +577,7 @@ def test_standalone_dispatcher_uses_capture_generation_when_revisions_diverge() 
     job = schedule_recomputation(competition)
     replacement = schedule_capture_calculation(competition, force_new_generation=True)
 
+    assert job.capture_generation is not None
     assert replacement.generation != job.capture_generation
     assert dispatch_capture_calculations_task.apply(args=[1]).get() == {
         "processed": 1,
@@ -584,6 +585,47 @@ def test_standalone_dispatcher_uses_capture_generation_when_revisions_diverge() 
     }
     replacement.refresh_from_db()
     assert replacement.status == CaptureCalculation.Status.FRESH
+    stale = CaptureCalculation.objects.get(
+        competition=competition, generation=job.capture_generation
+    )
+    assert stale.status == CaptureCalculation.Status.FAILED
+    assert stale.attempts == 5
+
+
+def test_dispatcher_respects_retryable_failed_recomputation_backoff() -> None:
+    owner = _player(1063)
+    competition, _ = create_competition(owner, name="Dispatcher retry ownership")
+    dispatch_capture_calculations_task.apply(args=[1]).get()
+    job = schedule_recomputation(competition)
+    retry_generation = schedule_recomputation(competition, bump_revision=False)
+    assert retry_generation.pk == job.pk
+    competition.refresh_from_db()
+    assert competition.revision == 1
+    assert competition.capture_revision == 2
+
+    retry_at = timezone.now() + timedelta(minutes=5)
+    CompetitionRecomputation.objects.filter(pk=job.pk).update(
+        status=CompetitionRecomputation.Status.FAILED,
+        attempts=1,
+        next_attempt_at=retry_at,
+        error="temporary recomputation failure",
+    )
+    assert retry_generation.capture_generation is not None
+    retry_capture = CaptureCalculation.objects.get(
+        competition=competition, generation=retry_generation.capture_generation
+    )
+    outcome = dispatch_capture_calculations_task.apply(args=[10]).get()
+
+    assert outcome == {"processed": 0, "failed": 0}
+    retry_capture.refresh_from_db()
+    assert retry_capture.status == CaptureCalculation.Status.PENDING
+    assert current_capture(competition) is not None
+    current = current_capture(competition)
+    assert current is not None
+    assert current.generation == 0
+    stale = CaptureCalculation.objects.get(competition=competition, generation=1)
+    assert stale.status == CaptureCalculation.Status.FAILED
+    assert stale.attempts == 5
 
 
 def test_algorithm_rollout_limit_counts_only_mismatched_snapshots() -> None:

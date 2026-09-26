@@ -9,7 +9,7 @@ from uuid import uuid4
 from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
 from django.db import connection, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from .capture_services import (
@@ -73,6 +73,18 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             lease_token="",
             lease_until=None,
         )
+    CaptureCalculation.objects.filter(
+        status__in=(CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED),
+        generation__lt=F("competition__capture_revision"),
+    ).update(
+        status=CaptureCalculation.Status.FAILED,
+        attempts=MAX_CAPTURE_ATTEMPTS,
+        error="Capture generation superseded by a newer revision.",
+        completed_at=now,
+        next_attempt_at=now,
+        lease_token="",
+        lease_until=None,
+    )
     processed = failed = 0
     candidates = (
         CaptureCalculation.objects.filter(
@@ -92,16 +104,21 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             break
         try:
             calculation = CaptureCalculation.objects.get(pk=candidate.pk)
-            if calculation.generation < calculation.competition.capture_revision:
-                continue
-            if CompetitionRecomputation.objects.filter(
-                competition_id=calculation.competition_id,
-                capture_generation=calculation.generation,
-                status__in=(
-                    CompetitionRecomputation.Status.PENDING,
-                    CompetitionRecomputation.Status.RUNNING,
-                ),
-            ).exists():
+            # A retryable recomputation, including FAILED rows in backoff,
+            # retains exclusive ownership of its linked capture generation.
+            # Only completion or exhausted retries explicitly relinquish it.
+            if (
+                CompetitionRecomputation.objects.filter(
+                    competition_id=calculation.competition_id,
+                    capture_generation=calculation.generation,
+                )
+                .exclude(status=CompetitionRecomputation.Status.COMPLETED)
+                .exclude(
+                    status=CompetitionRecomputation.Status.FAILED,
+                    attempts__gte=MAX_DISPATCH_ATTEMPTS,
+                )
+                .exists()
+            ):
                 continue
             calculation, token = claim_capture_calculation(
                 calculation.competition, generation=calculation.generation
