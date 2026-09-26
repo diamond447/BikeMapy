@@ -30,6 +30,11 @@ MAX_RESULT_BYTES: Final = 8_000_000
 STATEMENT_TIMEOUT_MS: Final = 5_000
 MAX_RETRIES: Final = 2
 _EXACT_ENDPOINT_TOLERANCE_M: Final = 0.1
+# EPSG:6933 is centered on Greenwich and normalizes longitudes at the
+# antimeridian during transformation.  The same cylindrical equal-area
+# projection centered on 180 degrees keeps an antimeridian ring continuous.
+_WGS84_PROJ4: Final = "+proj=longlat +datum=WGS84"
+_DATELINE_EQUAL_AREA_PROJ4: Final = "+proj=cea +lat_ts=30 +lon_0=180 +datum=WGS84 +units=m +no_defs"
 
 
 class CaptureValidationError(ValueError):
@@ -184,10 +189,43 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                    %s::double precision AS boundary_tolerance,
                    %s::integer AS max_faces
         ),
-        input AS (
-            SELECT input_raw.*,
-                   ST_Transform(input_raw.geom_wgs, 6933) AS geom
+        normalized_input AS (
+            SELECT input_raw.trace_id,
+                   input_raw.owner_id,
+                   input_raw.local_date,
+                   CASE
+                       -- PostGIS geometry lines do not wrap at the
+                       -- antimeridian.  A 179E -> 179W segment therefore
+                       -- has a 358 degree extent unless its western side is
+                       -- shifted into the same short, continuous interval.
+                       WHEN ST_XMax(input_raw.geom_wgs)
+                              - ST_XMin(input_raw.geom_wgs) > 180
+                       THEN ST_ShiftLongitude(input_raw.geom_wgs)
+                       ELSE input_raw.geom_wgs
+                   END AS geom_wgs
             FROM input_raw
+        ),
+        projection AS (
+            SELECT CASE
+                       WHEN bool_or(
+                           ST_XMax(input_raw.geom_wgs)
+                           - ST_XMin(input_raw.geom_wgs) > 180
+                       )
+                       THEN '{_DATELINE_EQUAL_AREA_PROJ4}'
+                       ELSE 'EPSG:6933'
+                   END AS forward_projection
+            FROM input_raw
+        ),
+        input AS (
+            SELECT normalized_input.*,
+                   projection.forward_projection,
+                   ST_Transform(
+                       normalized_input.geom_wgs,
+                       '{_WGS84_PROJ4}',
+                       projection.forward_projection
+                   ) AS geom
+            FROM normalized_input
+            CROSS JOIN projection
         ),
         raw_endpoints AS (
             SELECT trace_id, owner_id, 0 AS endpoint_no,
@@ -203,8 +241,8 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                    EXISTS (
                        SELECT 1
                        FROM raw_endpoints AS other
-                       WHERE (other.trace_id <> endpoint.trace_id
-                              OR other.owner_id <> endpoint.owner_id
+                       WHERE other.owner_id = endpoint.owner_id
+                         AND (other.trace_id <> endpoint.trace_id
                               OR other.endpoint_no <> endpoint.endpoint_no)
                          AND ST_DWithin(
                              endpoint.geom_wgs::geography,
@@ -222,13 +260,21 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                            0,
                            CASE WHEN NOT start_endpoint.is_anchor
                                      AND start_target.geom_wgs IS NOT NULL
-                                THEN ST_Transform(start_target.geom_wgs, 6933)
+                                THEN ST_Transform(
+                                    start_target.geom_wgs,
+                                    '{_WGS84_PROJ4}',
+                                    i.forward_projection
+                                )
                                 ELSE ST_StartPoint(i.geom) END
                        ),
                        ST_NPoints(i.geom) - 1,
                        CASE WHEN NOT end_endpoint.is_anchor
                                   AND end_target.geom_wgs IS NOT NULL
-                            THEN ST_Transform(end_target.geom_wgs, 6933)
+                                THEN ST_Transform(
+                                    end_target.geom_wgs,
+                                    '{_WGS84_PROJ4}',
+                                    i.forward_projection
+                                )
                             ELSE ST_EndPoint(i.geom) END
                    ) AS geom
             FROM input AS i
@@ -352,10 +398,36 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
         winners AS (
             SELECT face_id, max(effective_date) AS effective_date
             FROM best_dates GROUP BY face_id
+        ),
+        geographic_faces AS (
+            SELECT faces.*,
+                   ST_Transform(
+                       faces.geom,
+                       projection.forward_projection,
+                       '{_WGS84_PROJ4}'
+                   ) AS geom_wgs
+            FROM faces
+            CROSS JOIN projection
         )
-        SELECT faces.face_id,
-               ST_AsText(ST_Transform(faces.geom, 4326)) AS geometry_wkt,
-               ST_Area(ST_Transform(faces.geom, 4326)::geography) AS area_m2,
+        SELECT geographic_faces.face_id,
+               ST_AsText(
+                   CASE
+                       WHEN ST_XMax(geographic_faces.geom_wgs) > 180
+                            OR ST_XMin(geographic_faces.geom_wgs) < -180
+                       THEN ST_ShiftLongitude(geographic_faces.geom_wgs)
+                       ELSE geographic_faces.geom_wgs
+                   END
+               ) AS geometry_wkt,
+               ST_Area(
+                   (
+                       CASE
+                           WHEN ST_XMax(geographic_faces.geom_wgs) > 180
+                                OR ST_XMin(geographic_faces.geom_wgs) < -180
+                           THEN ST_ShiftLongitude(geographic_faces.geom_wgs)
+                           ELSE geographic_faces.geom_wgs
+                       END
+                   )::geography
+               ) AS area_m2,
                winners.effective_date,
                face_count.generated_face_count,
                COALESCE(
@@ -363,13 +435,14 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
                        FILTER (WHERE best_dates.effective_date = winners.effective_date),
                    ARRAY[]::text[]
                ) AS owner_ids
-        FROM faces
-        LEFT JOIN winners ON winners.face_id = faces.face_id
-        LEFT JOIN best_dates ON best_dates.face_id = faces.face_id
+        FROM geographic_faces
+        LEFT JOIN winners ON winners.face_id = geographic_faces.face_id
+        LEFT JOIN best_dates ON best_dates.face_id = geographic_faces.face_id
         CROSS JOIN face_count
-        GROUP BY faces.face_id, faces.geom, winners.effective_date,
+        GROUP BY geographic_faces.face_id, geographic_faces.geom,
+                 geographic_faces.geom_wgs, winners.effective_date,
                  face_count.generated_face_count
-        ORDER BY faces.face_id
+        ORDER BY geographic_faces.face_id
     """
     # This order mirrors ``settings`` and then the exact endpoint guard.
     params.extend(

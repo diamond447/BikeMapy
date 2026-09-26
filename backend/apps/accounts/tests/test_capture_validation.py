@@ -273,6 +273,47 @@ def test_geodesic_area_is_reported_for_world_scale_geometry() -> None:
     assert result.faces[0].area_m2 == pytest.approx(12_300_000_000, rel=0.03)
 
 
+def test_unrelated_owner_endpoints_do_not_block_another_owners_gap_snap() -> None:
+    alice = _gapped_ring(latitude=50.0, gap_longitude=0.00044)
+    gap_start = alice[0].coordinates[0]
+    gap_end = alice[-1].coordinates[-1]
+    bob = [
+        _trace("bob-start", "bob", [list(gap_start), [gap_start[0] + 0.001, gap_start[1]]]),
+        _trace("bob-end", "bob", [list(gap_end), [gap_end[0] + 0.001, gap_end[1]]]),
+    ]
+
+    result = validate_capture(alice + bob)
+
+    assert any(face.owner_ids == ("threshold",) for face in result.faces)
+
+
+def test_dateline_crossing_ring_does_not_cover_disjoint_local_ring() -> None:
+    dateline = [
+        [179.0, 10.0],
+        [179.5, 10.0],
+        [179.5, 10.5],
+        [-179.5, 10.5],
+        [179.0, 10.0],
+    ]
+    local = [
+        [14.0, 10.0],
+        [14.5, 10.0],
+        [14.5, 10.5],
+        [14.0, 10.5],
+        [14.0, 10.0],
+    ]
+
+    result = validate_capture(
+        _edges(dateline, "dateline", prefix="dateline") + _edges(local, "local", prefix="local")
+    )
+
+    owners = {face.owner_ids for face in result.faces}
+    assert ("dateline",) in owners
+    assert ("local",) in owners
+    local_face = next(face for face in result.faces if face.owner_ids == ("local",))
+    assert local_face.area_m2 == pytest.approx(3_000_000_000, rel=0.2)
+
+
 def test_invalid_input_and_bounded_safe_failure_preserve_last_valid_result() -> None:
     previous = ValidationResult((), 1, 2)
     invalid = [_trace("invalid", "rider", [[14.0, 50.0], [float("nan"), 50.0]])]
