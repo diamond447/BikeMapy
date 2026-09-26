@@ -16,12 +16,16 @@ from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import serializers, status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.throttling import BaseThrottle
 from rest_framework.views import APIView
+
+from apps.api.throttling import PlayerSessionThrottle
 
 from .models import OAuthState, Player
 from .services import (
     StravaOAuthError,
     authorization_url,
+    competition_is_available,
     delete_player,
     disconnect_player,
     exchange_code,
@@ -40,7 +44,7 @@ def _private(response: Response) -> Response:
     return response
 
 
-def _current_player(request: Any) -> Player | None:
+def current_player(request: Any) -> Player | None:
     player_id = request.session.get("player_id")
     epoch = request.session.get("player_session_epoch")
     if not player_id or epoch is None:
@@ -75,6 +79,7 @@ def _player_payload(player: Player) -> dict[str, Any]:
         "nickname": player.nickname or None,
         "lifecycle": player.lifecycle,
         "connected_at": player.connected_at,
+        "competition_game_enabled": competition_is_available(),
     }
 
 
@@ -86,6 +91,7 @@ class PlayerSerializer(serializers.Serializer[Player]):
     nickname = serializers.CharField(allow_null=True)
     lifecycle = serializers.CharField()
     connected_at = serializers.DateTimeField()
+    competition_game_enabled = serializers.BooleanField()
 
 
 class PlayerResponseSerializer(serializers.Serializer[dict[str, Any]]):
@@ -106,6 +112,7 @@ class NicknameRequestSerializer(serializers.Serializer[dict[str, str]]):
 
 class GameEndpoint(APIView):
     permission_classes = (AllowAny,)
+    throttle_classes: tuple[type[BaseThrottle], ...] = (PlayerSessionThrottle,)
 
     @classmethod
     def as_view(cls, *args: Any, **kwargs: Any) -> Any:
@@ -130,7 +137,7 @@ class GameEndpoint(APIView):
         )
 
     def player_or_401(self, request: Any) -> Player | Response:
-        player = _current_player(request)
+        player = current_player(request)
         if player is None:
             return _private(Response({"detail": "Player authentication is required."}, status=401))
         return player
@@ -152,7 +159,7 @@ class StravaAuthorizeView(GameEndpoint):
         session_key = request.session.session_key
         if not session_key:
             return self.unavailable()
-        _, raw_state = OAuthState.issue(session_key, player=_current_player(request))
+        _, raw_state = OAuthState.issue(session_key, player=current_player(request))
         request.session["strava_oauth_started_at"] = timezone.now().isoformat()
         request.session.save()
         return redirect(authorization_url(state=raw_state))

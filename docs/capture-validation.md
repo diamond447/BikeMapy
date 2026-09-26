@@ -9,10 +9,14 @@ service: it has no capture tables, persistent territory model, or UI.
 The harness accepts bounded WGS84 `LineString` traces and orders them by owner,
 trace ID, Prague-local timestamp, and coordinates. Endpoint distance is measured
 with WGS84 `geography` (`ST_DWithin`), so the 50-metre rule is accurate at the
-equator and at 80°N. PostGIS transforms the lines to EPSG:6933 (a global
-metre-based equal-area CRS) for noding and `ST_Polygonize`. Endpoints that
-already match another endpoint are anchors and cannot be pulled into nearby
-nested loops; unanchored endpoint clusters use a stable canonical point.
+equator and at 80°N. PostGIS transforms ordinary lines to EPSG:6933 (a global
+metre-based equal-area CRS) for noding and `ST_Polygonize`. If a batch crosses
+the antimeridian, it finds the largest empty longitude gap and places the seam
+there in an equivalent cylindrical equal-area projection. This prevents a
+179°E → 179°W line, or an unrelated Greenwich line, from being cut by a fixed
+seam; the output is normalized back to WGS84. Endpoints that already match
+another endpoint are anchors and cannot be pulled into nearby nested loops;
+unanchored endpoint clusters use a stable canonical point.
 Unbounded exterior geometry is not emitted; faces smaller than 1 m² are
 discarded. Face area is measured after transforming the face back to WGS84 with
 `ST_Area(geography)`, so the reported value is geodesic rather than degree-based.
@@ -47,8 +51,9 @@ duplicates, and reordered batches compare directly with one-shot rebuild output.
   Shapely dependency and it does not provide the required geography-area and
   global projection behavior in the production database.
 - A Web-Mercator (EPSG:3857) buffer was rejected because its metre scale and
-  area are latitude-dependent, which breaks the worldwide rule. EPSG:6933 is
-  retained for topology/area, but never used to decide the 50 m distance.
+  area are latitude-dependent, which breaks the worldwide rule. EPSG:6933 (or
+  its antimeridian-centered equivalent for crossing batches) is used for
+  topology/area, but never to decide the 50 m distance.
 - Snapping every vertex was rejected because it can incorrectly join nearby
   nested loops. Only endpoints participate in the 50 m joining tolerance.
 - A persistent territory model was rejected for this issue because capture

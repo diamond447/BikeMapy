@@ -4,18 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from apps.catalogue.fields import RouteGeometryField, RoutePolygonField
+from apps.catalogue.fields import RouteGeometryField
 
 from .fields import EncryptedSecretField
 
 OAUTH_STATE_TTL = timedelta(minutes=10)
+
+
+def webhook_event_expiry() -> datetime:
+    return timezone.now() + timedelta(days=30)
+
+
+def consent_audit_retention_until() -> datetime:
+    return timezone.now() + timedelta(days=730)
 
 
 class Player(models.Model):
@@ -127,6 +135,11 @@ class Competition(models.Model):
 class CompetitionMembership(models.Model):
     """One player's role and display color in one competition."""
 
+    class SharingScope(models.TextChoices):
+        NONE = "none", "No sharing"
+        RECENT = "recent", "Recent history"
+        FULL_HISTORY = "full_history", "Full available history"
+
     competition = models.ForeignKey(
         Competition, on_delete=models.CASCADE, related_name="memberships"
     )
@@ -134,6 +147,11 @@ class CompetitionMembership(models.Model):
         "accounts.Player", on_delete=models.CASCADE, related_name="competition_memberships"
     )
     color = models.CharField(max_length=7)
+    sharing_scope = models.CharField(
+        max_length=16, choices=SharingScope.choices, default=SharingScope.NONE
+    )
+    sharing_consent_at = models.DateTimeField(null=True, blank=True)
+    sharing_disclosure_version = models.CharField(max_length=32, blank=True)
     joined_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -148,6 +166,36 @@ class CompetitionMembership(models.Model):
 
     def __str__(self) -> str:
         return f"{self.player_id} in {self.competition_id}"
+
+
+class CompetitionSharingConsentAudit(models.Model):
+    """Durable, non-PII record of each competition sharing decision."""
+
+    class Action(models.TextChoices):
+        GRANTED = "granted", "Granted"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+
+    membership = models.ForeignKey(
+        CompetitionMembership,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sharing_audits",
+    )
+    competition_key = models.CharField(max_length=64, blank=True)
+    player_key = models.CharField(max_length=64, blank=True)
+    action = models.CharField(max_length=16, choices=Action.choices)
+    scope = models.CharField(max_length=16, choices=CompetitionMembership.SharingScope.choices)
+    disclosure_version = models.CharField(max_length=32)
+    recorded_at = models.DateTimeField(default=timezone.now)
+    retention_until = models.DateTimeField(default=consent_audit_retention_until)
+
+    class Meta:
+        ordering = ("-recorded_at", "-pk")
+        indexes = [models.Index(fields=("membership", "recorded_at"))]
+
+    def __str__(self) -> str:
+        return f"sharing-consent:{self.membership_id}:{self.action}:{self.recorded_at.isoformat()}"
 
 
 class ImportedActivity(models.Model):
@@ -247,6 +295,7 @@ class StravaSyncJob(models.Model):
     )
     page = models.PositiveIntegerField(default=1)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    retryable = models.BooleanField(default=True)
     attempts = models.PositiveSmallIntegerField(default=0)
     next_attempt_at = models.DateTimeField(default=timezone.now)
     last_error = models.CharField(max_length=240, blank=True)
@@ -264,10 +313,53 @@ class StravaSyncJob(models.Model):
         return f"Strava sync {self.kind} for player {self.player_id}"
 
 
+class StravaQuotaState(models.Model):
+    """Shared provider quota reservation state for all synchronization workers."""
+
+    key = models.CharField(max_length=32, primary_key=True, default="global")
+    short_window_used = models.PositiveIntegerField(default=0)
+    daily_used = models.PositiveIntegerField(default=0)
+    short_window_limit = models.PositiveIntegerField(default=100)
+    daily_limit = models.PositiveIntegerField(default=1000)
+    read_short_window_used = models.PositiveIntegerField(default=0)
+    read_daily_used = models.PositiveIntegerField(default=0)
+    read_short_window_limit = models.PositiveIntegerField(default=100)
+    read_daily_limit = models.PositiveIntegerField(default=1000)
+    short_window_reset_at = models.DateTimeField(null=True, blank=True)
+    daily_reset_at = models.DateTimeField(null=True, blank=True)
+    cooldown_until = models.DateTimeField(null=True, blank=True)
+    in_flight = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Strava quota {self.key}"
+
+
+class StravaQuotaReservation(models.Model):
+    """Expiring reservation preventing dead workers from consuming quota forever."""
+
+    token = models.CharField(max_length=64, primary_key=True)
+    expires_at = models.DateTimeField()
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=("expires_at", "released_at"))]
+
+    def __str__(self) -> str:
+        return f"Strava quota reservation {self.token}"
+
+
 class StravaWebhookEvent(models.Model):
     """Idempotency and audit record for a verified provider event."""
 
     event_key = models.CharField(max_length=64, unique=True)
+    player = models.ForeignKey(
+        "accounts.Player",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="strava_webhook_events",
+    )
     subscription_id = models.PositiveBigIntegerField(null=True, blank=True)
     object_id = models.PositiveBigIntegerField()
     owner_athlete_id = models.PositiveBigIntegerField()
@@ -277,6 +369,7 @@ class StravaWebhookEvent(models.Model):
     received_at = models.DateTimeField(default=timezone.now)
     processed_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=240, blank=True)
+    expires_at = models.DateTimeField(default=webhook_event_expiry)
 
     def __str__(self) -> str:
         return f"Strava webhook {self.event_key}"
@@ -351,118 +444,6 @@ class CompetitionRecomputation(models.Model):
 
     def __str__(self) -> str:
         return f"Recompute {self.competition_id} generation {self.generation}"
-
-
-class CaptureCalculation(models.Model):
-    """Versioned, durable snapshot of one competition's capture projection."""
-
-    class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        RUNNING = "running", "Running"
-        FRESH = "fresh", "Fresh"
-        FAILED = "failed", "Failed"
-
-    competition = models.ForeignKey(
-        Competition, on_delete=models.CASCADE, related_name="capture_calculations"
-    )
-    generation = models.PositiveBigIntegerField()
-    algorithm_version = models.CharField(max_length=64)
-    input_digest = models.CharField(max_length=64, blank=True)
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
-    trace_count = models.PositiveIntegerField(default=0)
-    coordinate_count = models.PositiveIntegerField(default=0)
-    face_count = models.PositiveIntegerField(default=0)
-    error = models.CharField(max_length=240, blank=True)
-    requested_at = models.DateTimeField(default=timezone.now)
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    is_current = models.BooleanField(default=False)
-    attempts = models.PositiveSmallIntegerField(default=0)
-    next_attempt_at = models.DateTimeField(default=timezone.now)
-    lease_token = models.CharField(max_length=64, blank=True)
-    lease_until = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("competition", "generation"),
-                name="accounts_capture_calculation_generation_unique",
-            ),
-            models.UniqueConstraint(
-                fields=("competition",),
-                condition=models.Q(is_current=True),
-                name="accounts_capture_calculation_one_current",
-            ),
-        ]
-        indexes = [models.Index(fields=("competition", "status"))]
-
-    def __str__(self) -> str:
-        return f"Capture {self.competition_id} generation {self.generation}"
-
-
-class CaptureFace(models.Model):
-    """A bounded atomic face in one immutable capture calculation."""
-
-    calculation = models.ForeignKey(
-        CaptureCalculation, on_delete=models.CASCADE, related_name="faces"
-    )
-    face_id = models.PositiveIntegerField()
-    geometry = RoutePolygonField(srid=4326, spatial_index=True)
-    area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
-    effective_date = models.DateField(null=True, blank=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("calculation", "face_id"), name="accounts_capture_face_unique"
-            )
-        ]
-        indexes = [models.Index(fields=("calculation", "effective_date"))]
-
-    def __str__(self) -> str:
-        return f"Capture face {self.calculation_id}/{self.face_id}"
-
-
-class CaptureFaceOwner(models.Model):
-    """One current owner of a face; shared faces have one row per owner."""
-
-    face = models.ForeignKey(CaptureFace, on_delete=models.CASCADE, related_name="owners")
-    player = models.ForeignKey(
-        Player, on_delete=models.CASCADE, related_name="capture_face_ownerships"
-    )
-    shared_area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("face", "player"), name="accounts_capture_face_owner_unique"
-            )
-        ]
-        indexes = [models.Index(fields=("player", "face"))]
-
-    def __str__(self) -> str:
-        return f"Capture owner {self.player_id} on {self.face_id}"
-
-
-class CapturePlayerArea(models.Model):
-    """Equal-share current area owned by one player in one calculation."""
-
-    calculation = models.ForeignKey(
-        CaptureCalculation, on_delete=models.CASCADE, related_name="player_areas"
-    )
-    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="capture_areas")
-    owned_area_m2 = models.DecimalField(max_digits=20, decimal_places=3)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("calculation", "player"), name="accounts_capture_player_area_unique"
-            )
-        ]
-        indexes = [models.Index(fields=("player", "calculation"))]
-
-    def __str__(self) -> str:
-        return f"Capture area {self.player_id}/{self.calculation_id}"
 
 
 class PlayerCredential(models.Model):
