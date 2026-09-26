@@ -21,6 +21,7 @@ from .models import (
     OAUTH_STATE_TTL,
     Competition,
     CompetitionMembership,
+    CompetitionResult,
     OAuthState,
     Player,
     PlayerCredential,
@@ -44,6 +45,11 @@ RefreshOutcome = Literal["success", "retryable", "revoked"]
 REVOCATION_RETRY_LIMIT = 8
 REQUIRED_STRAVA_SCOPES = frozenset({"read", "activity:read"})
 IDENTITY_GUARD_RETENTION = OAUTH_STATE_TTL + timedelta(minutes=5)
+MAX_PLAYER_DELETION_RETRIES = 3
+
+
+class _RetryPlayerDeletion(Exception):
+    """Signal that a deletion snapshot changed before mutation could begin."""
 
 
 def game_is_available() -> bool:
@@ -54,6 +60,12 @@ def game_is_available() -> bool:
         and getattr(settings, "STRAVA_TOKEN_ENCRYPTION_KEY", "")
         and getattr(settings, "STRAVA_IDENTITY_GUARD_KEY", "")
     )
+
+
+def competition_is_available() -> bool:
+    """Require the separate legal/rollout gate for cross-member features."""
+
+    return bool(getattr(settings, "COMPETITION_GAME_ENABLED", False) and game_is_available())
 
 
 def redirect_uri() -> str:
@@ -453,20 +465,106 @@ def disconnect_player(
     return player
 
 
-def delete_player(player: Player, *, session_key: str | None = None) -> None:
+def _competition_ids_for_player(player_id: int) -> list[Any]:
+    """Read a player's memberships in stable order for lifecycle locking."""
+
+    return list(
+        CompetitionMembership.objects.filter(player_id=player_id)
+        .order_by("competition_id")
+        .values_list("competition_id", flat=True)
+    )
+
+
+def _affected_player_ids(player_id: int, competition_ids: list[Any]) -> set[int]:
+    """Return players whose rows can be changed by deleting these competitions."""
+
+    affected_player_ids = set(
+        CompetitionMembership.objects.filter(competition_id__in=competition_ids).values_list(
+            "player_id", flat=True
+        )
+    )
+    affected_player_ids.add(player_id)
+    affected_player_ids.update(
+        Player.objects.filter(active_competition_id__in=competition_ids).values_list(
+            "pk", flat=True
+        )
+    )
+    return affected_player_ids
+
+
+def _delete_player_once(
+    player: Player, *, session_key: str | None = None
+) -> tuple[str | None, RevocationJob | None]:
     access_token = None
-    affected_competition_ids: list[Any] = []
+    job = None
     with transaction.atomic():
         guard = _locked_identity_guard(player.strava_athlete_id)
         StravaSyncState.objects.select_for_update().filter(player_id=player.pk).first()
         list(StravaSyncJob.objects.select_for_update().filter(player_id=player.pk).order_by("pk"))
-        player = Player.objects.select_for_update().get(pk=player.pk)
+        affected_competition_ids = _competition_ids_for_player(player.pk)
+        affected_player_ids = _affected_player_ids(player.pk, affected_competition_ids)
+        locked_players = list(
+            Player.objects.select_for_update().filter(pk__in=affected_player_ids).order_by("pk")
+        )
+        player = next(locked for locked in locked_players if locked.pk == player.pk)
+        current_competition_ids = _competition_ids_for_player(player.pk)
+        current_player_ids = _affected_player_ids(player.pk, current_competition_ids)
+        if (
+            current_competition_ids != affected_competition_ids
+            or current_player_ids != affected_player_ids
+        ):
+            raise _RetryPlayerDeletion
+        affected_competitions = list(
+            Competition.objects.select_for_update()
+            .filter(pk__in=affected_competition_ids)
+            .order_by("pk")
+        )
+        locked_competition_ids = [competition.pk for competition in affected_competitions]
+        current_competition_ids = _competition_ids_for_player(player.pk)
+        current_player_ids = _affected_player_ids(player.pk, current_competition_ids)
+        if (
+            locked_competition_ids != affected_competition_ids
+            or current_competition_ids != affected_competition_ids
+            or current_player_ids != affected_player_ids
+        ):
+            raise _RetryPlayerDeletion
+        from apps.reference_routes.completion_services import erase_player_completion_data
+
+        erase_player_completion_data(player.pk, affected_competition_ids)
+        # Lock memberships after Player -> Competition, matching the global
+        # competition lock order used by leave/remove/delete operations.
+        list(
+            CompetitionMembership.objects.select_for_update()
+            .filter(player=player, competition_id__in=affected_competition_ids)
+            .order_by("competition_id", "pk")
+        )
+        surviving_competitions = [
+            competition
+            for competition in affected_competitions
+            if competition.owner_id != player.pk
+        ]
+        for competition in surviving_competitions:
+            CompetitionResult.objects.filter(competition=competition, player=player).delete()
+            CompetitionMembership.objects.filter(competition=competition, player=player).delete()
+            from .capture_services import invalidate_current_capture
+            from .competition_services import schedule_recomputation
+
+            invalidate_current_capture(competition)
+            schedule_recomputation(competition, affected_player_id=player.pk)
+        for competition in affected_competitions:
+            if competition.owner_id == player.pk:
+                competition.delete()
         try:
             access_token = (
                 PlayerCredential.objects.select_for_update().get(player=player).access_token
             )
         except PlayerCredential.DoesNotExist:
             pass
+        if access_token:
+            job = RevocationJob.objects.create(
+                access_token=access_token,
+                expires_at=timezone.now() + timedelta(days=7),
+            )
         PlayerCredential.objects.filter(player=player).delete()
         affected_competition_ids = list(
             CompetitionMembership.objects.filter(player=player).values_list(
@@ -483,17 +581,23 @@ def delete_player(player: Player, *, session_key: str | None = None) -> None:
         player.lifecycle = Player.Lifecycle.DELETED
         player.invalidate_sessions()
         player.user.delete()
-    # Account deletion is an immediate data purge: never leave an encrypted
-    # provider token in a retry queue after the player row is gone.
-    if access_token:
-        _revoke_access_token(access_token)
-    # A deleted member's derived scores disappear through CASCADE, but the
-    # surviving competitions still need a fresh generation so their durable
-    # projection reflects the membership change.
-    from .competition_services import schedule_recomputation
+    return access_token, job
 
-    for competition in Competition.objects.filter(pk__in=affected_competition_ids):
-        schedule_recomputation(competition)
+
+def delete_player(player: Player, *, session_key: str | None = None) -> None:
+    for attempt in range(MAX_PLAYER_DELETION_RETRIES):
+        try:
+            access_token, job = _delete_player_once(player, session_key=session_key)
+            break
+        except _RetryPlayerDeletion:
+            if attempt + 1 == MAX_PLAYER_DELETION_RETRIES:
+                raise RuntimeError(
+                    "Player deletion conflicted with concurrent competition changes"
+                ) from None
+    else:  # pragma: no cover - range always yields at least one attempt
+        raise RuntimeError("Player deletion could not acquire a stable snapshot")
+    if job is not None:
+        _record_revocation_result(job, success=_revoke_access_token(access_token))
 
 
 def purge_expired_players(*, limit: int = 100) -> dict[str, int]:

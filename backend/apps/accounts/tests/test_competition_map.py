@@ -7,15 +7,22 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import Client, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 import apps.accounts.competition_map_api as competition_map_api
-from apps.accounts.competition_services import create_competition, join_competition
+from apps.accounts.competition_services import (
+    CURRENT_SHARING_DISCLOSURE_VERSION,
+    create_competition,
+    grant_sharing_consent,
+    join_competition,
+)
 from apps.accounts.models import CompetitionMembership, ImportedActivity, Player
 
 pytestmark = pytest.mark.django_db
 
 SETTINGS = {
     "GAME_ENABLED": True,
+    "COMPETITION_GAME_ENABLED": True,
     "STRAVA_OAUTH_CLIENT_ID": "client-id",
     "STRAVA_OAUTH_CLIENT_SECRET": "client-secret",
     "STRAVA_TOKEN_ENCRYPTION_KEY": "test-key",
@@ -37,6 +44,16 @@ def session_client(current: Player) -> Client:
     session["player_session_epoch"] = current.session_epoch
     session.save()
     return client
+
+
+def consent(membership: CompetitionMembership) -> None:
+    grant_sharing_consent(
+        membership.player,
+        membership.competition,
+        scope=CompetitionMembership.SharingScope.RECENT,
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
 
 
 def viewport(**overrides: str | list[str]) -> dict[str, str | list[str]]:
@@ -76,8 +93,12 @@ def test_map_requires_membership_and_does_not_enumerate_competitions() -> None:
 def test_map_is_bounded_and_exposes_only_date_geometry_and_member_color() -> None:
     owner = make_player(103)
     member = make_player(104)
-    competition, _ = create_competition(owner, name="Trace map", color="#123456")
-    join_competition(member, invite_code=competition.invite_code, color="#654321")
+    competition, owner_membership = create_competition(owner, name="Trace map", color="#123456")
+    _, member_membership = join_competition(
+        member, invite_code=competition.invite_code, color="#654321"
+    )
+    consent(owner_membership)
+    consent(member_membership)
     ImportedActivity.objects.create(
         player=owner,
         provider_activity_id="one",
@@ -91,6 +112,13 @@ def test_map_is_bounded_and_exposes_only_date_geometry_and_member_color() -> Non
         provider_activity_id="outside",
         calendar_date="2026-09-21",
         geometry=line_geometry([(16.1, 49.1), (16.2, 49.2)]),
+    )
+    ImportedActivity.objects.create(
+        player=owner,
+        provider_activity_id="removed",
+        calendar_date="2026-09-22",
+        removed_at=timezone.now(),
+        geometry=line_geometry([(14.1, 49.1), (14.2, 49.2)]),
     )
     response = session_client(owner).get(
         reverse("game-competition-map", args=[competition.pk]), viewport()
@@ -114,11 +142,43 @@ def test_map_is_bounded_and_exposes_only_date_geometry_and_member_color() -> Non
 
 
 @override_settings(**SETTINGS)
+def test_map_excludes_pending_members_and_removed_activities() -> None:
+    owner = make_player(113)
+    pending = make_player(114)
+    competition, owner_membership = create_competition(owner, name="Consent filter")
+    join_competition(pending, invite_code=competition.invite_code)
+    consent(owner_membership)
+    geometry = line_geometry([(14.1, 49.1), (14.2, 49.2)])
+    ImportedActivity.objects.create(
+        player=owner, provider_activity_id="eligible", geometry=geometry
+    )
+    ImportedActivity.objects.create(
+        player=pending, provider_activity_id="pending", geometry=geometry
+    )
+    response = session_client(owner).get(
+        reverse("game-competition-map", args=[competition.pk]), viewport()
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert {activity["player_id"] for activity in payload["activities"]} == {owner.pk}
+    assert all(member["player_id"] == owner.pk for member in payload["members"])
+    pending_payload = (
+        session_client(pending)
+        .get(reverse("game-competition-map", args=[competition.pk]), viewport())
+        .json()
+    )
+    assert pending_payload["activities"] == []
+    assert pending_payload["members"] == []
+
+
+@override_settings(**SETTINGS)
 def test_map_rejects_unbounded_viewports_and_supports_member_filter() -> None:
     owner = make_player(105)
     member = make_player(106)
-    competition, _ = create_competition(owner, name="Filters")
-    join_competition(member, invite_code=competition.invite_code)
+    competition, owner_membership = create_competition(owner, name="Filters")
+    _, member_membership = join_competition(member, invite_code=competition.invite_code)
+    consent(owner_membership)
+    consent(member_membership)
     owner_activity = line_geometry([(14.1, 49.1), (14.2, 49.2)])
     ImportedActivity.objects.create(
         player=owner, provider_activity_id="owner", geometry=owner_activity
@@ -129,6 +189,8 @@ def test_map_rejects_unbounded_viewports_and_supports_member_filter() -> None:
     url = reverse("game-competition-map", args=[competition.pk])
     client = session_client(owner)
     assert client.get(url, viewport(east="180")).status_code == 400
+    assert client.get(url, viewport(west="-180", east="180")).status_code == 400
+    assert client.get(url, viewport(west="180", east="-180")).status_code == 400
     response = client.get(url, viewport(member=str(owner.pk)))
     assert response.status_code == 200
     assert {activity["player_id"] for activity in response.json()["activities"]} == {owner.pk}
@@ -138,7 +200,8 @@ def test_map_rejects_unbounded_viewports_and_supports_member_filter() -> None:
 @override_settings(**SETTINGS)
 def test_map_supports_antimeridian_viewports_without_leaking_coordinates() -> None:
     owner = make_player(108)
-    competition, _ = create_competition(owner, name="Dateline")
+    competition, owner_membership = create_competition(owner, name="Dateline")
+    consent(owner_membership)
     ImportedActivity.objects.create(
         player=owner,
         provider_activity_id="dateline",
@@ -173,7 +236,8 @@ def test_map_requires_session() -> None:
 @override_settings(**SETTINGS)
 def test_map_caps_dense_activity_results_deterministically() -> None:
     owner = make_player(109)
-    competition, _ = create_competition(owner, name="Dense")
+    competition, owner_membership = create_competition(owner, name="Dense")
+    consent(owner_membership)
     geometry = line_geometry([(14.1, 49.1), (14.2, 49.2)])
     ImportedActivity.objects.bulk_create(
         [
@@ -198,11 +262,54 @@ def test_map_caps_dense_activity_results_deterministically() -> None:
 
 
 @override_settings(**SETTINGS)
+def test_map_fairly_reserves_candidate_budget_for_each_member() -> None:
+    owner = make_player(110)
+    member = make_player(111)
+    competition, owner_membership = create_competition(owner, name="Fair dense map")
+    _, member_membership = join_competition(member, invite_code=competition.invite_code)
+    consent(owner_membership)
+    consent(member_membership)
+    geometry = line_geometry([(14.1, 49.1), (14.2, 49.2)])
+    ImportedActivity.objects.bulk_create(
+        [
+            ImportedActivity(
+                player=owner,
+                provider_activity_id=f"noisy-{index:04d}",
+                calendar_date="2026-09-21",
+                geometry=geometry,
+            )
+            for index in range(1_300)
+        ]
+        + [
+            ImportedActivity(
+                player=member,
+                provider_activity_id="quiet-member",
+                calendar_date="2026-09-21",
+                geometry=geometry,
+            )
+        ],
+        batch_size=500,
+    )
+
+    payload = (
+        session_client(owner)
+        .get(reverse("game-competition-map", args=[competition.pk]), viewport())
+        .json()
+    )
+    by_player: dict[int, int] = {}
+    for activity in payload["activities"]:
+        by_player[activity["player_id"]] = by_player.get(activity["player_id"], 0) + 1
+    assert by_player[owner.pk] == competition_map_api.MAX_FEATURES_PER_MEMBER
+    assert by_player[member.pk] == 1
+
+
+@override_settings(**SETTINGS)
 def test_map_caps_member_ids_and_metadata_before_activity_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     owner = make_player(110)
-    competition, _ = create_competition(owner, name="Member limits")
+    competition, owner_membership = create_competition(owner, name="Member limits")
+    consent(owner_membership)
     url = reverse("game-competition-map", args=[competition.pk])
     client = session_client(owner)
     assert client.get(url, viewport(member=[str(index) for index in range(101)])).status_code == 400
@@ -215,7 +322,8 @@ def test_map_caps_member_ids_and_metadata_before_activity_query(
 @override_settings(**SETTINGS)
 def test_map_bounds_membership_materialization_but_allows_explicit_late_member() -> None:
     owner = make_player(111)
-    competition, _ = create_competition(owner, name="Large membership")
+    competition, owner_membership = create_competition(owner, name="Large membership")
+    consent(owner_membership)
     late_members = [make_player(1_000 + index) for index in range(competition_map_api.MAX_MEMBERS)]
     CompetitionMembership.objects.bulk_create(
         [
@@ -226,6 +334,10 @@ def test_map_bounds_membership_materialization_but_allows_explicit_late_member()
             )
             for member in late_members
         ]
+    )
+    CompetitionMembership.objects.filter(competition=competition).update(
+        sharing_scope=CompetitionMembership.SharingScope.RECENT,
+        sharing_consent_at=timezone.now(),
     )
     client = session_client(owner)
     url = reverse("game-competition-map", args=[competition.pk])

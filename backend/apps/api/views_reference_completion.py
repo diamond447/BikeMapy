@@ -12,9 +12,10 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_sche
 from rest_framework import serializers
 from rest_framework.response import Response
 
+from apps.accounts.competition_services import sharing_is_active
 from apps.accounts.game_api import GameEndpoint, _private
 from apps.accounts.models import CompetitionMembership, StravaSyncState
-from apps.accounts.services import game_is_available
+from apps.accounts.services import competition_is_available, game_is_available
 from apps.reference_routes.models import (
     ReferencePublicationStatus,
     ReferenceRoute,
@@ -27,7 +28,7 @@ from apps.reference_routes.models import (
 from .serializers_reference_routes import ReferenceAttributionSerializer, geometry_json
 from .views_reference_routes import reference_competition_id
 
-PARTIAL_SYNC_STATUSES = ("queued", "running", "failed")
+PARTIAL_SYNC_STATUSES = ("queued", "running", "paused", "failed")
 PUBLIC_COMPLETION_ERROR = "completion_unavailable"
 
 
@@ -47,6 +48,7 @@ class CompletionProjectionSerializer(serializers.Serializer[dict[str, Any]]):
     covered_geometry = serializers.JSONField(allow_null=True)
     monthly = CompletionMonthlySerializer(many=True)
     partial = serializers.BooleanField()
+    sync_status = serializers.CharField()
 
 
 class ReferenceCompletionSerializer(serializers.Serializer[dict[str, Any]]):
@@ -54,6 +56,9 @@ class ReferenceCompletionSerializer(serializers.Serializer[dict[str, Any]]):
     version = serializers.IntegerField()
     player = CompletionProjectionSerializer(allow_null=True)
     competition = CompletionProjectionSerializer(allow_null=True)
+    competition_access = serializers.ChoiceField(
+        choices=("available", "consent_required", "competition_disabled")
+    )
     stages = serializers.ListField(child=serializers.DictField())
     title = serializers.CharField()
     route_number = serializers.CharField(allow_blank=True)
@@ -69,6 +74,7 @@ def _projection(
     player: Any,
     competition: Any,
     partial: bool,
+    sync_status: str,
 ) -> dict[str, Any]:
     if value is None:
         return {
@@ -81,6 +87,7 @@ def _projection(
             "covered_geometry": None,
             "monthly": [],
             "partial": partial,
+            "sync_status": sync_status,
         }
     status = value.status
     if status == "fresh" and value.route_checksum != version.checksum:
@@ -100,12 +107,13 @@ def _projection(
         monthly_query = monthly_query.filter(player=player)
     elif value.competition_id:
         monthly_query = monthly_query.filter(competition=competition)
-    covered_geometry = geometry_json(value.covered_geometry)
+    is_fresh = status == "fresh"
+    covered_geometry = geometry_json(value.covered_geometry) if is_fresh else None
     return {
         "status": status,
         "total_length_meters": value.total_length_meters,
-        "covered_length_meters": value.covered_length_meters,
-        "completion_percent": value.completion_percent,
+        "covered_length_meters": value.covered_length_meters if is_fresh else "0.000",
+        "completion_percent": value.completion_percent if is_fresh else "0.000",
         "calculated_at": value.calculated_at,
         "error": PUBLIC_COMPLETION_ERROR if status == "failed" else "",
         "covered_geometry": covered_geometry,
@@ -118,8 +126,11 @@ def _projection(
                 "gain_length_meters": item.covered_length_meters,
             }
             for item in monthly_query.order_by("month")
-        ],
+        ]
+        if is_fresh
+        else [],
         "partial": partial,
+        "sync_status": sync_status,
     }
 
 
@@ -178,21 +189,51 @@ class ReferenceRouteCompletionView(GameEndpoint):
         competition = membership.competition if membership is not None else None
         if competition is None:
             return _private(Response({"detail": "Reference route not found."}, status=404))
-        player_partial = StravaSyncState.objects.filter(
-            player=player, status__in=PARTIAL_SYNC_STATUSES
-        ).exists()
-        competition_partial = CompetitionMembership.objects.filter(
-            competition=competition,
-            player__strava_sync_state__status__in=PARTIAL_SYNC_STATUSES,
-        ).exists()
+        competition_allowed = bool(
+            competition_is_available() and membership is not None and sharing_is_active(membership)
+        )
+        visible_competition = competition if competition_allowed else None
+        competition_access = (
+            "available"
+            if competition_allowed
+            else "competition_disabled"
+            if not competition_is_available()
+            else "consent_required"
+        )
+        player_sync_status = (
+            StravaSyncState.objects.filter(player=player).values_list("status", flat=True).first()
+            or ""
+        )
+        player_partial = player_sync_status in PARTIAL_SYNC_STATUSES
+        competition_statuses = (
+            list(
+                CompetitionMembership.objects.filter(
+                    competition=visible_competition,
+                    sharing_consent_at__isnull=False,
+                )
+                .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
+                .values_list("player__strava_sync_state__status", flat=True)
+            )
+            if visible_competition is not None
+            else []
+        )
+        competition_sync_status = next(
+            (
+                candidate
+                for candidate in ("failed", "paused", "running", "queued")
+                if candidate in competition_statuses
+            ),
+            "",
+        )
+        competition_partial = competition_sync_status in PARTIAL_SYNC_STATUSES
         player_result = RouteCompletion.objects.filter(
             route_version=route.current_version, player=player
         ).first()
         competition_result = (
             RouteCompletion.objects.filter(
-                route_version=route.current_version, competition=competition
+                route_version=route.current_version, competition=visible_competition
             ).first()
-            if competition is not None
+            if visible_competition is not None
             else None
         )
         attribution = dict(ReferenceAttributionSerializer(route.collection).data)
@@ -237,19 +278,21 @@ class ReferenceRouteCompletionView(GameEndpoint):
                         ).first(),
                         version=version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=player_partial,
+                        sync_status=player_sync_status,
                     ),
                     "competition": _projection(
                         RouteCompletion.objects.filter(
-                            route_version=version, competition=competition
+                            route_version=version, competition=visible_competition
                         ).first()
-                        if competition is not None
+                        if visible_competition is not None
                         else None,
                         version=version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=competition_partial,
+                        sync_status=competition_sync_status,
                     ),
                 }
             )
@@ -263,16 +306,19 @@ class ReferenceRouteCompletionView(GameEndpoint):
                         player_result,
                         version=route.current_version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=player_partial,
+                        sync_status=player_sync_status,
                     ),
                     "competition": _projection(
                         competition_result,
                         version=route.current_version,
                         player=player,
-                        competition=competition,
+                        competition=visible_competition,
                         partial=competition_partial,
+                        sync_status=competition_sync_status,
                     ),
+                    "competition_access": competition_access,
                     "stages": stages,
                 }
             )

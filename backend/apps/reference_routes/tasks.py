@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from uuid import uuid4
 
@@ -13,7 +14,10 @@ from django.utils import timezone
 
 from apps.accounts.models import Competition, Player
 
-from .completion_services import calculate_completion
+from .completion_services import (
+    PUBLIC_COMPLETION_ERROR_CODE,
+    calculate_completion,
+)
 from .models import (
     ReferenceImport,
     ReferenceRouteVersion,
@@ -21,6 +25,8 @@ from .models import (
     RouteCompletionJob,
 )
 from .services import import_osm_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(name="bikemapy.reference_routes.refresh")  # type: ignore[untyped-decorator]
@@ -101,6 +107,13 @@ def calculate_route_completion(job_id: int) -> dict[str, object]:
         )
         return {"status": "complete", "job_id": job_id}
     except Exception as exc:
+        logger.error(
+            "Reference-route completion worker failed",
+            extra={
+                "job_id": job_id,
+                "exception_type": type(exc).__name__,
+            },
+        )
         with transaction.atomic():
             try:
                 locked = RouteCompletionJob.objects.select_for_update().get(pk=job_id)
@@ -109,7 +122,7 @@ def calculate_route_completion(job_id: int) -> dict[str, object]:
             if locked.lease_token != token:
                 return {"status": "in_progress", "job_id": job_id}
             locked.status = RouteCompletionJob.Status.FAILED
-            locked.error = str(exc)[:2000]
+            locked.error = PUBLIC_COMPLETION_ERROR_CODE
             locked.next_attempt_at = timezone.now() + timedelta(minutes=5)
             locked.lease_token = ""
             locked.lease_until = None
@@ -140,8 +153,10 @@ def calculate_route_completion(job_id: int) -> dict[str, object]:
                 if locked.competition_id is not None
                 else failed_results.filter(competition__isnull=True)
             )
-            failed_results.update(status="failed", error=str(exc)[:2000], updated_at=timezone.now())
-        return {"status": "failed", "job_id": job_id, "error": str(exc)[:2000]}
+            failed_results.update(
+                status="failed", error=PUBLIC_COMPLETION_ERROR_CODE, updated_at=timezone.now()
+            )
+        return {"status": "failed", "job_id": job_id, "error": PUBLIC_COMPLETION_ERROR_CODE}
 
 
 def _claim_completion_dispatch() -> tuple[int, str] | None:
@@ -177,13 +192,17 @@ def _publish_completion_dispatch(job_id: int, token: str) -> bool:
     try:
         calculate_route_completion.delay(job_id)
     except Exception as exc:
+        logger.error(
+            "Reference-route completion dispatch failed",
+            extra={"job_id": job_id, "exception_type": type(exc).__name__},
+        )
         with transaction.atomic():
             job = RouteCompletionJob.objects.select_for_update().filter(pk=job_id).first()
             if job is not None and job.dispatch_token == token:
                 job.dispatch_token = ""
                 job.dispatch_lease_until = None
                 job.next_attempt_at = timezone.now()
-                job.error = str(exc)[:2000]
+                job.error = PUBLIC_COMPLETION_ERROR_CODE
                 job.save(
                     update_fields=(
                         "dispatch_token",

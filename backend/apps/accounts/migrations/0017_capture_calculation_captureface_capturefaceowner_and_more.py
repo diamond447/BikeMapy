@@ -10,7 +10,7 @@ import apps.catalogue.fields
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("accounts", "0011_stravasyncjob_dispatch_leases"),
+        ("accounts", "0016_competitionsharingconsentaudit_competition_key_and_more"),
     ]
 
     operations = [

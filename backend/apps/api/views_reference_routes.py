@@ -19,8 +19,9 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.accounts.game_api import _current_player
+from apps.accounts.game_api import current_player
 from apps.accounts.models import CompetitionMembership
+from apps.accounts.services import game_is_available
 from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
@@ -59,9 +60,9 @@ class GameReferencePermission(BasePermission):
     """Require a current Strava player session and active membership."""
 
     def has_permission(self, request: Request, view: object) -> bool:
-        if not getattr(settings, "GAME_ENABLED", False):
+        if not game_is_available():
             return False
-        player = _current_player(request)
+        player = current_player(request)
         if player is None:
             return False
         return reference_player_has_competition(request, player)

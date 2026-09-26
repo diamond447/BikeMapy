@@ -943,37 +943,40 @@ h1 {
   }
 }
 
-/* The authenticated game uses a quiet map field and vivid member traces. */
+/* Private game shell: keep the map as a real, visible interaction surface. */
 .game-shell {
-  min-height: 100dvh;
-  background: #e8f0ec;
-  color: #10232a;
+  background: var(--atlas-paper);
+  color: var(--atlas-ink);
+  min-height: 100vh;
 }
 
 .game-topbar {
   align-items: center;
-  background: #f8fbf8;
-  border-bottom: 1px solid rgba(16, 35, 42, 0.12);
+  background: var(--atlas-paper-strong);
+  border-bottom: 1px solid var(--atlas-line);
   display: flex;
   justify-content: space-between;
-  min-height: 74px;
-  padding: 12px 28px;
+  min-height: 64px;
+  padding: 12px 26px;
+  position: relative;
+  z-index: 5;
 }
 
 .game-topbar-actions {
   align-items: center;
   display: flex;
-  gap: 16px;
+  gap: 12px;
 }
 
 .game-view-switch {
   align-items: center;
-  background: #f8fbf8;
+  background: var(--atlas-paper-strong, #f8fbf8);
   border-bottom: 1px solid rgba(16, 35, 42, 0.12);
   display: flex;
   gap: 4px;
   padding: 8px 28px;
 }
+
 .game-view-switch button,
 .completion-mode button {
   background: transparent;
@@ -986,190 +989,10 @@ h1 {
   letter-spacing: 0.04em;
   padding: 9px 12px;
 }
-.game-view-switch button.is-active,
-.completion-mode button.is-active {
+
+.game-view-switch button.is-active {
   background: #10232a;
   color: #f8fbf8;
-}
-
-.language-toggle {
-  background: transparent;
-  border: 1px solid rgba(16, 35, 42, 0.25);
-  border-radius: 999px;
-  color: #10232a;
-  cursor: pointer;
-  font:
-    700 0.7rem 'DM Mono',
-    monospace;
-  padding: 7px 10px;
-}
-
-.game-map-layout {
-  display: grid;
-  grid-template-columns: minmax(280px, 340px) 1fr;
-  min-height: calc(100dvh - 74px);
-}
-
-.game-map-controls {
-  background: #f8fbf8;
-  border-right: 1px solid rgba(16, 35, 42, 0.12);
-  padding: 42px 28px;
-  z-index: 1;
-}
-
-.game-map-controls h1 {
-  font-size: clamp(2rem, 3vw, 3rem);
-  letter-spacing: -0.045em;
-  line-height: 0.98;
-  margin: 10px 0 14px;
-}
-
-.game-map-controls > p,
-.game-map-state p {
-  color: rgba(16, 35, 42, 0.72);
-  line-height: 1.55;
-}
-
-.game-map-label,
-.game-member-list legend {
-  color: rgba(16, 35, 42, 0.65);
-  display: block;
-  font:
-    700 0.7rem 'DM Mono',
-    monospace;
-  letter-spacing: 0.06em;
-  margin: 26px 0 8px;
-  text-transform: uppercase;
-}
-
-.game-map-controls select {
-  background: #fff;
-  border: 1px solid rgba(16, 35, 42, 0.25);
-  border-radius: 7px;
-  color: #10232a;
-  font: inherit;
-  padding: 11px 12px;
-  width: 100%;
-}
-
-.game-member-list {
-  border: 0;
-  margin: 20px 0 0;
-  padding: 0;
-}
-
-.game-member-list legend {
-  margin: 0 0 10px;
-}
-.game-member-list label {
-  align-items: center;
-  display: flex;
-  gap: 9px;
-  padding: 8px 0;
-}
-.game-member-list input {
-  accent-color: #2b8c76;
-}
-.member-swatch {
-  border-radius: 50%;
-  height: 10px;
-  width: 10px;
-}
-.game-map-status {
-  font-size: 0.85rem;
-  margin-top: 28px;
-}
-.game-trace-list {
-  margin-top: 26px;
-}
-.game-trace-list h2 {
-  font:
-    700 0.7rem 'DM Mono',
-    monospace;
-  letter-spacing: 0.06em;
-  margin: 0 0 8px;
-  text-transform: uppercase;
-}
-.game-trace-viewport {
-  max-height: 220px;
-  overflow: auto;
-}
-.game-trace-list button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid rgba(16, 35, 42, 0.1);
-  box-sizing: border-box;
-  color: #10232a;
-  cursor: pointer;
-  display: flex;
-  gap: 9px;
-  height: 40px;
-  padding: 9px 3px;
-  text-align: left;
-  width: 100%;
-}
-.game-trace-list button[aria-pressed='true'] {
-  background: rgba(244, 185, 66, 0.18);
-}
-.game-map-state button {
-  background: #2b8c76;
-  border: 0;
-  border-radius: 6px;
-  color: #fff;
-  cursor: pointer;
-  font: inherit;
-  padding: 10px 13px;
-}
-
-.game-map-stage {
-  min-height: 0;
-  position: relative;
-}
-.game-map-canvas {
-  height: 100%;
-  min-height: 520px;
-  width: 100%;
-}
-.game-map-loading {
-  background: #f8fbf8;
-  border-radius: 999px;
-  box-shadow: 0 4px 18px rgba(16, 35, 42, 0.14);
-  left: 20px;
-  padding: 8px 12px;
-  position: absolute;
-  top: 20px;
-}
-
-.game-trace-detail {
-  background: #f8fbf8;
-  border-left: 4px solid #f4b942;
-  bottom: 24px;
-  box-shadow: 0 8px 28px rgba(16, 35, 42, 0.18);
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  max-width: 250px;
-  padding: 18px 42px 18px 18px;
-  position: absolute;
-  right: 24px;
-}
-.game-trace-detail time {
-  font:
-    700 1.05rem 'DM Mono',
-    monospace;
-}
-.game-trace-close {
-  background: transparent;
-  border: 0;
-  color: #10232a;
-  cursor: pointer;
-  font-size: 1.4rem;
-  line-height: 1;
-  padding: 3px;
-  position: absolute;
-  right: 10px;
-  top: 10px;
 }
 
 .completion-layout {
@@ -1186,7 +1009,6 @@ h1 {
   z-index: 1;
 }
 .completion-header h1 {
-  color: #10232a;
   font-size: clamp(1.8rem, 3vw, 2.65rem);
   letter-spacing: -0.055em;
   line-height: 1;
@@ -1630,43 +1452,9 @@ h1 {
 }
 
 @media (max-width: 700px) {
-  .game-topbar {
-    min-height: 62px;
-    padding: 10px 16px;
-  }
-  .game-topbar .wordmark {
-    position: static;
-  }
-  .game-topbar .game-account-dock {
-    margin-left: 0;
-  }
   .game-view-switch {
     justify-content: center;
     padding: 7px 16px;
-  }
-  .game-map-layout {
-    display: flex;
-    flex-direction: column-reverse;
-    min-height: calc(100dvh - 62px);
-  }
-  .game-map-stage {
-    min-height: 62dvh;
-  }
-  .game-map-canvas {
-    min-height: 62dvh;
-  }
-  .game-map-controls {
-    border-right: 0;
-    border-top: 1px solid rgba(16, 35, 42, 0.12);
-    padding: 24px 18px 32px;
-  }
-  .game-map-controls h1 {
-    font-size: 2rem;
-  }
-  .game-trace-detail {
-    bottom: 16px;
-    left: 16px;
-    right: 16px;
   }
   .completion-layout {
     display: flex;
@@ -1717,6 +1505,248 @@ h1 {
     bottom: 13px;
     left: 13px;
     right: auto;
+  }
+}
+
+.language-toggle {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-moss);
+  cursor: pointer;
+  font:
+    0.62rem 'DM Mono',
+    monospace;
+  letter-spacing: 0.08em;
+  padding: 7px;
+}
+
+.game-map-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  min-height: calc(100vh - 64px);
+}
+
+.game-map-controls {
+  background: var(--atlas-paper-strong);
+  border-right: 1px solid var(--atlas-line);
+  overflow: auto;
+  padding: 28px 24px;
+  position: relative;
+  z-index: 2;
+}
+
+.game-map-controls h1 {
+  font-size: clamp(1.8rem, 3vw, 2.55rem);
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+  margin: 8px 0 14px;
+}
+
+.game-map-controls > p {
+  color: var(--atlas-moss);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  margin: 0 0 22px;
+}
+
+.game-map-label,
+.game-member-list legend {
+  color: var(--atlas-moss);
+  font:
+    0.59rem 'DM Mono',
+    monospace;
+}
+
+.game-map-controls select {
+  background: #f0f3ed;
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-ink);
+  display: block;
+  font-size: 0.76rem;
+  margin: 6px 0 18px;
+  padding: 8px;
+  width: 100%;
+}
+
+.game-member-list {
+  border: 1px solid var(--atlas-line);
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 12px;
+}
+
+.game-member-list label {
+  align-items: center;
+  color: var(--atlas-moss);
+  display: flex;
+  font-size: 0.7rem;
+  gap: 7px;
+}
+
+.game-member-list input {
+  accent-color: var(--atlas-orange);
+}
+
+.member-swatch {
+  border: 1px solid rgba(24, 60, 53, 0.18);
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 9px;
+  width: 9px;
+}
+
+.game-map-stage {
+  background: #ceddce;
+  min-height: calc(100vh - 64px);
+  overflow: hidden;
+  position: relative;
+}
+
+.game-map-canvas {
+  height: 100%;
+  inset: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.game-map-loading {
+  background: rgba(255, 253, 247, 0.9);
+  color: var(--atlas-moss);
+  font:
+    0.62rem 'DM Mono',
+    monospace;
+  left: 50%;
+  padding: 8px 10px;
+  position: absolute;
+  top: 20px;
+  transform: translateX(-50%);
+}
+
+.game-map-state {
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-moss);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  padding: 13px;
+}
+
+.game-map-state strong {
+  color: var(--atlas-ink);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.game-map-state p {
+  margin: 0 0 10px;
+}
+
+.game-map-state button,
+.game-map-controls button {
+  cursor: pointer;
+}
+
+.game-map-status {
+  color: var(--atlas-moss);
+  font:
+    0.61rem 'DM Mono',
+    monospace;
+  margin: 12px 0;
+}
+
+.game-trace-list {
+  border-top: 1px solid var(--atlas-line);
+  margin-top: 18px;
+  padding-top: 13px;
+}
+
+.game-trace-list h2 {
+  color: var(--atlas-moss);
+  font:
+    0.59rem 'DM Mono',
+    monospace;
+  margin: 0 0 8px;
+}
+
+.game-trace-viewport {
+  display: grid;
+  gap: 3px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.game-trace-viewport button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--atlas-moss);
+  display: flex;
+  font-size: 0.68rem;
+  gap: 7px;
+  padding: 6px;
+  text-align: left;
+}
+
+.game-trace-viewport button:hover,
+.game-trace-viewport button:focus-visible {
+  background: #eef1e9;
+  border-color: var(--atlas-line);
+  color: var(--atlas-ink);
+}
+
+.game-trace-detail {
+  background: var(--atlas-paper-strong);
+  border: 1px solid var(--atlas-line);
+  box-shadow: 0 8px 24px rgba(24, 60, 53, 0.16);
+  display: grid;
+  gap: 5px;
+  min-width: 180px;
+  padding: 16px;
+  position: absolute;
+  right: 22px;
+  top: 22px;
+  z-index: 3;
+}
+
+.game-trace-close {
+  background: transparent;
+  border: 0;
+  color: var(--atlas-ink);
+  cursor: pointer;
+  font-size: 1.1rem;
+  justify-self: end;
+  line-height: 1;
+  padding: 0;
+}
+
+.game-trace-detail time {
+  color: var(--atlas-moss);
+  font:
+    0.68rem 'DM Mono',
+    monospace;
+}
+
+@media (max-width: 700px) {
+  .game-topbar {
+    padding: 12px 16px;
+  }
+
+  .game-map-layout {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .game-map-controls {
+    border-bottom: 1px solid var(--atlas-line);
+    border-right: 0;
+    max-height: 46vh;
+    order: 2;
+    padding: 20px 16px;
+  }
+
+  .game-map-stage {
+    min-height: 54vh;
+    order: 1;
   }
 }
 

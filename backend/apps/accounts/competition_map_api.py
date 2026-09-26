@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 from uuid import UUID
 
@@ -21,17 +22,22 @@ from rest_framework.exceptions import ParseError
 from rest_framework.response import Response
 
 from .activity_services import geometry_payload
+from .competition_services import (
+    MAX_COMPETITION_MEMBERS,
+    authorized_activity_queryset,
+    competition_member_label,
+    sharing_is_active,
+)
 from .game_api import GameEndpoint, _private
 from .models import Competition, CompetitionMembership, ImportedActivity, Player
-from .services import game_is_available
+from .services import competition_is_available
 
 MAX_FEATURES = 1_200
 MAX_FEATURES_PER_MEMBER = 240
 MAX_COORDINATES = 120_000
-MAX_CANDIDATES_SQLITE = MAX_FEATURES * 8
 MAX_SOURCE_COORDINATES = 4_000
 MAX_RESPONSE_BYTES = 4_000_000
-MAX_MEMBERS = 100
+MAX_MEMBERS = MAX_COMPETITION_MEMBERS
 MAX_MEMBER_METADATA_BYTES = 64_000
 MIN_ZOOM = 0
 MAX_ZOOM = 22
@@ -114,15 +120,13 @@ def _parse_viewport(request: Any) -> tuple[float, float, float, float, int]:
     east = _number(request.query_params.get("east"), "east")
     north = _number(request.query_params.get("north"), "north")
     zoom = _zoom(request.query_params.get("zoom"))
-    if not (-180 <= west < east <= 180):
-        if not (-180 <= west <= 180 and -180 <= east <= 180 and west != east):
-            raise ParseError("viewport longitude bounds are invalid")
+    if not (-180 <= west <= 180 and -180 <= east <= 180 and west != east):
+        raise ParseError("viewport longitude bounds are invalid")
     if not (-90 <= south < north <= 90):
         raise ParseError("viewport latitude bounds are invalid")
     # A global request at once would defeat the purpose of viewport bounds.
     longitude_width = (east - west) % 360 or 360
-    is_world = west == -180 and east == 180
-    if (longitude_width > 120 and not is_world) or north - south > 90:
+    if longitude_width > 120 or north - south > 90:
         raise ParseError("viewport is too large")
     return west, south, east, north, zoom
 
@@ -354,8 +358,8 @@ def _member_ids(request: Any, memberships: Sequence[CompetitionMembership]) -> s
 def _member_payload(membership: CompetitionMembership, competition: Competition) -> dict[str, Any]:
     return {
         "player_id": membership.player_id,
-        "display_name": membership.player.strava_display_name,
-        "nickname": membership.player.nickname or None,
+        "display_name": competition_member_label(membership),
+        "nickname": None,
         "color": membership.color,
         "is_owner": membership.player_id == competition.owner_id,
     }
@@ -374,7 +378,7 @@ class CompetitionMapView(GameEndpoint):
         return _private(super().dispatch(request, *args, **kwargs))
 
     def get(self, request: Any, competition_id: UUID) -> Response:
-        if not game_is_available():
+        if not competition_is_available():
             return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):
@@ -387,32 +391,43 @@ class CompetitionMapView(GameEndpoint):
         # Keep absent, inactive, and non-member competitions indistinguishable.
         if competition is None:
             return _private(Response({"detail": "Competition not found."}, status=404))
+        viewer_membership = CompetitionMembership.objects.get(
+            competition=competition, player=player
+        )
         west, south, east, north, zoom = _parse_viewport(request)
         viewport_parts = _viewport_parts(west, east, south, north)
         membership_query = (
             CompetitionMembership.objects.filter(competition=competition)
+            .filter(sharing_consent_at__isnull=False)
+            .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
             .select_related("player")
             .order_by("joined_at", "pk")
         )
         requested_ids = _requested_member_ids(request)
-        if requested_ids is None:
-            # The unfiltered map is intentionally capped at the documented
-            # member limit before either model rows or related players load.
-            memberships = list(membership_query[:MAX_MEMBERS])
-        elif requested_ids == {0}:
+        if not sharing_is_active(viewer_membership):
             memberships = []
+            selected_ids = set()
+            members = []
+            member_bytes = 2
         else:
-            # An explicit filter may name a member beyond the first page. Query
-            # only those IDs so authorization remains exact without
-            # materializing an arbitrarily large competition.
-            memberships = list(membership_query.filter(player_id__in=requested_ids))
-        selected_ids = _member_ids(request, memberships)
-        members = [
-            _member_payload(membership, competition)
-            for membership in memberships
-            if membership.player_id in selected_ids
-        ]
-        member_bytes = len(json.dumps(members, separators=(",", ":")).encode())
+            if requested_ids is None:
+                # The unfiltered map is intentionally capped at the documented
+                # member limit before either model rows or related players load.
+                memberships = list(membership_query[:MAX_MEMBERS])
+            elif requested_ids == {0}:
+                memberships = []
+            else:
+                # An explicit filter may name a member beyond the first page.
+                # Query only those IDs so authorization remains exact without
+                # materializing an arbitrarily large competition.
+                memberships = list(membership_query.filter(player_id__in=requested_ids))
+            selected_ids = _member_ids(request, memberships)
+            members = [
+                _member_payload(membership, competition)
+                for membership in memberships
+                if membership.player_id in selected_ids
+            ]
+            member_bytes = len(json.dumps(members, separators=(",", ":")).encode())
         if member_bytes > MAX_MEMBER_METADATA_BYTES:
             return _private(
                 Response(
@@ -423,12 +438,22 @@ class CompetitionMapView(GameEndpoint):
                     status=413,
                 )
             )
-        queryset = ImportedActivity.objects.filter(
-            player_id__in=selected_ids,
-            removed_at__isnull=True,
-            geometry__isnull=False,
+        selected_memberships = [
+            membership for membership in memberships if membership.player_id in selected_ids
+        ]
+        candidate_member_limit = min(
+            MAX_FEATURES_PER_MEMBER,
+            math.ceil(MAX_FEATURES / max(1, len(selected_ids))),
+        )
+        queryset = authorized_activity_queryset(
+            ImportedActivity.objects.all(), selected_memberships
         ).order_by("calendar_date", "pk")
-        if connection.vendor == "postgresql":
+        # Probe each member independently with a hard LIMIT. This preserves a
+        # deterministic candidate budget for quiet members without asking the
+        # database to rank an unbounded spatial intersection first.
+        candidate_overflow = False
+        candidate_ids: set[UUID] = set()
+        if connection.vendor == "postgresql" and selected_memberships:
             from django.contrib.gis.db.models.functions import (
                 Intersection,
                 NumPoints,
@@ -440,27 +465,50 @@ class CompetitionMapView(GameEndpoint):
             spatial_filter = Q()
             for envelope in envelopes:
                 spatial_filter |= Q(geometry__intersects=envelope)
-            clipped_candidates = (
-                queryset.filter(spatial_filter)
-                .only("pk", "player_id", "calendar_date")
-                .annotate(source_points=NumPoints("geometry"))
-                .filter(source_points__lte=MAX_SOURCE_COORDINATES)
-            )
-            candidate_count = clipped_candidates.count()
+            for membership in selected_memberships:
+                member_candidates = (
+                    authorized_activity_queryset(ImportedActivity.objects.all(), [membership])
+                    .filter(spatial_filter)
+                    .only("pk", "player_id", "calendar_date")
+                    .annotate(source_points=NumPoints("geometry"))
+                    .filter(source_points__lte=MAX_SOURCE_COORDINATES)
+                    .order_by("calendar_date", "pk")
+                )
+                rows = list(member_candidates[: candidate_member_limit + 1])
+                if len(rows) > candidate_member_limit:
+                    candidate_overflow = True
+                candidate_ids.update(row.pk for row in rows[:candidate_member_limit])
+            candidate_count = len(candidate_ids)
             candidates: list[ImportedActivity] = []
+            clipped_candidates = queryset.filter(pk__in=candidate_ids).only(
+                "pk", "player_id", "calendar_date"
+            )
             tolerance = max(0.5, 156543.03392804097 / (2**zoom) * 0.5)
             for envelope in envelopes:
                 clipped_geometry = Intersection("geometry", envelope)
                 candidates.extend(
-                    clipped_candidates.filter(geometry__intersects=envelope).annotate(
+                    clipped_candidates.filter(
+                        pk__in=candidate_ids, geometry__intersects=envelope
+                    ).annotate(
                         private_geometry=Transform(
                             _st_simplify(Transform(clipped_geometry, 3857), tolerance), 4326
                         )
                     )[: MAX_FEATURES + 1]
                 )
+        elif selected_memberships:
+            for membership in selected_memberships:
+                member_candidates = authorized_activity_queryset(
+                    ImportedActivity.objects.all(), [membership]
+                ).order_by("calendar_date", "pk")
+                rows = list(member_candidates[: candidate_member_limit + 1])
+                if len(rows) > candidate_member_limit:
+                    candidate_overflow = True
+                candidate_ids.update(row.pk for row in rows[:candidate_member_limit])
+            candidate_count = len(candidate_ids)
+            candidates = list(queryset.filter(pk__in=candidate_ids).order_by("calendar_date", "pk"))
         else:
-            candidates = list(queryset[:MAX_CANDIDATES_SQLITE])
-            candidate_count = len(candidates)
+            candidates = []
+            candidate_count = 0
         candidate_geometries: dict[UUID, tuple[ImportedActivity, list[Any]]] = {}
         for candidate in candidates:
             source_geometry = getattr(candidate, "private_geometry", None)
@@ -471,8 +519,20 @@ class CompetitionMapView(GameEndpoint):
         activities: list[dict[str, Any]] = []
         member_feature_counts: dict[int, int] = {}
         coordinate_count = 0
-        truncated = candidate_count > MAX_FEATURES or len(candidate_geometries) > MAX_FEATURES
-        for activity, geometries in candidate_geometries.values():
+        truncated = (
+            candidate_overflow
+            or candidate_count > MAX_FEATURES
+            or len(candidate_geometries) > MAX_FEATURES
+        )
+        ordered_candidates = sorted(
+            candidate_geometries.values(),
+            key=lambda entry: (
+                entry[0].calendar_date is None,
+                entry[0].calendar_date or date.max,
+                str(entry[0].pk),
+            ),
+        )
+        for activity, geometries in ordered_candidates:
             if len(activities) >= MAX_FEATURES:
                 truncated = True
                 break
