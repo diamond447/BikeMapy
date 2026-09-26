@@ -56,7 +56,7 @@ vi.mock('../api/client', () => ({
   rememberCsrfToken: vi.fn(),
 }))
 
-import { completionFeature, completionPercent } from './CompletionDashboard'
+import { completionBounds, completionFeature, completionPercent } from './CompletionDashboard'
 import { CompletionDashboard } from './CompletionDashboard'
 import { apiClient } from '../api/client'
 import { translations } from '../i18n/translations'
@@ -159,6 +159,50 @@ describe('official route completion presentation', () => {
     expect(completionFeature(geometry, { state: 'covered' }).properties).toEqual({
       state: 'covered',
     })
+  })
+
+  it('keeps the grouped arrow order aligned with the visual groups', async () => {
+    const numberedRoute = {
+      ...route,
+      id: 'route-numbered',
+      source_kind: 'osm_numbered',
+      title: 'Route 10',
+    }
+    const viaRoute = { ...route, id: 'route-via', source_kind: 'via_czechia', title: 'Via South' }
+    get.mockImplementation((path: string) =>
+      Promise.resolve(
+        apiResult(
+          path.includes('/completion/')
+            ? { ...detail, route_id: viaRoute.id, title: viaRoute.title }
+            : { next: null, previous: null, results: [numberedRoute, viaRoute] },
+        ),
+      ),
+    )
+    render(
+      <CompletionDashboard
+        copy={copy}
+        competitions={[{ id: 'competition-1', name: 'Weekend crew', members: [] } as never]}
+        competitionId="competition-1"
+        setCompetitionId={vi.fn()}
+        signedOut={false}
+      />,
+    )
+    const viaButton = await screen.findByRole('button', { name: /Via South/ })
+    const numberedButton = screen.getByRole('button', { name: /Route 10/ })
+    viaButton.focus()
+    fireEvent.keyDown(viaButton, { key: 'ArrowDown' })
+    await waitFor(() => expect(document.activeElement).toBe(numberedButton))
+  })
+
+  it('frames dense geometry without spreading coordinates into function arguments', async () => {
+    const denseGeometry = {
+      type: 'LineString',
+      coordinates: Array.from({ length: 130_000 }, (_, index) => [14 + index / 1_000_000, 49]),
+    }
+    expect(completionBounds(denseGeometry)).toEqual([
+      [14, 49],
+      [14.129999, 49],
+    ])
   })
 
   it('formats measured completion percentages without hiding pending state', () => {
@@ -378,6 +422,18 @@ describe('official route completion presentation', () => {
     expect(await screen.findByText(copy.gameCompletionPaused)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: 'Competition' }))
     expect(await screen.findByText(copy.gameCompletionConsentRequired)).toBeInTheDocument()
+    expect(document.querySelectorAll('.completion-detail')).toHaveLength(1)
+    expect(document.querySelector('.completion-detail .completion-percent')).not.toBeInTheDocument()
+    const coveredSource = MockMap.last?.sources['reference-covered']?.setData
+    const routeSource = MockMap.last?.sources['reference-route']?.setData
+    expect(coveredSource?.mock.lastCall?.[0]).toEqual({
+      type: 'FeatureCollection',
+      features: [],
+    })
+    expect(routeSource?.mock.lastCall?.[0]).toEqual({
+      type: 'FeatureCollection',
+      features: [],
+    })
     const routeCalls = get.mock.calls.filter(([path]) => path === '/api/v1/game/reference-routes/')
     window.dispatchEvent(new Event('bikemapy:game-data-refresh'))
     await waitFor(() =>
@@ -390,5 +446,22 @@ describe('official route completion presentation', () => {
         get.mock.calls.filter(([path]) => path.includes('/completion/')).length,
       ).toBeGreaterThan(1),
     )
+  })
+
+  it('distinguishes a fresh session without a competition from an unavailable group gate', async () => {
+    const props = {
+      copy,
+      competitions: [],
+      setCompetitionId: vi.fn(),
+      signedOut: false,
+    }
+    render(<CompletionDashboard {...props} />)
+    expect(await screen.findByText(copy.gameCompletionNoCompetition)).toBeInTheDocument()
+    expect(screen.queryByText(copy.gameCompletionEmpty)).not.toBeInTheDocument()
+
+    cleanup()
+    render(<CompletionDashboard {...props} competitionDisabled />)
+    expect(await screen.findByText(copy.gameCompletionCompetitionDisabled)).toBeInTheDocument()
+    expect(screen.queryByText(copy.gameCompletionEmpty)).not.toBeInTheDocument()
   })
 })

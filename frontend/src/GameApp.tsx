@@ -548,6 +548,7 @@ export default function GameApp() {
   const [mapLoading, setMapLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [signedOut, setSignedOut] = useState(false)
+  const [competitionDisabled, setCompetitionDisabled] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'activity' | 'completion'>(() => {
     try {
@@ -622,6 +623,7 @@ export default function GameApp() {
     clearMapData()
     setLoading(true)
     setError(null)
+    setCompetitionDisabled(false)
     try {
       const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
       rememberCsrfToken(result.response)
@@ -631,8 +633,16 @@ export default function GameApp() {
         setCompetitions([])
         return
       }
+      if (result.response?.status === 404) {
+        setSignedOut(false)
+        setCompetitions([])
+        setCompetitionId(undefined)
+        setCompetitionDisabled(true)
+        return
+      }
       if (!result.data) throw new Error('competition-load')
       setSignedOut(false)
+      setCompetitionDisabled(false)
       setRosterMembers([])
       setRosterCursor(null)
       setCompetitions(result.data.competitions)
@@ -1251,6 +1261,7 @@ export default function GameApp() {
             setCompetitionId(id)
           }}
           signedOut={signedOut}
+          competitionDisabled={competitionDisabled}
         />
       ) : (
         <section className="game-map-layout" aria-labelledby="game-map-title">

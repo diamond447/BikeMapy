@@ -198,9 +198,12 @@ class ReferenceRouteCompletionView(GameEndpoint):
         player_partial = player_sync_status in PARTIAL_SYNC_STATUSES
         competition_statuses = (
             list(
-                CompetitionMembership.objects.filter(competition=visible_competition).values_list(
-                    "player__strava_sync_state__status", flat=True
+                CompetitionMembership.objects.filter(
+                    competition=visible_competition,
+                    sharing_consent_at__isnull=False,
                 )
+                .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
+                .values_list("player__strava_sync_state__status", flat=True)
             )
             if visible_competition is not None
             else []

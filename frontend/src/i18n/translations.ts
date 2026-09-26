@@ -275,11 +275,12 @@ export const translations = {
     gameCompletionStale: 'Needs recalculation',
     gameCompletionFailed: 'Calculation failed',
     gameCompletionEmpty: 'No official routes are available yet.',
+    gameCompletionNoCompetition: 'Join or create a competition to view group completion.',
     gameCompletionPartial: 'Some activity history is still syncing.',
     gameCompletionPaused: 'Activity history sharing is paused.',
     gameCompletionHistoryFailed: 'Activity history needs attention before this view is complete.',
     gameCompletionConsentRequired:
-      'Competition progress is hidden until every member consents to sharing.',
+      'Competition progress is hidden until you consent to sharing your activity history.',
     gameCompletionCompetitionDisabled:
       'Competition progress is unavailable while group play is disabled.',
     gameCompletionCovered: 'covered',
@@ -566,12 +567,13 @@ export const translations = {
     gameCompletionStale: 'Vyžaduje přepočet',
     gameCompletionFailed: 'Výpočet selhal',
     gameCompletionEmpty: 'Zatím nejsou dostupné žádné oficiální trasy.',
+    gameCompletionNoCompetition: 'Připojte se k soutěži nebo ji vytvořte a zobrazte její postup.',
     gameCompletionPartial: 'Část historie aktivit se stále synchronizuje.',
     gameCompletionPaused: 'Sdílení historie aktivit je pozastavené.',
     gameCompletionHistoryFailed:
       'Historie aktivit vyžaduje pozornost, než bude tento pohled úplný.',
     gameCompletionConsentRequired:
-      'Postup soutěže je skrytý, dokud všichni členové nepotvrdí sdílení.',
+      'Postup soutěže je skrytý, dokud nepotvrdíte sdílení své historie aktivit.',
     gameCompletionCompetitionDisabled:
       'Postup soutěže není dostupný, dokud je skupinová hra vypnutá.',
     gameCompletionCovered: 'pokryto',

@@ -119,6 +119,25 @@ function coordinates(geometry: unknown, result: Array<[number, number]> = []) {
   return result
 }
 
+export function completionBounds(geometry: unknown): [[number, number], [number, number]] | null {
+  const points = coordinates(geometry)
+  if (points.length <= 1) return null
+  let west = Number.POSITIVE_INFINITY
+  let south = Number.POSITIVE_INFINITY
+  let east = Number.NEGATIVE_INFINITY
+  let north = Number.NEGATIVE_INFINITY
+  for (const [lng, lat] of points) {
+    west = Math.min(west, lng)
+    south = Math.min(south, lat)
+    east = Math.max(east, lng)
+    north = Math.max(north, lat)
+  }
+  return [
+    [west, south],
+    [east, north],
+  ]
+}
+
 export function completionPercent(projection: Projection | null | undefined) {
   return projection ? `${Number(projection.completion_percent).toFixed(1)}%` : '—'
 }
@@ -136,12 +155,14 @@ export function CompletionDashboard({
   competitionId,
   setCompetitionId,
   signedOut,
+  competitionDisabled = false,
 }: {
   copy: Copy
   competitions: components['schemas']['Competition'][]
   competitionId?: string
   setCompetitionId: (id: string) => void
   signedOut: boolean
+  competitionDisabled?: boolean
 }) {
   const initial = useMemo(() => readState(), [])
   const [mode, setMode] = useState<'player' | 'competition'>(initial.mode ?? 'player')
@@ -353,7 +374,11 @@ export function CompletionDashboard({
     if (!mapReady || !mapLoaded.current) return
     const routeSource = map.current?.getSource('reference-route') as GeoJSONSource | undefined
     const coveredSource = map.current?.getSource('reference-covered') as GeoJSONSource | undefined
-    if (!selectedGeometry) {
+    const hideCompetitionProjection =
+      mode === 'competition' &&
+      selectedDetail !== undefined &&
+      selectedDetail.competition_access !== 'available'
+    if (hideCompetitionProjection || !selectedGeometry) {
       routeSource?.setData({ type: 'FeatureCollection', features: [] })
       coveredSource?.setData({ type: 'FeatureCollection', features: [] })
       framedKey.current = null
@@ -377,28 +402,21 @@ export function CompletionDashboard({
     coveredSource?.setData(coveredData as never)
     const key = `${competitionId ?? ''}:${routeId}:${stageId ?? ''}`
     if (framedKey.current === key) return
-    const points = coordinates(selectedGeometry)
-    if (points.length > 1) {
-      let west = Number.POSITIVE_INFINITY
-      let south = Number.POSITIVE_INFINITY
-      let east = Number.NEGATIVE_INFINITY
-      let north = Number.NEGATIVE_INFINITY
-      for (const [lng, lat] of points) {
-        west = Math.min(west, lng)
-        south = Math.min(south, lat)
-        east = Math.max(east, lng)
-        north = Math.max(north, lat)
-      }
-      map.current?.fitBounds(
-        [
-          [west, south],
-          [east, north],
-        ],
-        { padding: 90, duration: 0 },
-      )
+    const bounds = completionBounds(selectedGeometry)
+    if (bounds) {
+      map.current?.fitBounds(bounds, { padding: 90, duration: 0 })
     }
     framedKey.current = key
-  }, [competitionId, mapReady, routeId, selectedGeometry, selectedProjection, stageId])
+  }, [
+    competitionId,
+    mapReady,
+    mode,
+    routeId,
+    selectedDetail,
+    selectedGeometry,
+    selectedProjection,
+    stageId,
+  ])
 
   const selectRoute = (id: string) => {
     setRouteId(id)
@@ -426,11 +444,13 @@ export function CompletionDashboard({
 
   const attribution = selectedDetail?.attribution ?? {}
   const competitionUnavailable =
-    selectedDetail?.competition_access === 'consent_required'
-      ? copy.gameCompletionConsentRequired
-      : selectedDetail?.competition_access === 'competition_disabled'
-        ? copy.gameCompletionCompetitionDisabled
-        : ''
+    mode === 'competition'
+      ? selectedDetail?.competition_access === 'consent_required'
+        ? copy.gameCompletionConsentRequired
+        : selectedDetail?.competition_access === 'competition_disabled'
+          ? copy.gameCompletionCompetitionDisabled
+          : ''
+      : ''
   const attributionText =
     typeof attribution.attribution_text === 'string' ? attribution.attribution_text : ''
   const attributionLicence = typeof attribution.licence === 'string' ? attribution.licence : ''
@@ -501,7 +521,13 @@ export function CompletionDashboard({
               </button>
             </div>
           ) : routes.length === 0 ? (
-            <p>{copy.gameCompletionEmpty}</p>
+            <p>
+              {!competitionId
+                ? competitionDisabled
+                  ? copy.gameCompletionCompetitionDisabled
+                  : copy.gameCompletionNoCompetition
+                : copy.gameCompletionEmpty}
+            </p>
           ) : (
             <>
               {catalogueIncomplete && (
@@ -597,7 +623,7 @@ export function CompletionDashboard({
             <p className="completion-status">{competitionUnavailable}</p>
           </aside>
         )}
-        {selectedSummary && selectedProjection && !detailError && (
+        {selectedSummary && selectedProjection && !competitionUnavailable && !detailError && (
           <aside className="completion-detail">
             <span className="game-account-kicker">{copy.gameCompletionReference}</span>
             <h2>{selectedStage?.title ?? selectedDetail?.title ?? selectedSummary.title}</h2>
