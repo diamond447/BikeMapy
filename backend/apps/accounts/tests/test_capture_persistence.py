@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from apps.accounts.activity_services import remove_activity
 from apps.accounts.capture_services import (
+    CAPTURE_ALGORITHM_VERSION,
     CaptureCalculationBusy,
     CaptureCalculationError,
     _line_coordinates,
@@ -593,6 +594,55 @@ def test_standalone_dispatcher_uses_capture_generation_when_revisions_diverge() 
     assert stale.attempts == 0
     job.refresh_from_db()
     assert job.status == CompetitionRecomputation.Status.PENDING
+
+
+def test_dispatcher_filters_protected_stale_rows_before_inspection_budget() -> None:
+    protected_owner = _player(1066)
+    protected, _ = create_competition(protected_owner, name="Protected backlog")
+    protected.revision = 101
+    protected.capture_revision = 102
+    protected.save(update_fields=("revision", "capture_revision", "updated_at"))
+    CaptureCalculation.objects.bulk_create(
+        [
+            CaptureCalculation(
+                competition=protected,
+                generation=generation,
+                algorithm_version=CAPTURE_ALGORITHM_VERSION,
+                status=CaptureCalculation.Status.PENDING,
+            )
+            for generation in range(1, 102)
+        ]
+    )
+    CompetitionRecomputation.objects.bulk_create(
+        [
+            CompetitionRecomputation(
+                competition=protected,
+                generation=generation,
+                capture_generation=generation,
+                status=CompetitionRecomputation.Status.PENDING,
+            )
+            for generation in range(1, 102)
+        ]
+    )
+
+    target_owner = _player(1067)
+    target, _ = create_competition(target_owner, name="Current target")
+    target_capture = CaptureCalculation.objects.get(competition=target, generation=0)
+
+    assert dispatch_capture_calculations_task.apply(args=[1]).get() == {
+        "processed": 1,
+        "failed": 0,
+    }
+    target_capture.refresh_from_db()
+    assert target_capture.status == CaptureCalculation.Status.FRESH
+    assert (
+        CaptureCalculation.objects.filter(
+            competition=protected,
+            generation__gte=1,
+            status=CaptureCalculation.Status.PENDING,
+        ).count()
+        == 101
+    )
 
 
 def test_stale_linked_score_job_relinks_to_current_capture_and_completes() -> None:

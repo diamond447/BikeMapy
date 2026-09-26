@@ -103,7 +103,9 @@ def dispatch_capture_calculations_task(limit: int = 100) -> dict[str, int]:
             status__in=(CaptureCalculation.Status.PENDING, CaptureCalculation.Status.FAILED),
             attempts__lt=MAX_CAPTURE_ATTEMPTS,
             next_attempt_at__lte=now,
+            generation=F("competition__capture_revision"),
         )
+        .filter(~Exists(live_recomputation_owner))
         .order_by("-generation", "requested_at", "pk")
         .iterator(chunk_size=32)
     )
