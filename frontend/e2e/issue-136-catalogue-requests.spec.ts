@@ -222,5 +222,7 @@ test('debounces catalogue typing, cancels the old list, and keeps final list and
   expect(
     viewportRequests.filter((url) => new URL(url).searchParams.get('search') === 'ridge'),
   ).toHaveLength(1)
-  expect(page.getByRole('button', { name: /south ridge loop/i })).not.toBeVisible()
+  await expect(page.getByRole('button', { name: /south ridge loop/i })).not.toBeVisible({
+    timeout: 15_000,
+  })
 })
