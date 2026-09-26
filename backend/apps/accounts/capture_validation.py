@@ -31,10 +31,9 @@ STATEMENT_TIMEOUT_MS: Final = 5_000
 MAX_RETRIES: Final = 2
 _EXACT_ENDPOINT_TOLERANCE_M: Final = 0.1
 # EPSG:6933 is centered on Greenwich and normalizes longitudes at the
-# antimeridian during transformation.  The same cylindrical equal-area
-# projection centered on 180 degrees keeps an antimeridian ring continuous.
+# antimeridian during transformation. Crossing batches use the same
+# cylindrical equal-area projection with a batch-selected central meridian.
 _WGS84_PROJ4: Final = "+proj=longlat +datum=WGS84"
-_DATELINE_EQUAL_AREA_PROJ4: Final = "+proj=cea +lat_ts=30 +lon_0=180 +datum=WGS84 +units=m +no_defs"
 
 
 class CaptureValidationError(ValueError):
@@ -193,28 +192,54 @@ def validate_capture(traces: list[CaptureTrace] | tuple[CaptureTrace, ...]) -> V
             SELECT input_raw.trace_id,
                    input_raw.owner_id,
                    input_raw.local_date,
-                   CASE
-                       -- PostGIS geometry lines do not wrap at the
-                       -- antimeridian.  A 179E -> 179W segment therefore
-                       -- has a 358 degree extent unless its western side is
-                       -- shifted into the same short, continuous interval.
-                       WHEN ST_XMax(input_raw.geom_wgs)
-                              - ST_XMin(input_raw.geom_wgs) > 180
-                       THEN ST_ShiftLongitude(input_raw.geom_wgs)
-                       ELSE input_raw.geom_wgs
-                   END AS geom_wgs
+                   -- Keep every edge in the input's native longitude frame.
+                   -- Shifting only a crossing edge would disconnect adjacent
+                   -- edges whose shared endpoint is represented as +/-180.
+                   input_raw.geom_wgs AS geom_wgs
             FROM input_raw
+        ),
+        longitude_values AS (
+            SELECT DISTINCT ST_X(points.geom) AS longitude
+            FROM input_raw
+            CROSS JOIN LATERAL ST_DumpPoints(input_raw.geom_wgs) AS points
+        ),
+        longitude_gaps AS (
+            SELECT longitude,
+                   COALESCE(
+                       LEAD(longitude) OVER (ORDER BY longitude),
+                       FIRST_VALUE(longitude) OVER (ORDER BY longitude) + 360
+                   ) - longitude AS gap
+            FROM longitude_values
+        ),
+        largest_longitude_gap AS (
+            SELECT longitude, gap
+            FROM longitude_gaps
+            ORDER BY gap DESC, longitude
+            LIMIT 1
         ),
         projection AS (
             SELECT CASE
-                       WHEN bool_or(
-                           ST_XMax(input_raw.geom_wgs)
-                           - ST_XMin(input_raw.geom_wgs) > 180
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM input_raw
+                           WHERE ST_XMax(input_raw.geom_wgs)
+                                 - ST_XMin(input_raw.geom_wgs) > 180
                        )
-                       THEN '{_DATELINE_EQUAL_AREA_PROJ4}'
+                       THEN '+proj=cea +lat_ts=30 +lon_0='
+                            || (
+                                CASE
+                                    WHEN largest_longitude_gap.longitude
+                                         + largest_longitude_gap.gap / 2 - 180 < -180
+                                    THEN largest_longitude_gap.longitude
+                                         + largest_longitude_gap.gap / 2 + 180
+                                    ELSE largest_longitude_gap.longitude
+                                         + largest_longitude_gap.gap / 2 - 180
+                                END
+                            )::text
+                            || ' +datum=WGS84 +units=m +no_defs'
                        ELSE 'EPSG:6933'
                    END AS forward_projection
-            FROM input_raw
+            FROM largest_longitude_gap
         ),
         input AS (
             SELECT normalized_input.*,

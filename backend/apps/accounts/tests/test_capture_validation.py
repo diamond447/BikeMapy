@@ -314,6 +314,32 @@ def test_dateline_crossing_ring_does_not_cover_disjoint_local_ring() -> None:
     assert local_face.area_m2 == pytest.approx(3_000_000_000, rel=0.2)
 
 
+def test_dateline_projection_keeps_greenwich_ring_disjoint() -> None:
+    alice = [
+        [179.0, 10.0],
+        [-179.0, 10.0],
+        [-179.0, 11.0],
+        [179.0, 11.0],
+        [179.0, 10.0],
+    ]
+    bob = [
+        [-0.5, 10.2],
+        [0.5, 10.2],
+        [0.5, 10.3],
+        [-0.5, 10.3],
+        [-0.5, 10.2],
+    ]
+
+    result = validate_capture(
+        _edges(alice, "alice", prefix="alice") + _edges(bob, "bob", prefix="bob")
+    )
+
+    assert len(result.faces) == 2
+    by_owner = {face.owner_ids: face for face in result.faces}
+    assert by_owner[("alice",)].area_m2 == pytest.approx(24_200_000_000, rel=0.08)
+    assert by_owner[("bob",)].area_m2 == pytest.approx(1_210_000_000, rel=0.08)
+
+
 def test_invalid_input_and_bounded_safe_failure_preserve_last_valid_result() -> None:
     previous = ValidationResult((), 1, 2)
     invalid = [_trace("invalid", "rider", [[14.0, 50.0], [float("nan"), 50.0]])]

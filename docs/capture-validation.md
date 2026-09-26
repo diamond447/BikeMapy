@@ -11,9 +11,10 @@ trace ID, Prague-local timestamp, and coordinates. Endpoint distance is measured
 with WGS84 `geography` (`ST_DWithin`), so the 50-metre rule is accurate at the
 equator and at 80°N. PostGIS transforms ordinary lines to EPSG:6933 (a global
 metre-based equal-area CRS) for noding and `ST_Polygonize`. If a batch crosses
-the antimeridian, it switches to the same cylindrical equal-area projection
-centered on 180°. This prevents a 179°E → 179°W line from becoming a 358°
-segment; the output is normalized back to WGS84. Endpoints that already match
+the antimeridian, it finds the largest empty longitude gap and places the seam
+there in an equivalent cylindrical equal-area projection. This prevents a
+179°E → 179°W line, or an unrelated Greenwich line, from being cut by a fixed
+seam; the output is normalized back to WGS84. Endpoints that already match
 another endpoint are anchors and cannot be pulled into nearby nested loops;
 unanchored endpoint clusters use a stable canonical point.
 Unbounded exterior geometry is not emitted; faces smaller than 1 m² are
