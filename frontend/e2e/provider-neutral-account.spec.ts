@@ -141,16 +141,14 @@ test.describe('mobile account recovery', () => {
     await page.getByRole('button', { name: 'Send reset email' }).click()
     await expect(page.getByRole('status')).toContainText('If the account exists')
 
+    await page.goto('/game/reset-password/uid-1/token-1/')
+    await page.getByRole('button', { name: 'Player account' }).click()
+    await page.getByLabel('New password').fill('new-password-123')
+    await page.getByRole('button', { name: 'Confirm password reset' }).click()
+    await expect(page.getByRole('status')).toContainText('Password reset')
+
     await page.goto('/game')
     await page.getByRole('button', { name: 'Player account' }).click()
-    const resetConfirm = await page.evaluate(async () => {
-      const response = await fetch('/api/v1/game/auth/local/reset/uid-1/token-1/', {
-        method: 'POST',
-        body: JSON.stringify({ password: 'new-password-123' }),
-      })
-      return response.json()
-    })
-    expect(resetConfirm).toEqual({ detail: 'Password reset.' })
     await page.getByRole('button', { name: 'Use GitHub with an invite' }).click()
     await expect(page.getByRole('status')).toContainText('Enter your competition invite code')
     await page.getByLabel('Competition invite code').fill('RIDE-123')
