@@ -68,6 +68,10 @@ def game_is_available() -> bool:
     return bool(strava_is_available() or getattr(settings, "PLAYER_ACCOUNTS_ENABLED", False))
 
 
+def player_accounts_is_available() -> bool:
+    return bool(getattr(settings, "PLAYER_ACCOUNTS_ENABLED", False))
+
+
 def competition_is_available() -> bool:
     """Require the separate legal/rollout gate for cross-member features."""
 

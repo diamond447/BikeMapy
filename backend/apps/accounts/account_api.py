@@ -29,6 +29,7 @@ from .account_services import (
 from .activity_services import remove_activity
 from .game_api import _private
 from .models import ActivityUploadBatch, Player
+from .services import player_accounts_is_available
 from .upload_services import UploadError, create_batch
 from .upload_tasks import process_activity_upload_batch_task
 
@@ -71,6 +72,8 @@ class AccountEndpoint(APIView):
 
     def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Response:
         get_token(request)
+        if not player_accounts_is_available():
+            return _private(Response({"detail": "Player accounts are unavailable."}, status=404))
         response = super().dispatch(request, *args, **kwargs)
         response["X-CSRFToken"] = get_token(request)
         return response
