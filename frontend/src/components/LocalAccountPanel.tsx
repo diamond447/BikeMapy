@@ -6,6 +6,7 @@ type UploadResult = {
   name: string
   status: string
   error_code?: string
+  error_detail?: string
   activity_id?: string | null
 }
 
@@ -51,8 +52,12 @@ function detail(data: unknown, fallback: string) {
 }
 
 export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSignedOut }: Props) {
-  const [mode, setMode] = useState<'login' | 'onboard' | 'reset' | 'change'>(
-    authenticated ? 'change' : 'login',
+  const resetParts =
+    typeof window !== 'undefined'
+      ? window.location.pathname.match(/^(?:\/game)?\/reset-password\/([^/]+)\/([^/]+)\/?$/)
+      : null
+  const [mode, setMode] = useState<'login' | 'onboard' | 'reset' | 'reset-confirm' | 'change'>(
+    authenticated ? 'change' : resetParts ? 'reset-confirm' : 'login',
   )
   const [identifier, setIdentifier] = useState('')
   const [username, setUsername] = useState('')
@@ -115,6 +120,22 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
           body: JSON.stringify({ email }),
         })
         setMessage('If the account exists, reset instructions were sent.')
+      } else if (mode === 'reset-confirm' && resetParts) {
+        const result = await request(
+          `/api/v1/game/auth/local/reset/${resetParts[1]}/${resetParts[2]}/`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+          },
+        )
+        if (!result.response.ok)
+          setMessage(detail(result.data, 'Reset link is invalid or expired.'))
+        else {
+          setMode('login')
+          setPassword('')
+          setMessage('Password reset. Sign in with your new password.')
+        }
       } else {
         const result = await request('/api/v1/game/account/password/', {
           method: 'POST',
@@ -192,6 +213,20 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
     }
   }
 
+  const beginGithubLink = async () => {
+    setBusy(true)
+    try {
+      const result = await request('/api/v1/game/account/github/link/')
+      if (!result.response.ok) setMessage(detail(result.data, 'GitHub linking is unavailable.'))
+      else if (result.data && typeof result.data === 'object' && 'url' in result.data)
+        window.location.assign(String(result.data.url))
+    } catch {
+      setMessage('The account service is temporarily unavailable.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const deleteActivity = async (activityId: string) => {
     const result = await request(`/api/v1/game/account/activities/${activityId}/`, {
       method: 'DELETE',
@@ -212,8 +247,25 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
       <section className="local-account-upload" aria-labelledby="local-upload-title">
         <div className="local-account-heading">
           <h3 id="local-upload-title">Import activities</h3>
-          <a href="/accounts/github/login/?process=connect">Link GitHub</a>
+          <button type="button" onClick={() => void beginGithubLink()} disabled={busy}>
+            Link GitHub
+          </button>
         </div>
+        <form onSubmit={submit}>
+          <label htmlFor="local-new-password">Change password</label>
+          <input
+            id="local-new-password"
+            required
+            minLength={12}
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="new-password"
+          />
+          <button type="submit" disabled={busy}>
+            Change password
+          </button>
+        </form>
         <p>Upload FIT, GPX, or TCX files, optionally in a ZIP archive.</p>
         <form onSubmit={upload}>
           <label htmlFor="activity-files">Activity files</label>
@@ -253,6 +305,7 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
                       Delete
                     </button>
                   )}
+                  {file.error_detail && <small>{file.error_detail}</small>}
                 </li>
               ))}
             </ul>
@@ -316,17 +369,34 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
             />
           </>
         )}
-        {mode === 'reset' && (
+        {(mode === 'reset' || mode === 'reset-confirm') && (
           <>
-            <label htmlFor="local-reset-email">Email</label>
-            <input
-              id="local-reset-email"
-              required
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              autoComplete="email"
-            />
+            {mode === 'reset' ? (
+              <>
+                <label htmlFor="local-reset-email">Email</label>
+                <input
+                  id="local-reset-email"
+                  required
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="email"
+                />
+              </>
+            ) : (
+              <>
+                <label htmlFor="local-new-password">New password</label>
+                <input
+                  id="local-new-password"
+                  required
+                  minLength={12}
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </>
+            )}
           </>
         )}
         {mode === 'change' && (
@@ -352,7 +422,9 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
                 ? 'Create account'
                 : mode === 'reset'
                   ? 'Send reset email'
-                  : 'Change password'}
+                  : mode === 'reset-confirm'
+                    ? 'Confirm password reset'
+                    : 'Change password'}
         </button>
       </form>
       <nav aria-label="Account options" className="local-account-links">

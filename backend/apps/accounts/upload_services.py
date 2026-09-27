@@ -26,6 +26,24 @@ MAX_GEOMETRY_POINTS = 100_000
 MAX_ACTIVITY_COUNT = 100
 MAX_BATCH_EXPANDED_BYTES = 200 * 1024 * 1024
 SUPPORTED_SUFFIXES = frozenset({".fit", ".gpx", ".tcx"})
+_FIT_CRC_TABLE = (
+    0x00,
+    0xCC,
+    0xD9,
+    0x15,
+    0xF1,
+    0x3D,
+    0x28,
+    0xE4,
+    0xA2,
+    0x6E,
+    0x7B,
+    0xB7,
+    0x53,
+    0x9F,
+    0x8A,
+    0x46,
+)
 
 
 class UploadError(ValueError):
@@ -33,6 +51,16 @@ class UploadError(ValueError):
         super().__init__(detail)
         self.detail = detail
         self.code = code
+
+
+def _fit_crc(data: bytes) -> int:
+    crc = 0
+    for value in data:
+        nibble = (crc ^ value) & 0x0F
+        crc = (crc >> 4) ^ _FIT_CRC_TABLE[nibble]
+        nibble = (crc ^ (value >> 4)) & 0x0F
+        crc = (crc >> 4) ^ _FIT_CRC_TABLE[nibble]
+    return crc
 
 
 def _local_name(tag: str) -> str:
@@ -70,7 +98,7 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
             for key, value in element.attrib.items()
             if _local_name(key) == "sport"
         }
-        if sports and not sports.issubset({"biking", "cycling", "bike"}):
+        if not sports or not sports.issubset({"biking", "cycling", "bike"}):
             raise UploadError("Only cycling activities are supported.", code="non_cycling")
     points: list[tuple[float, float]] = []
     has_track = False
@@ -91,16 +119,25 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
             has_track = True
             lat_value: float | None = None
             lon_value: float | None = None
-            for child in element:
+            # TCX v2 stores coordinates under Position/LatitudeDegrees and
+            # Position/LongitudeDegrees. Older exports use Latitude/Degrees;
+            # both are accepted only inside a Trackpoint.
+            for child in element.iter():
                 child_name = _local_name(child.tag)
-                if child_name == "latitude":
+                if child_name in {"latitude", "position"}:
                     for value in child.iter():
-                        if _local_name(value.tag) == "degrees":
-                            lat_value = float(_text(value.text))
-                elif child_name == "longitude":
+                        if _local_name(value.tag) in {"latitudedegrees", "degrees"}:
+                            try:
+                                lat_value = float(_text(value.text))
+                            except ValueError:
+                                lat_value = None
+                if child_name in {"longitude", "position"}:
                     for value in child.iter():
-                        if _local_name(value.tag) == "degrees":
-                            lon_value = float(_text(value.text))
+                        if _local_name(value.tag) in {"longitudedegrees", "degrees"}:
+                            try:
+                                lon_value = float(_text(value.text))
+                            except ValueError:
+                                lon_value = None
             if lat_value is not None and lon_value is not None:
                 points.append((lon_value, lat_value))
         elif name in {"time", "starttime"} and started is None:
@@ -109,7 +146,7 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
                 started = parsed
         if len(points) > MAX_GEOMETRY_POINTS:
             raise UploadError("The activity has too many geometry points.", code="too_many_points")
-    if suffix == ".gpx" and track_type and track_type not in {"bike", "biking", "cycling"}:
+    if suffix == ".gpx" and track_type not in {"bike", "biking", "cycling"}:
         raise UploadError("Only cycling activities are supported.", code="non_cycling")
     if suffix == ".gpx" and not has_track:
         raise UploadError("The activity does not contain a cycling track.", code="non_cycling")
@@ -138,6 +175,15 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
     end = header_size + data_size
     if data_size <= 0 or end > len(data) or end > header_size + MAX_FILE_BYTES:
         raise UploadError("The FIT file size is invalid.", code="invalid_fit")
+    if header_size >= 14:
+        expected_header_crc = struct.unpack_from("<H", data, header_size - 2)[0]
+        if _fit_crc(data[: header_size - 2]) != expected_header_crc:
+            raise UploadError("The FIT header checksum is invalid.", code="invalid_fit")
+    if len(data) < end + 2:
+        raise UploadError("The FIT data checksum is missing.", code="invalid_fit")
+    expected_data_crc = struct.unpack_from("<H", data, end)[0]
+    if _fit_crc(data[:end]) != expected_data_crc:
+        raise UploadError("The FIT data checksum is invalid.", code="invalid_fit")
     definitions: dict[int, tuple[str, int, list[tuple[int, int, int]], list[int]]] = {}
     points: list[tuple[float, float]] = []
     started: datetime | None = None
@@ -206,7 +252,7 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
                 values[field_number] = struct.unpack_from(f"{endian}h", raw)[0]
             elif base_type == 0x84:
                 values[field_number] = struct.unpack_from(f"{endian}H", raw)[0]
-            elif base_type == 0x86:
+            elif base_type == 0x85:
                 values[field_number] = struct.unpack_from(f"{endian}i", raw)[0]
             else:
                 values[field_number] = struct.unpack_from(f"{endian}I", raw)[0]
@@ -218,7 +264,7 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
             if last_timestamp is None:
                 raise UploadError("The FIT compressed timestamp has no base.", code="invalid_fit")
             timestamp = (last_timestamp & ~0x1F) | compressed_offset
-            if timestamp <= last_timestamp:
+            if timestamp < last_timestamp:
                 timestamp += 0x20
             values[253] = timestamp
         if global_number == 20 and 0 in values and 1 in values:
@@ -235,9 +281,9 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
             last_timestamp = values[253]
             if started is None:
                 started = datetime.fromtimestamp(values[253] + 631065600, tz=UTC)
-    # FIT sport enum 2 is cycling.  Older devices occasionally omit the
-    # session message; in that case geometry remains the compatibility signal.
-    if sport is not None and sport != 2:
+    # Session sport is mandatory evidence. FIT enum 2 is cycling; geometry
+    # alone is not enough to classify an upload as a ride.
+    if sport != 2:
         raise UploadError("Only cycling activities are supported.", code="non_cycling")
     if len(points) < 2:
         raise UploadError("The activity does not contain a usable track.", code="missing_geometry")
@@ -364,6 +410,14 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
         status=ActivityUploadBatch.Status.RUNNING
     )
     for upload in batch.files.filter(status=ActivityUpload.Status.QUEUED).order_by("pk"):
+        # Claim before reading transient content. A second worker skips the
+        # row instead of turning an accepted result into a duplicate/failure.
+        claimed = ActivityUpload.objects.filter(
+            pk=upload.pk, status=ActivityUpload.Status.QUEUED
+        ).update(status=ActivityUpload.Status.PROCESSING)
+        if not claimed:
+            continue
+        upload.status = ActivityUpload.Status.PROCESSING
         try:
             data = bytes(upload.content or b"")
             points, started, kind = parse_activity(data, upload.original_name)
@@ -418,22 +472,11 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
                         upload.status = ActivityUpload.Status.DUPLICATE
                         upload.fingerprint = fingerprint
                         upload.activity = activity
-                        upload.content = None
-                        upload.processed_at = timezone.now()
-                        upload.save(
-                            update_fields=(
-                                "status",
-                                "fingerprint",
-                                "activity",
-                                "content",
-                                "processed_at",
-                            )
-                        )
-                        continue
-                    upload.status = ActivityUpload.Status.ACCEPTED
-                    upload.fingerprint = fingerprint
-                    upload.activity = activity
-                    _schedule_player_recomputations(batch.player.pk)
+                    else:
+                        upload.status = ActivityUpload.Status.ACCEPTED
+                        upload.fingerprint = fingerprint
+                        upload.activity = activity
+                        _schedule_player_recomputations(batch.player.pk)
                 upload.content = None
                 upload.processed_at = timezone.now()
                 upload.save(
@@ -466,26 +509,62 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
         # worker interruption and distinguish a partial batch from a terminal
         # failure.  Counts are derived from committed rows, not worker memory.
         statuses_now = list(batch.files.values_list("status", flat=True))
+        terminal_now = [
+            status
+            for status in statuses_now
+            if status
+            in {
+                ActivityUpload.Status.ACCEPTED,
+                ActivityUpload.Status.DUPLICATE,
+                ActivityUpload.Status.FAILED,
+                ActivityUpload.Status.UNSUPPORTED,
+            }
+        ]
         ActivityUploadBatch.objects.filter(pk=batch.pk).update(
             status=ActivityUploadBatch.Status.RUNNING,
-            processed_files=sum(status != ActivityUpload.Status.QUEUED for status in statuses_now),
-            accepted_files=statuses_now.count(ActivityUpload.Status.ACCEPTED),
-            duplicate_files=statuses_now.count(ActivityUpload.Status.DUPLICATE),
+            processed_files=len(terminal_now),
+            accepted_files=terminal_now.count(ActivityUpload.Status.ACCEPTED),
+            duplicate_files=terminal_now.count(ActivityUpload.Status.DUPLICATE),
             failed_files=sum(
                 status in {ActivityUpload.Status.FAILED, ActivityUpload.Status.UNSUPPORTED}
-                for status in statuses_now
+                for status in terminal_now
             ),
         )
     counts = batch.files.values_list("status", flat=True)
     statuses = list(counts)
-    done = len(statuses)
-    batch.processed_files = done
-    batch.accepted_files = statuses.count(ActivityUpload.Status.ACCEPTED)
-    batch.duplicate_files = statuses.count(ActivityUpload.Status.DUPLICATE)
+    terminal = [
+        status
+        for status in statuses
+        if status
+        in {
+            ActivityUpload.Status.ACCEPTED,
+            ActivityUpload.Status.DUPLICATE,
+            ActivityUpload.Status.FAILED,
+            ActivityUpload.Status.UNSUPPORTED,
+        }
+    ]
+    batch.processed_files = len(terminal)
+    batch.accepted_files = terminal.count(ActivityUpload.Status.ACCEPTED)
+    batch.duplicate_files = terminal.count(ActivityUpload.Status.DUPLICATE)
     batch.failed_files = sum(
         status in {ActivityUpload.Status.FAILED, ActivityUpload.Status.UNSUPPORTED}
-        for status in statuses
+        for status in terminal
     )
+    if len(terminal) < len(statuses):
+        batch.status = ActivityUploadBatch.Status.RUNNING
+        batch.completed_at = None
+        batch.save(
+            update_fields=(
+                "status",
+                "processed_files",
+                "accepted_files",
+                "duplicate_files",
+                "failed_files",
+                "completed_at",
+                "updated_at",
+            )
+        )
+        return batch
     if batch.failed_files == 0:
         batch.status = ActivityUploadBatch.Status.COMPLETED
     elif batch.accepted_files == 0 and batch.duplicate_files == 0:

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from tempfile import SpooledTemporaryFile
 from typing import Any
 
 from django.contrib.auth import login as auth_login
@@ -333,7 +334,7 @@ class ActivityUploadView(AccountEndpoint):
         total_bytes = 0
         for item in request.FILES.getlist("files"):
             limit = MAX_ARCHIVE_BYTES if item.name.lower().endswith(".zip") else MAX_FILE_BYTES
-            chunks: list[bytes] = []
+            spooled = SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
             size = 0
             while True:
                 chunk = item.read(min(1024 * 1024, limit - size + 1))
@@ -346,13 +347,15 @@ class ActivityUploadView(AccountEndpoint):
                             {"detail": "The uploaded file exceeds the size limit."}, status=400
                         )
                     )
-                chunks.append(chunk)
+                spooled.write(chunk)
             total_bytes += size
             if total_bytes > MAX_BATCH_EXPANDED_BYTES:
                 return _private(
                     Response({"detail": "The upload batch exceeds the size limit."}, status=400)
                 )
-            files.append((item.name, b"".join(chunks)))
+            spooled.seek(0)
+            files.append((item.name, spooled.read()))
+            spooled.close()
         try:
             batch = create_batch(player, files, attested=data.validated_data["attested"])
         except UploadError as exc:

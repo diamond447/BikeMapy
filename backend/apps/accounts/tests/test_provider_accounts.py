@@ -7,12 +7,14 @@ from __future__ import annotations
 import io
 import struct
 import zipfile
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.account_services import (
@@ -28,10 +30,13 @@ from apps.accounts.models import (
 )
 from apps.accounts.upload_services import (
     UploadError,
+    _fit_crc,
     _safe_archive_members,
     create_batch,
     parse_activity,
+    process_batch,
 )
+from apps.accounts.upload_tasks import cleanup_expired_activity_uploads_task
 
 pytestmark = pytest.mark.django_db
 
@@ -122,7 +127,7 @@ def test_archive_paths_and_nested_archives_are_rejected() -> None:
 
 
 def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
-    gpx = b"""<gpx><metadata><time>2026-09-27T06:00:00Z</time></metadata>
+    gpx = b"""<gpx><metadata><time>2026-09-27T06:00:00Z</time><type>cycling</type></metadata>
         <trk><trkseg><trkpt lat=\"50.1\" lon=\"14.4\"/>
         <trkpt lat=\"50.2\" lon=\"14.5\"/></trkseg></trk>
     </gpx>"""
@@ -131,17 +136,19 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
     assert started.year == 2026
     assert kind == "GPX"
 
-    tcx = b"""<TrainingCenterDatabase><Activities><Activity><Track>
-        <Trackpoint><Time>2026-09-27T06:00:00Z</Time>
-        <Latitude><Degrees>50.1</Degrees></Latitude><Longitude><Degrees>14.4</Degrees></Longitude>
-        </Trackpoint><Trackpoint><Latitude><Degrees>50.2</Degrees></Latitude>
-        <Longitude><Degrees>14.5</Degrees></Longitude></Trackpoint></Track>
+    tcx = b"""<TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
+        <Activities><Activity Sport="Biking"><Track>
+        <Trackpoint><Time>2026-09-27T06:00:00Z</Time><Position>
+        <LatitudeDegrees>50.1</LatitudeDegrees><LongitudeDegrees>14.4</LongitudeDegrees>
+        </Position></Trackpoint><Trackpoint><Position><LatitudeDegrees>50.2</LatitudeDegrees>
+        <LongitudeDegrees>14.5</LongitudeDegrees></Position></Trackpoint></Track>
         </Activity></Activities></TrainingCenterDatabase>"""
     tcx_points, _, tcx_kind = parse_activity(tcx, "ride.tcx")
     assert tcx_points == [(14.4, 50.1), (14.5, 50.2)]
     assert tcx_kind == "TCX"
 
-    fit_payload = bytearray([0x40, 0, 0, 20, 0, 3])
+    fit_payload = bytearray([0x41, 0, 0, 18, 0, 1, 5, 1, 0x02, 1, 2])
+    fit_payload.extend(bytes((0x40, 0, 0, 20, 0, 3)))
     fit_payload.extend(bytes((0, 4, 0x86, 1, 4, 0x86, 253, 4, 0x86)))
     for latitude, longitude in ((50.1, 14.4), (50.2, 14.5)):
         fit_payload.append(0)
@@ -151,7 +158,10 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
     fit = bytearray((14, 0x10, 0, 0))
     fit.extend(struct.pack("<I", len(fit_payload)))
     fit.extend(b".FIT\x00\x00")
-    fit_points, _, fit_kind = parse_activity(bytes(fit + fit_payload), "ride.fit")
+    fit[12:14] = struct.pack("<H", _fit_crc(bytes(fit[:12])))
+    fit.extend(fit_payload)
+    fit.extend(struct.pack("<H", _fit_crc(bytes(fit))))
+    fit_points, _, fit_kind = parse_activity(bytes(fit), "ride.fit")
     assert fit_points[0][0] == pytest.approx(14.4, abs=0.001)
     assert fit_points[0][1] == pytest.approx(50.1, abs=0.001)
     assert fit_points[1][0] == pytest.approx(14.5, abs=0.001)
@@ -174,9 +184,24 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
 
     with pytest.raises(UploadError, match="supported"):
         parse_activity(b"", "ride.csv")
-    bad_gpx = b'<gpx><trkpt lat="95" lon="14"/><trkpt lat="50" lon="14"/></gpx>'
+    bad_gpx = (
+        b"<gpx><metadata><type>cycling</type></metadata>"
+        b'<trkpt lat="95" lon="14"/><trkpt lat="50" lon="14"/></gpx>'
+    )
     with pytest.raises(UploadError, match="invalid coordinates"):
         parse_activity(bad_gpx, "ride.gpx")
+    with pytest.raises(UploadError, match="cycling"):
+        parse_activity(b"<gpx><trk><trkpt lat='50' lon='14'/></trk></gpx>", "ride.gpx")
+    with pytest.raises(UploadError, match="cycling"):
+        parse_activity(
+            b'<TrainingCenterDatabase><Activities><Activity Sport="Running"><Track>'
+            b"<Trackpoint><Position><LatitudeDegrees>50</LatitudeDegrees>"
+            b"<LongitudeDegrees>14</LongitudeDegrees></Position></Trackpoint>"
+            b"<Trackpoint><Position><LatitudeDegrees>50.1</LatitudeDegrees>"
+            b"<LongitudeDegrees>14.1</LongitudeDegrees></Position></Trackpoint>"
+            b"</Track></Activity></Activities></TrainingCenterDatabase>",
+            "ride.tcx",
+        )
 
 
 def test_create_batch_requires_attestation_and_expands_zip() -> None:
@@ -194,6 +219,44 @@ def test_create_batch_requires_attestation_and_expands_zip() -> None:
     assert batch.total_files == 2
     assert batch.files.count() == 2
     assert batch.files.filter(original_name="notes.txt", content=b"").exists()
+
+
+def test_processing_claim_and_replay_preserve_accepted_result() -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    gpx = (
+        b"<gpx><metadata><type>cycling</type></metadata><trk>"
+        b"<trkpt lat='50' lon='14'/><trkpt lat='50.1' lon='14.1'/></trk></gpx>"
+    )
+    batch = create_batch(player, [("ride.gpx", gpx)], attested=True)
+    first = process_batch(batch.pk)
+    second = process_batch(batch.pk)
+    assert first.status == second.status == ActivityUploadBatch.Status.COMPLETED
+    assert second.accepted_files == 1
+    assert second.duplicate_files == 0
+    assert second.files.get().status == "accepted"
+
+
+def test_expired_processing_upload_finalizes_parent_batch() -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    batch = create_batch(player, [("ride.gpx", b"stale")], attested=True)
+    upload = batch.files.get()
+    ActivityUploadBatch.objects.filter(pk=batch.pk).update(
+        status=ActivityUploadBatch.Status.RUNNING
+    )
+    upload.status = "processing"
+    upload.created_at = timezone.now() - timedelta(days=2)
+    upload.save(update_fields=("status", "created_at"))
+    cleanup_expired_activity_uploads_task()
+    batch.refresh_from_db()
+    upload.refresh_from_db()
+    assert batch.status == ActivityUploadBatch.Status.FAILED
+    assert upload.content is None
 
 
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)

@@ -300,6 +300,7 @@ class ActivityUpload(models.Model):
 
     class Status(models.TextChoices):
         QUEUED = "queued", "Queued"
+        PROCESSING = "processing", "Processing"
         ACCEPTED = "accepted", "Accepted"
         DUPLICATE = "duplicate", "Duplicate"
         UNSUPPORTED = "unsupported", "Unsupported"
