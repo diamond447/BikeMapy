@@ -73,6 +73,9 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
 GAME_ENABLED = env_bool("GAME_ENABLED", False)
+# Provider-neutral local accounts can be enabled independently of the legacy
+# Strava OAuth rollout gate.
+PLAYER_ACCOUNTS_ENABLED = env_bool("PLAYER_ACCOUNTS_ENABLED", False)
 # Account authentication and competition/cross-member features have separate
 # rollout and legal gates. Competition endpoints remain unavailable unless
 # both flags are explicitly enabled.

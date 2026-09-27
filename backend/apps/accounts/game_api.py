@@ -77,7 +77,9 @@ def _clear_player_session(request: Any) -> None:
 def _player_payload(player: Player) -> dict[str, Any]:
     return {
         "id": str(player.pk),
-        "athlete_id": str(player.strava_athlete_id),
+        "athlete_id": str(player.strava_athlete_id)
+        if player.strava_athlete_id is not None
+        else None,
         "display_name": player.strava_display_name,
         "profile_image_url": player.strava_profile_image_url or None,
         "nickname": player.nickname or None,
@@ -89,7 +91,7 @@ def _player_payload(player: Player) -> dict[str, Any]:
 
 class PlayerSerializer(serializers.Serializer[Player]):
     id = serializers.CharField()
-    athlete_id = serializers.CharField()
+    athlete_id = serializers.CharField(allow_null=True)
     display_name = serializers.CharField()
     profile_image_url = serializers.URLField(allow_null=True)
     nickname = serializers.CharField(allow_null=True)

@@ -130,6 +130,9 @@ def _safe_archive_members(data: bytes) -> list[tuple[str, bytes]]:
         if suffix == ".zip":
             raise UploadError("Nested archives are not supported.", code="nested_archive")
         if suffix not in SUPPORTED_SUFFIXES:
+            # Keep an explicit per-file result without reading arbitrary
+            # unsupported payloads into memory.
+            result.append((name, b""))
             continue
         expanded += info.file_size
         if expanded > MAX_EXPANDED_BYTES or info.file_size > MAX_FILE_BYTES:

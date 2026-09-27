@@ -14,6 +14,8 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Q
 from django.utils.encoding import force_bytes
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
 from django.utils.http import urlsafe_base64_encode
 
 from .competition_services import CompetitionError, join_competition
@@ -159,3 +161,19 @@ def request_password_reset(email: Any) -> None:
         recipient_list=[user.email],
         fail_silently=True,
     )
+
+
+def confirm_password_reset(*, uidb64: str, token: str, password: str) -> None:
+    """Consume a Django single-use reset token and clear forced-change state."""
+
+    try:
+        user_id = force_str(urlsafe_base64_decode(uidb64))
+        user = get_user_model().objects.get(pk=user_id, is_active=True)
+    except (TypeError, ValueError, OverflowError, get_user_model().DoesNotExist):
+        raise AccountError("The reset link is invalid or expired.", code="invalid_reset") from None
+    if not default_token_generator.check_token(user, token):
+        raise AccountError("The reset link is invalid or expired.", code="invalid_reset")
+    player = Player.objects.filter(user=user, lifecycle=Player.Lifecycle.CONNECTED).first()
+    if player is None:
+        raise AccountError("The reset link is invalid or expired.", code="invalid_reset")
+    set_password(player, password)

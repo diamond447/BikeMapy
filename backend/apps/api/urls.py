@@ -9,6 +9,7 @@ from apps.accounts.account_api import (
     GitHubLinkView,
     GitHubOnboardingInviteView,
     PasswordChangeView,
+    PasswordResetConfirmView,
     PasswordResetRequestView,
     UploadedActivityDeleteView,
 )
@@ -77,6 +78,11 @@ urlpatterns = [
     ),
     path("game/auth/local/logout/", AccountLogoutView.as_view(), name="game-local-logout"),
     path("game/auth/local/reset/", PasswordResetRequestView.as_view(), name="game-local-reset"),
+    path(
+        "game/auth/local/reset/<uidb64>/<token>/",
+        PasswordResetConfirmView.as_view(),
+        name="game-local-reset-confirm",
+    ),
     path("game/auth/logout/", PlayerLogoutView.as_view(), name="game-player-logout"),
     path("game/account/refresh/", PlayerRefreshView.as_view(), name="game-player-refresh"),
     path("game/account/disconnect/", PlayerDisconnectView.as_view(), name="game-player-disconnect"),

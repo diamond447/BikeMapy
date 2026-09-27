@@ -6,7 +6,7 @@ from typing import Any
 
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
@@ -18,6 +18,7 @@ from .account_services import (
     AccountError,
     authenticate_player,
     create_invited_account,
+    confirm_password_reset,
     request_password_reset,
     set_password,
     validate_invite_code,
@@ -50,6 +51,10 @@ class PasswordInput(serializers.Serializer[dict[str, Any]]):
 
 class ResetInput(serializers.Serializer[dict[str, Any]]):
     email = serializers.EmailField(max_length=254)
+
+
+class InviteInput(serializers.Serializer[dict[str, Any]]):
+    invite_code = serializers.CharField(max_length=64)
 
 
 class AccountEndpoint(APIView):
@@ -137,6 +142,11 @@ class AccountLoginView(AccountEndpoint):
 class GitHubOnboardingInviteView(AccountEndpoint):
     """Store a validated invite in the session before first-time OAuth."""
 
+    @extend_schema(
+        request=InviteInput,
+        responses={200: OpenApiResponse(description="OAuth URL stored.")},
+        tags=["account-auth"],
+    )
     def post(self, request: Any) -> Response:
         code = str(request.data.get("invite_code") or "").strip().upper()
         try:
@@ -149,6 +159,11 @@ class GitHubOnboardingInviteView(AccountEndpoint):
 
 
 class AccountLogoutView(AccountEndpoint):
+    @extend_schema(
+        request=None,
+        responses={204: OpenApiResponse(description="Signed out.")},
+        tags=["account-auth"],
+    )
     def post(self, request: Any) -> Response:
         request.session.pop("player_id", None)
         request.session.pop("player_session_epoch", None)
@@ -159,6 +174,11 @@ class AccountLogoutView(AccountEndpoint):
 class PasswordChangeView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
 
+    @extend_schema(
+        request=PasswordInput,
+        responses={200: OpenApiResponse(description="Password changed.")},
+        tags=["account-auth"],
+    )
     def post(self, request: Any) -> Response:
         player = _session_player(request)
         if player is None:
@@ -174,6 +194,11 @@ class PasswordChangeView(AccountEndpoint):
 
 
 class PasswordResetRequestView(AccountEndpoint):
+    @extend_schema(
+        request=ResetInput,
+        responses={200: OpenApiResponse(description="Reset request accepted.")},
+        tags=["account-auth"],
+    )
     def post(self, request: Any) -> Response:
         data = ResetInput(data=request.data)
         if data.is_valid():
@@ -184,7 +209,36 @@ class PasswordResetRequestView(AccountEndpoint):
         )
 
 
+class PasswordResetConfirmView(AccountEndpoint):
+    @extend_schema(
+        request=PasswordInput,
+        responses={200: OpenApiResponse(description="Password reset.")},
+        tags=["account-auth"],
+        operation_id="game_local_reset_confirm",
+        parameters=[
+            OpenApiParameter("uidb64", str, OpenApiParameter.PATH),
+            OpenApiParameter("token", str, OpenApiParameter.PATH),
+        ],
+    )
+    def post(self, request: Any, uidb64: str, token: str) -> Response:
+        data = PasswordInput(data=request.data)
+        if not data.is_valid():
+            return _private(Response({"detail": "A new password is required."}, status=400))
+        try:
+            confirm_password_reset(
+                uidb64=uidb64, token=token, password=data.validated_data["password"]
+            )
+        except AccountError:
+            return _private(
+                Response({"detail": "The reset link is invalid or expired."}, status=400)
+            )
+        return _private(Response({"detail": "Password reset."}))
+
+
 class GitHubLinkView(AccountEndpoint):
+    @extend_schema(
+        responses={200: OpenApiResponse(description="Explicit linking URL.")}, tags=["account-auth"]
+    )
     def get(self, request: Any) -> Response:
         player = _session_player(request)
         if player is None:
@@ -199,6 +253,11 @@ class UploadInput(serializers.Serializer[dict[str, Any]]):
 class ActivityUploadView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
 
+    @extend_schema(
+        request=UploadInput,
+        responses={202: OpenApiResponse(description="Batch queued.")},
+        tags=["game-activities"],
+    )
     def post(self, request: Any) -> Response:
         player = _session_player(request)
         if player is None:
@@ -236,6 +295,9 @@ def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
 class ActivityUploadBatchView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
 
+    @extend_schema(
+        responses={200: OpenApiResponse(description="Batch progress.")}, tags=["game-activities"]
+    )
     def get(self, request: Any, batch_id: Any) -> Response:
         player = _session_player(request)
         if player is None:
@@ -249,6 +311,9 @@ class ActivityUploadBatchView(AccountEndpoint):
 class UploadedActivityDeleteView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
 
+    @extend_schema(
+        responses={204: OpenApiResponse(description="Activity deleted.")}, tags=["game-activities"]
+    )
     def delete(self, request: Any, activity_id: Any) -> Response:
         player = _session_player(request)
         if player is None:
