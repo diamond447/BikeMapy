@@ -12,7 +12,7 @@ from typing import Any
 
 from defusedxml import ElementTree  # type: ignore[import-untyped]
 from defusedxml.common import DefusedXmlException  # type: ignore[import-untyped]
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 
 from .activity_services import _schedule_player_recomputations
@@ -443,7 +443,7 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
             ).hexdigest()
             # GeoDjango/GDAL is optional for import-time checks and SQLite
             # contract generation.  Only the worker path needs a GEOS object.
-            if len(points) >= 2:
+            if len(points) >= 2 and connection.vendor != "sqlite":
                 from django.contrib.gis.geos import LineString
 
                 geometry = LineString(points, srid=4326)
