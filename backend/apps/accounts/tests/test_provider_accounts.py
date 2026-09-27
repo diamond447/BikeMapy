@@ -25,7 +25,12 @@ from apps.accounts.models import (
     CompetitionInviteRedemption,
     Player,
 )
-from apps.accounts.upload_services import UploadError, _safe_archive_members, parse_activity
+from apps.accounts.upload_services import (
+    UploadError,
+    _safe_archive_members,
+    create_batch,
+    parse_activity,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -90,6 +95,58 @@ def test_archive_paths_and_nested_archives_are_rejected() -> None:
         _safe_archive_members(nested.getvalue())
 
 
+def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
+    gpx = b"""<gpx><metadata><time>2026-09-27T06:00:00Z</time></metadata>
+        <trk><trkseg><trkpt lat=\"50.1\" lon=\"14.4\"/>
+        <trkpt lat=\"50.2\" lon=\"14.5\"/></trkseg></trk>
+    </gpx>"""
+    points, started, kind = parse_activity(gpx, "ride.gpx")
+    assert points == [(14.4, 50.1), (14.5, 50.2)]
+    assert started.year == 2026
+    assert kind == "GPX"
+
+    tcx = b"""<TrainingCenterDatabase><Activities><Activity><Track>
+        <Trackpoint><Time>2026-09-27T06:00:00Z</Time><Position>
+        <LatitudeDegrees>50.1</LatitudeDegrees><LongitudeDegrees>14.4</LongitudeDegrees>
+        </Position></Trackpoint><Trackpoint><Position>
+        <LatitudeDegrees>50.2</LatitudeDegrees><LongitudeDegrees>14.5</LongitudeDegrees>
+        </Position></Trackpoint></Track></Activity></Activities></TrainingCenterDatabase>"""
+    tcx_points, _, tcx_kind = parse_activity(tcx, "ride.tcx")
+    assert tcx_points == [(14.4, 50.1), (14.5, 50.2)]
+    assert tcx_kind == "TCX"
+
+    archive_data = io.BytesIO()
+    with zipfile.ZipFile(archive_data, "w") as archive:
+        archive.writestr("ride.gpx", gpx)
+        archive.writestr("notes.txt", b"not an activity")
+    members = _safe_archive_members(archive_data.getvalue())
+    assert members == [("ride.gpx", gpx), ("notes.txt", b"")]
+
+    with pytest.raises(UploadError, match="supported"):
+        parse_activity(b"", "ride.csv")
+    bad_gpx = b'<gpx><trkpt lat="95" lon="14"/><trkpt lat="50" lon="14"/></gpx>'
+    with pytest.raises(UploadError, match="invalid coordinates"):
+        parse_activity(bad_gpx, "ride.gpx")
+
+
+def test_create_batch_requires_attestation_and_expands_zip() -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    archive_data = io.BytesIO()
+    with zipfile.ZipFile(archive_data, "w") as archive:
+        archive.writestr("ride.gpx", b"<gpx />")
+        archive.writestr("notes.txt", b"not an activity")
+    with pytest.raises(UploadError, match="attest"):
+        create_batch(player, [("rides.zip", archive_data.getvalue())], attested=False)
+    batch = create_batch(player, [("rides.zip", archive_data.getvalue())], attested=True)
+    assert batch.total_files == 2
+    assert batch.files.count() == 2
+    assert batch.files.filter(original_name="notes.txt", content=b"").exists()
+
+
+@override_settings(PLAYER_ACCOUNTS_ENABLED=True)
 def test_upload_endpoints_do_not_disclose_other_players_batches() -> None:
     client = APIClient()
     response = client.get("/api/v1/game/account/uploads/00000000-0000-0000-0000-000000000000/")
