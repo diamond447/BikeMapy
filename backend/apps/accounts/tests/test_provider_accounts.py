@@ -7,13 +7,18 @@ from __future__ import annotations
 import io
 import struct
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.db import transaction as django_transaction
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -23,6 +28,7 @@ from apps.accounts.account_services import (
     create_invited_account,
 )
 from apps.accounts.models import (
+    ActivityUpload,
     ActivityUploadBatch,
     Competition,
     CompetitionInviteRedemption,
@@ -124,6 +130,44 @@ def test_invalid_invite_does_not_create_an_account() -> None:
     assert get_user_model().objects.filter(username="rider").count() == 1
 
 
+def test_onboarding_mail_failure_rolls_back_account_membership_and_invite() -> None:
+    competition = _competition()
+    with patch(
+        "apps.accounts.account_services.send_mail", side_effect=RuntimeError("mail backend down")
+    ):
+        with pytest.raises(RuntimeError, match="mail backend down"):
+            create_invited_account(
+                username="rider", email="rider@example.com", invite_code=competition.invite_code
+            )
+    assert not get_user_model().objects.filter(username="rider").exists()
+    assert not competition.memberships.exists()
+    assert not competition.invite_redemptions.exists()
+
+
+def test_local_onboarding_is_csrf_protected_and_does_not_log_bootstrap_secret(
+    caplog: Any,
+) -> None:
+    competition = _competition()
+    client = Client(enforce_csrf_checks=True)
+    with override_settings(PLAYER_ACCOUNTS_ENABLED=True):
+        response = client.post(
+            "/api/v1/game/auth/local/onboard/",
+            {
+                "username": "rider",
+                "email": "rider@example.com",
+                "invite_code": competition.invite_code,
+            },
+        )
+    assert response.status_code == 403
+    with patch("apps.accounts.account_services.send_mail") as send_mail:
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            _, temporary = create_invited_account(
+                username="rider", email="rider@example.com", invite_code=competition.invite_code
+            )
+    assert temporary not in caplog.text
+    assert temporary not in send_mail.call_args.kwargs["subject"]
+
+
 def test_login_accepts_username_or_email_and_unknown_is_generic() -> None:
     competition = _competition()
     player, temporary = create_invited_account(
@@ -158,6 +202,29 @@ def test_archive_paths_and_nested_archives_are_rejected() -> None:
         archive.writestr("nested.zip", b"PK")
     with pytest.raises(UploadError, match="Nested archives"):
         _safe_archive_members(nested.getvalue())
+
+
+def test_upload_request_file_count_and_expansion_limits_are_enforced(monkeypatch: Any) -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    monkeypatch.setattr("apps.accounts.upload_services.MAX_ACTIVITY_COUNT", 1)
+    with pytest.raises(UploadError, match="too many files"):
+        create_batch(player, [("one.gpx", b"a"), ("two.gpx", b"b")], attested=True)
+
+    monkeypatch.setattr("apps.accounts.upload_services.MAX_ACTIVITY_COUNT", 100)
+    monkeypatch.setattr("apps.accounts.upload_services.MAX_FILE_BYTES", 3)
+    with pytest.raises(UploadError, match="size limit"):
+        create_batch(player, [("large.gpx", b"four")], attested=True)
+
+    archive_data = io.BytesIO()
+    with zipfile.ZipFile(archive_data, "w") as archive:
+        archive.writestr("ride.gpx", b"four")
+    monkeypatch.setattr("apps.accounts.upload_services.MAX_FILE_BYTES", 25 * 1024 * 1024)
+    monkeypatch.setattr("apps.accounts.upload_services.MAX_EXPANDED_BYTES", 3)
+    with pytest.raises(UploadError, match="safe limit"):
+        create_batch(player, [("rides.zip", archive_data.getvalue())], attested=True)
 
 
 def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
@@ -271,6 +338,42 @@ def test_create_batch_requires_attestation_and_expands_zip() -> None:
     assert batch.files.filter(original_name="notes.txt", content=b"").exists()
 
 
+def test_upload_storage_is_removed_when_row_save_fails(tmp_path: Path) -> None:
+    """A storage write must not survive a failed ActivityUpload.save()."""
+
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    with override_settings(MEDIA_ROOT=tmp_path):
+        with pytest.raises(RuntimeError, match="row save"):
+            with patch.object(ActivityUpload, "save", side_effect=RuntimeError("row save")):
+                create_batch(player, [("ride.gpx", io.BytesIO(b"<gpx />"))], attested=True)
+    assert not [path for path in tmp_path.rglob("*") if path.is_file()]
+
+
+def test_upload_storage_is_removed_when_transaction_commit_fails(tmp_path: Path) -> None:
+    """A commit failure after FileField.save() must clean the staged object."""
+
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    real_atomic = django_transaction.atomic
+
+    @contextmanager
+    def failing_atomic() -> Iterator[None]:
+        with real_atomic():
+            yield
+        raise RuntimeError("commit failure")
+
+    with override_settings(MEDIA_ROOT=tmp_path):
+        with pytest.raises(RuntimeError, match="commit failure"):
+            with patch("apps.accounts.upload_services.transaction.atomic", failing_atomic):
+                create_batch(player, [("ride.gpx", io.BytesIO(b"<gpx />"))], attested=True)
+    assert not [path for path in tmp_path.rglob("*") if path.is_file()]
+
+
 def test_processing_claim_and_replay_preserve_accepted_result() -> None:
     competition = _competition()
     player, _ = create_invited_account(
@@ -291,24 +394,31 @@ def test_processing_claim_and_replay_preserve_accepted_result() -> None:
     assert result.status == "accepted", result.error_detail
 
 
-def test_expired_processing_upload_finalizes_parent_batch() -> None:
+def test_expired_processing_upload_finalizes_parent_batch(tmp_path: Path) -> None:
     competition = _competition()
     player, _ = create_invited_account(
         username="rider", email="rider@example.com", invite_code=competition.invite_code
     )
-    batch = create_batch(player, [("ride.gpx", b"stale")], attested=True)
+    with override_settings(MEDIA_ROOT=tmp_path):
+        batch = create_batch(player, [("ride.gpx", b"stale")], attested=True)
     upload = batch.files.get()
+    stored_name = upload.content_path.name
+    assert stored_name
+    stored_path = tmp_path / stored_name
+    assert stored_path.is_file()
     ActivityUploadBatch.objects.filter(pk=batch.pk).update(
         status=ActivityUploadBatch.Status.RUNNING
     )
     upload.status = "processing"
     upload.created_at = timezone.now() - timedelta(days=2)
     upload.save(update_fields=("status", "created_at"))
-    cleanup_expired_activity_uploads_task()
+    with override_settings(MEDIA_ROOT=tmp_path):
+        cleanup_expired_activity_uploads_task()
     batch.refresh_from_db()
     upload.refresh_from_db()
     assert batch.status == ActivityUploadBatch.Status.FAILED
     assert upload.content is None
+    assert not stored_path.exists()
 
 
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)
@@ -316,6 +426,27 @@ def test_upload_endpoints_do_not_disclose_other_players_batches() -> None:
     client = APIClient()
     response = client.get("/api/v1/game/account/uploads/00000000-0000-0000-0000-000000000000/")
     assert response.status_code == 401
+
+
+@override_settings(PLAYER_ACCOUNTS_ENABLED=True)
+def test_authenticated_player_cannot_read_another_players_batch(tmp_path: Path) -> None:
+    competition = _competition()
+    owner, _ = create_invited_account(
+        username="owner-rider", email="owner@example.com", invite_code=competition.invite_code
+    )
+    other_user = get_user_model().objects.create_user(
+        username="other-rider", email="other@example.com", password="password"
+    )
+    other = Player.objects.create(user=other_user)
+    with override_settings(MEDIA_ROOT=tmp_path):
+        batch = create_batch(owner, [("ride.gpx", b"private")], attested=True)
+    client = APIClient()
+    session = client.session
+    session["player_id"] = other.pk
+    session["player_session_epoch"] = other.session_epoch
+    session.save()
+    response = client.get(f"/api/v1/game/account/uploads/{batch.pk}/")
+    assert response.status_code == 404
 
 
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)

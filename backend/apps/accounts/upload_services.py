@@ -477,7 +477,20 @@ def _store_stream(upload: ActivityUpload, source: BinaryIO, *, limit: int) -> tu
             digest.update(chunk)
             spool.write(chunk)
         spool.seek(0)
-        upload.content_path.save(f"{uuid4().hex}.bin", File(spool), save=False)
+        storage_name = f"{uuid4().hex}.bin"
+        try:
+            upload.content_path.save(storage_name, File(spool), save=False)
+        except Exception:
+            # FileField.save can have written the object before propagating a
+            # storage/backend error. Remove both the caller name and the
+            # upload_to-expanded name when available.
+            names = {storage_name}
+            if upload.content_path.name:
+                names.add(upload.content_path.name)
+            for name in names:
+                upload.content_path.storage.delete(name)
+            upload.content_path = None
+            raise
     return digest.hexdigest(), size
 
 
@@ -590,12 +603,12 @@ def create_batch(
             raise UploadError("The batch exceeds the expanded size limit.", code="batch_too_large")
     if len(planned) > MAX_ACTIVITY_COUNT:
         raise UploadError("The batch contains too many activities.", code="too_many_files")
-    stored: list[ActivityUpload] = []
-    with transaction.atomic():
-        batch = ActivityUploadBatch.objects.create(
-            player=player, total_files=len(planned), attested=True
-        )
-        try:
+    staged: list[ActivityUpload] = []
+    try:
+        with transaction.atomic():
+            batch = ActivityUploadBatch.objects.create(
+                player=player, total_files=len(planned), attested=True
+            )
             for name, payload, member_info in planned:
                 suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
                 upload = ActivityUpload(batch=batch, original_name=name[:240], size_bytes=0)
@@ -612,13 +625,15 @@ def create_batch(
                 try:
                     if suffix in SUPPORTED_SUFFIXES:
                         digest, size = _store_stream(upload, source, limit=MAX_FILE_BYTES)
+                        # Track immediately: model.save() and the enclosing
+                        # transaction can both fail after storage succeeds.
+                        staged.append(upload)
                     else:
                         digest, size = _stream_digest(source, limit=MAX_FILE_BYTES)
                         upload.content = b""
                     upload.content_sha256 = digest
                     upload.size_bytes = size
                     upload.save()
-                    stored.append(upload)
                 finally:
                     if member_info is not None or close_source:
                         source.close()
@@ -628,12 +643,12 @@ def create_batch(
                         archive_source.close()
                     elif archive_source is None and close_source:
                         source.close()
-            return batch
-        except Exception:
-            for upload in stored:
-                if upload.content_path:
-                    upload.content_path.delete(save=False)
-            raise
+        return batch
+    except Exception:
+        for upload in staged:
+            if upload.content_path:
+                upload.content_path.delete(save=False)
+        raise
 
 
 def _open_upload_payload(upload: ActivityUpload) -> BinaryIO:
