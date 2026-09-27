@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.74.4",
-    "maplibre-gl": "^6.6.0",
+    "maplibre-gl": "^6.10.0",
     "openapi-fetch": "^0.14.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
@@ -28,7 +28,7 @@
     "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^9.25.0",
     "@playwright/test": "^1.63.0",
-    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.15.3",
@@ -43,7 +43,7 @@
     "jsdom": "^30.0.1",
     "openapi-typescript": "^7.8.0",
     "prettier": "^3.5.3",
-    "typescript": "~5.8.3",
+    "typescript": "~5.9.3",
     "typescript-eslint": "^8.30.1",
     "vite": "^6.3.2",
     "vitest": "^3.1.2"
