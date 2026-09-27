@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from defusedxml import ElementTree  # type: ignore[import-untyped]
-from django.contrib.gis.geos import LineString
 from django.db import transaction
 from django.utils import timezone
 
@@ -200,7 +199,14 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
                     sort_keys=True,
                 ).encode()
             ).hexdigest()
-            geometry = LineString(points, srid=4326) if len(points) >= 2 else None
+            # GeoDjango/GDAL is optional for import-time checks and SQLite
+            # contract generation.  Only the worker path needs a GEOS object.
+            if len(points) >= 2:
+                from django.contrib.gis.geos import LineString
+
+                geometry = LineString(points, srid=4326)
+            else:
+                geometry = None
             provider_id = f"upload:{fingerprint}"
             with transaction.atomic():
                 existing = ImportedActivity.objects.filter(
