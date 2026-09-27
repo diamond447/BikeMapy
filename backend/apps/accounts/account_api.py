@@ -1,5 +1,8 @@
 """Session-backed local account and direct upload endpoints."""
 
+# djangorestframework does not currently ship type stubs.
+# mypy: disable-error-code="import-untyped,misc"
+
 from __future__ import annotations
 
 from typing import Any

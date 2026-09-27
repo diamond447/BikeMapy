@@ -9,7 +9,7 @@ import zipfile
 from datetime import UTC, datetime
 from typing import Any
 
-from defusedxml import ElementTree
+from defusedxml import ElementTree  # type: ignore[import-untyped]
 from django.contrib.gis.geos import LineString
 from django.db import transaction
 from django.utils import timezone
@@ -67,7 +67,8 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
                 continue
             points.append((lon, lat))
         elif name == "trackpoint":
-            lat = lon = None
+            lat: float | None = None
+            lon: float | None = None
             for child in element:
                 child_name = _local_name(child.tag)
                 if child_name == "latitude":
