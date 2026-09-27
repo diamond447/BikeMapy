@@ -478,13 +478,14 @@ def _store_stream(upload: ActivityUpload, source: BinaryIO, *, limit: int) -> tu
             spool.write(chunk)
         spool.seek(0)
         storage_name = f"{uuid4().hex}.bin"
+        expanded_name = upload.content_path.field.generate_filename(upload, storage_name)
         try:
             upload.content_path.save(storage_name, File(spool), save=False)
         except Exception:
             # FileField.save can have written the object before propagating a
             # storage/backend error. Remove both the caller name and the
             # upload_to-expanded name when available.
-            names = {storage_name}
+            names = {storage_name, expanded_name}
             if upload.content_path.name:
                 names.add(upload.content_path.name)
             for name in names:
