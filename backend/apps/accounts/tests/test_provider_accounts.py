@@ -60,10 +60,29 @@ def test_invited_account_is_hashed_and_joined_atomically() -> None:
 
 
 def test_invalid_invite_does_not_create_an_account() -> None:
-    _competition()
+    competition = _competition()
     with pytest.raises(AccountError):
         create_invited_account(username="rider", email="rider@example.com", invite_code="invalid")
-    assert not get_user_model().objects.filter(username="rider").exists()
+    with pytest.raises(AccountError, match="username"):
+        create_invited_account(
+            username="bad name", email="rider@example.com", invite_code=competition.invite_code
+        )
+    with pytest.raises(AccountError, match="email"):
+        create_invited_account(
+            username="rider", email="invalid", invite_code=competition.invite_code
+        )
+    create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    with pytest.raises(AccountError, match="Unable to create"):
+        create_invited_account(
+            username="rider", email="other@example.com", invite_code=competition.invite_code
+        )
+    with pytest.raises(AccountError, match="Unable to create"):
+        create_invited_account(
+            username="other", email="rider@example.com", invite_code=competition.invite_code
+        )
+    assert get_user_model().objects.filter(username="rider").count() == 1
 
 
 def test_login_accepts_username_or_email_and_unknown_is_generic() -> None:
@@ -108,9 +127,9 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
 
     tcx = b"""<TrainingCenterDatabase><Activities><Activity><Track>
         <Trackpoint><Time>2026-09-27T06:00:00Z</Time>
-        <LatitudeDegrees>50.1</LatitudeDegrees><LongitudeDegrees>14.4</LongitudeDegrees>
-        </Trackpoint><Trackpoint><LatitudeDegrees>50.2</LatitudeDegrees>
-        <LongitudeDegrees>14.5</LongitudeDegrees></Trackpoint></Track>
+        <Latitude><Degrees>50.1</Degrees></Latitude><Longitude><Degrees>14.4</Degrees></Longitude>
+        </Trackpoint><Trackpoint><Latitude><Degrees>50.2</Degrees></Latitude>
+        <Longitude><Degrees>14.5</Degrees></Longitude></Trackpoint></Track>
         </Activity></Activities></TrainingCenterDatabase>"""
     tcx_points, _, tcx_kind = parse_activity(tcx, "ride.tcx")
     assert tcx_points == [(14.4, 50.1), (14.5, 50.2)]
@@ -138,6 +157,11 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
     assert members == [("ride.gpx", gpx), ("notes.txt", b"")]
     with pytest.raises(UploadError, match="ZIP archive is invalid"):
         _safe_archive_members(b"not a zip")
+    empty_archive = io.BytesIO()
+    with zipfile.ZipFile(empty_archive, "w"):
+        pass
+    with pytest.raises(UploadError, match="no supported"):
+        _safe_archive_members(empty_archive.getvalue())
 
     with pytest.raises(UploadError, match="supported"):
         parse_activity(b"", "ride.csv")
