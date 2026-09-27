@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import struct
 import zipfile
 from unittest.mock import patch
 
@@ -106,14 +107,28 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
     assert kind == "GPX"
 
     tcx = b"""<TrainingCenterDatabase><Activities><Activity><Track>
-        <Trackpoint><Time>2026-09-27T06:00:00Z</Time><Position>
+        <Trackpoint><Time>2026-09-27T06:00:00Z</Time>
         <LatitudeDegrees>50.1</LatitudeDegrees><LongitudeDegrees>14.4</LongitudeDegrees>
-        </Position></Trackpoint><Trackpoint><Position>
-        <LatitudeDegrees>50.2</LatitudeDegrees><LongitudeDegrees>14.5</LongitudeDegrees>
-        </Position></Trackpoint></Track></Activity></Activities></TrainingCenterDatabase>"""
+        </Trackpoint><Trackpoint><LatitudeDegrees>50.2</LatitudeDegrees>
+        <LongitudeDegrees>14.5</LongitudeDegrees></Trackpoint></Track>
+        </Activity></Activities></TrainingCenterDatabase>"""
     tcx_points, _, tcx_kind = parse_activity(tcx, "ride.tcx")
     assert tcx_points == [(14.4, 50.1), (14.5, 50.2)]
     assert tcx_kind == "TCX"
+
+    fit_payload = bytearray([0x40, 0, 0, 20, 0, 3])
+    fit_payload.extend(bytes((0, 4, 0x86, 1, 4, 0x86, 253, 4, 0x86)))
+    for latitude, longitude in ((50.1, 14.4), (50.2, 14.5)):
+        fit_payload.append(0)
+        fit_payload.extend(struct.pack("<i", int(latitude * 2**31 / 180)))
+        fit_payload.extend(struct.pack("<i", int(longitude * 2**31 / 180)))
+        fit_payload.extend(struct.pack("<i", 0))
+    fit = bytearray((14, 0x10, 0, 0))
+    fit.extend(struct.pack("<I", len(fit_payload)))
+    fit.extend(b".FIT\x00\x00")
+    fit_points, _, fit_kind = parse_activity(bytes(fit + fit_payload), "ride.fit")
+    assert fit_points == pytest.approx([(14.4, 50.1), (14.5, 50.2)], abs=0.001)
+    assert fit_kind == "FIT"
 
     archive_data = io.BytesIO()
     with zipfile.ZipFile(archive_data, "w") as archive:
@@ -121,6 +136,8 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
         archive.writestr("notes.txt", b"not an activity")
     members = _safe_archive_members(archive_data.getvalue())
     assert members == [("ride.gpx", gpx), ("notes.txt", b"")]
+    with pytest.raises(UploadError, match="ZIP archive is invalid"):
+        _safe_archive_members(b"not a zip")
 
     with pytest.raises(UploadError, match="supported"):
         parse_activity(b"", "ride.csv")
