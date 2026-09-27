@@ -52,3 +52,24 @@ class PreviewReadOnlyMiddleware:
                 status=403,
             )
         return self.get_response(request)
+
+
+class CredentialedCorsOriginMiddleware:
+    """Keep credentialed CORS restricted to exact trusted origins.
+
+    ``django-cors-headers`` intentionally applies one credential policy to
+    both exact and regex origins. Preview regexes are public read origins, so
+    strip credential-specific response headers from those responses.
+    """
+
+    def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
+        self.get_response = get_response
+        self.preview_pattern = re.compile(settings.READ_ONLY_PREVIEW_ORIGIN_REGEX)
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        response = self.get_response(request)
+        origin = request.headers.get("Origin", "").rstrip("/")
+        if origin and self.preview_pattern.fullmatch(origin):
+            response.headers.pop("Access-Control-Allow-Credentials", None)
+            response.headers.pop("Access-Control-Expose-Headers", None)
+        return response

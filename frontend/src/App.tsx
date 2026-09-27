@@ -14,6 +14,7 @@ import { RouteBrowser } from './components/RouteBrowser'
 import { RouteDetail } from './components/RouteDetail'
 import { ReportDialog } from './components/ReportDialog'
 import { MapStage } from './components/MapStage'
+import { GameAccount } from './components/GameAccount'
 import type { InteractionMode } from './components/interaction'
 import { translations } from './i18n/translations'
 import type { Language } from './i18n/types'
@@ -422,6 +423,7 @@ function App() {
           </span>
           <span>BikeMapy</span>
         </a>
+        <GameAccount copy={copy} initialOpen={window.location.pathname === '/game'} />
       </header>
       <MapStage
         mapNode={mapNode}

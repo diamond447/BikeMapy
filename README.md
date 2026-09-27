@@ -125,6 +125,11 @@ and the main trust boundaries.
 - [Legal review](docs/legal-review.md) and
   [launch verification](docs/launch-verification.md) — unresolved gates and
   evidence requirements.
+- [Strava API review](docs/strava-api-review.md) — dated policy decision and
+  retention/deletion gates for the disabled private module.
+- [Reference-route source decision](docs/reference-route-sources.md) — dated
+  OSM, KČT, Via Czechia, provenance, attribution, and fallback gates for the
+  private game.
 - [Private Strava game specification](docs/game-spec.md) — a separate,
   disabled-by-default future module that does not expand the public catalogue.
 
