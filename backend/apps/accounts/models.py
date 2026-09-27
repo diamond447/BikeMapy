@@ -191,7 +191,11 @@ class CompetitionInviteRedemption(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=("competition", "player"), name="accounts_invite_redemption_unique"
-            )
+            ),
+            models.UniqueConstraint(
+                fields=("competition", "code_digest"),
+                name="accounts_invite_redemption_code_unique",
+            ),
         ]
         indexes = [models.Index(fields=("competition", "code_digest"))]
 

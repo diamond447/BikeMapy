@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.contrib.auth import login as auth_login
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -79,11 +80,19 @@ class AccountEndpoint(APIView):
         return response
 
 
-def _session_player(request: Any) -> Player | None:
+def _session_player(request: Any, *, allow_password_change: bool = False) -> Player | None:
     player_id = request.session.get("player_id")
     if not player_id:
         return None
-    return Player.objects.filter(pk=player_id, lifecycle=Player.Lifecycle.CONNECTED).first()
+    epoch = request.session.get("player_session_epoch")
+    if epoch is None:
+        return None
+    player = Player.objects.filter(pk=player_id, lifecycle=Player.Lifecycle.CONNECTED).first()
+    if player is None or player.session_epoch != epoch:
+        return None
+    if player.must_change_password and not allow_password_change:
+        return None
+    return player
 
 
 def _account_payload(player: Player, *, authenticated: bool = True) -> dict[str, Any]:
@@ -186,7 +195,7 @@ class PasswordChangeView(AccountEndpoint):
         tags=["account-auth"],
     )
     def post(self, request: Any) -> Response:
-        player = _session_player(request)
+        player = _session_player(request, allow_password_change=True)
         if player is None:
             return _private(Response({"detail": "Authentication is required."}, status=401))
         data = PasswordInput(data=request.data)
@@ -196,6 +205,8 @@ class PasswordChangeView(AccountEndpoint):
             set_password(player, data.validated_data["password"])
         except AccountError as exc:
             return _private(Response({"detail": exc.detail, "code": exc.code}, status=400))
+        request.session["player_session_epoch"] = player.session_epoch
+        request.session.save()
         return _private(Response({"must_change_password": False}))
 
 
@@ -249,11 +260,27 @@ class GitHubLinkView(AccountEndpoint):
         player = _session_player(request)
         if player is None:
             return _private(Response({"detail": "Authentication is required."}, status=401))
+        # allauth's connect flow is bound to this exact local session/player;
+        # a random intent prevents a copied callback URL from being reused.
+        import secrets
+
+        request.session["github_link_intent"] = secrets.token_urlsafe(32)
+        request.session["github_link_player_id"] = str(player.pk)
+        request.session["github_link_epoch"] = player.session_epoch
+        auth_login(
+            request,
+            player.user,
+            backend="allauth.account.auth_backends.AuthenticationBackend",
+        )
+        request.session.save()
         return _private(Response({"url": "/accounts/github/login/?process=connect"}))
 
 
 class UploadInput(serializers.Serializer[dict[str, Any]]):
     attested = serializers.BooleanField(required=True)
+    files = serializers.ListField(
+        child=serializers.FileField(), required=True, allow_empty=False
+    )
 
 
 class ActivityUploadView(AccountEndpoint):
@@ -296,6 +323,7 @@ def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
                 "name": item.original_name,
                 "status": item.status,
                 "error_code": item.error_code,
+                "error_detail": item.error_detail,
                 "activity_id": str(item.activity_id) if item.activity_id else None,
             }
             for item in batch.files.order_by("pk")
