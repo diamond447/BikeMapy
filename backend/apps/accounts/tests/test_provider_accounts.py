@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# mypy: disable-error-code="import-untyped"
+
 import io
 import zipfile
 from unittest.mock import patch
