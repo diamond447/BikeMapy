@@ -83,69 +83,79 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
     if len(data) > MAX_FILE_BYTES:
         raise UploadError("The file exceeds the size limit.", code="file_too_large")
     try:
-        root = ElementTree.fromstring(data)
+        events = ElementTree.iterparse(io.BytesIO(data), events=("start", "end"))
+        root_name = ""
+        points: list[tuple[float, float]] = []
+        has_track = False
+        track_type = ""
+        sports: set[str] = set()
+        started: datetime | None = None
+        trackpoint_depth = 0
+        for event, element in events:
+            name = _local_name(element.tag)
+            if event == "start":
+                if not root_name:
+                    root_name = name
+                if name == "activity":
+                    sports.update(
+                        str(value).strip().lower()
+                        for key, value in element.attrib.items()
+                        if _local_name(key) == "sport"
+                    )
+                if name == "trackpoint":
+                    trackpoint_depth += 1
+                continue
+            if name == "trkpt":
+                has_track = True
+                try:
+                    lat, lon = float(element.attrib["lat"]), float(element.attrib["lon"])
+                except (KeyError, TypeError, ValueError):
+                    lat, lon = None, None
+                if lat is not None and lon is not None:
+                    points.append((lon, lat))
+            elif name == "type" and not track_type:
+                track_type = _text(element.text).lower()
+            elif name == "trackpoint":
+                has_track = True
+                lat_value: float | None = None
+                lon_value: float | None = None
+                for child in element.iter():
+                    child_name = _local_name(child.tag)
+                    if child_name in {"latitude", "position"}:
+                        for value in child.iter():
+                            if _local_name(value.tag) in {"latitudedegrees", "degrees"}:
+                                try:
+                                    lat_value = float(_text(value.text))
+                                except ValueError:
+                                    lat_value = None
+                    if child_name in {"longitude", "position"}:
+                        for value in child.iter():
+                            if _local_name(value.tag) in {"longitudedegrees", "degrees"}:
+                                try:
+                                    lon_value = float(_text(value.text))
+                                except ValueError:
+                                    lon_value = None
+                if lat_value is not None and lon_value is not None:
+                    points.append((lon_value, lat_value))
+                trackpoint_depth -= 1
+            elif name in {"time", "starttime"} and started is None:
+                parsed = _parse_timestamp(_text(element.text))
+                if parsed:
+                    started = parsed
+            if len(points) > MAX_GEOMETRY_POINTS:
+                raise UploadError(
+                    "The activity has too many geometry points.", code="too_many_points"
+                )
+            if trackpoint_depth == 0:
+                element.clear()
     except (DefusedXmlException, ElementTree.ParseError, ValueError) as exc:
         raise UploadError("The activity file is not valid XML.", code="invalid_xml") from exc
-    root_name = _local_name(root.tag)
     expected_root = {".gpx": "gpx", ".tcx": "trainingcenterdatabase"}[suffix]
     if root_name != expected_root:
         raise UploadError("The file content does not match its type.", code="type_mismatch")
     if suffix == ".tcx":
-        sports = {
-            str(value).strip().lower()
-            for element in root.iter()
-            if _local_name(element.tag) == "activity"
-            for key, value in element.attrib.items()
-            if _local_name(key) == "sport"
-        }
         if not sports or not sports.issubset({"biking", "cycling", "bike"}):
             raise UploadError("Only cycling activities are supported.", code="non_cycling")
-    points: list[tuple[float, float]] = []
-    has_track = False
-    track_type = ""
-    started: datetime | None = None
-    for element in root.iter():
-        name = _local_name(element.tag)
-        if name == "trkpt":
-            has_track = True
-            try:
-                lat, lon = float(element.attrib["lat"]), float(element.attrib["lon"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            points.append((lon, lat))
-        elif name == "type" and track_type == "":
-            track_type = _text(element.text).lower()
-        elif name == "trackpoint":
-            has_track = True
-            lat_value: float | None = None
-            lon_value: float | None = None
-            # TCX v2 stores coordinates under Position/LatitudeDegrees and
-            # Position/LongitudeDegrees. Older exports use Latitude/Degrees;
-            # both are accepted only inside a Trackpoint.
-            for child in element.iter():
-                child_name = _local_name(child.tag)
-                if child_name in {"latitude", "position"}:
-                    for value in child.iter():
-                        if _local_name(value.tag) in {"latitudedegrees", "degrees"}:
-                            try:
-                                lat_value = float(_text(value.text))
-                            except ValueError:
-                                lat_value = None
-                if child_name in {"longitude", "position"}:
-                    for value in child.iter():
-                        if _local_name(value.tag) in {"longitudedegrees", "degrees"}:
-                            try:
-                                lon_value = float(_text(value.text))
-                            except ValueError:
-                                lon_value = None
-            if lat_value is not None and lon_value is not None:
-                points.append((lon_value, lat_value))
-        elif name in {"time", "starttime"} and started is None:
-            parsed = _parse_timestamp(_text(element.text))
-            if parsed:
-                started = parsed
-        if len(points) > MAX_GEOMETRY_POINTS:
-            raise UploadError("The activity has too many geometry points.", code="too_many_points")
     if suffix == ".gpx" and track_type not in {"bike", "biking", "cycling"}:
         raise UploadError("Only cycling activities are supported.", code="non_cycling")
     if suffix == ".gpx" and not has_track:
