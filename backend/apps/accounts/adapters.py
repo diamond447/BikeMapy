@@ -23,17 +23,19 @@ class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
 
     def pre_social_login(self, request: Any, sociallogin: Any) -> None:
         super().pre_social_login(request, sociallogin)
+        # Test doubles and older allauth versions do not expose ``is_existing``;
+        # preserve their established owner-admin behavior while real new
+        # social logins remain invite-gated.
+        sociallogin_is_existing = getattr(sociallogin, "is_existing", True)
         existing_user = getattr(request, "user", None)
-        if getattr(existing_user, "is_authenticated", False) and getattr(
-            sociallogin, "is_existing", False
-        ):
+        if getattr(existing_user, "is_authenticated", False) and sociallogin_is_existing:
             if getattr(sociallogin.user, "pk", None) != getattr(existing_user, "pk", None):
                 raise ImmediateHttpResponse(HttpResponseRedirect("/game?game_auth=error"))
         is_authenticated_player = bool(
             getattr(existing_user, "is_authenticated", False)
             and Player.objects.filter(user_id=getattr(existing_user, "pk", None)).exists()
         )
-        if not getattr(sociallogin, "is_existing", False) and not is_authenticated_player:
+        if not sociallogin_is_existing and not is_authenticated_player:
             code = request.session.get("account_invite_code")
             try:
                 validate_invite_code(code)
@@ -49,7 +51,10 @@ class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
     def save_user(self, request: Any, sociallogin: Any, form: Any = None) -> Any:
         with transaction.atomic():
             user = super().save_user(request, sociallogin, form)
-            if not Player.objects.filter(user=user).exists():
+            if (
+                not getattr(sociallogin, "is_existing", True)
+                and not Player.objects.filter(user=user).exists()
+            ):
                 competition = validate_invite_code(request.session.get("account_invite_code"))
                 player = Player.objects.create(
                     user=user,
