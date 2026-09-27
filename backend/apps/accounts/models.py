@@ -58,6 +58,7 @@ class Player(models.Model):
     disconnected_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
     must_change_password = models.BooleanField(default=False)
+    temporary_password_used = models.BooleanField(default=False)
 
     class Meta:
         ordering = ("pk",)

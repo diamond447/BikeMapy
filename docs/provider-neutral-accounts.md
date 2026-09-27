@@ -2,8 +2,9 @@
 
 Player onboarding is invite-only. A valid active competition invite is
 required for a new local account or first-time GitHub account. The invite is
-validated before onboarding and its redemption is recorded in the same
-transaction as the new player and competition membership. Existing sign-in,
+validated before onboarding and its single-use onboarding redemption is
+recorded in the same transaction as the new player and competition
+membership. The ordinary competition join invite remains reusable. Existing sign-in,
 password reset, and explicitly authenticated GitHub linking do not require a
 new invite.
 
@@ -16,7 +17,8 @@ Players can upload FIT, GPX, and TCX files individually or in a ZIP archive.
 Uploads require an ownership/authorization attestation and are processed by a
 bounded asynchronous batch. XML external entities are disabled, archive paths
 and expansion are bounded, and raw upload bytes are cleared after terminal
-processing. A deterministic content fingerprint makes retries idempotent;
+processing. Raw payloads are purged by the hourly cleanup task after at most
+24 hours. A deterministic content fingerprint makes retries idempotent;
 duplicate results are reported per file. Normalized activities use the same
 private `ImportedActivity` model and recomputation lifecycle as provider
 imports.

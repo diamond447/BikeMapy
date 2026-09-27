@@ -31,7 +31,13 @@ from .activity_services import remove_activity
 from .game_api import _private
 from .models import ActivityUploadBatch, Player
 from .services import player_accounts_is_available
-from .upload_services import UploadError, create_batch
+from .upload_services import (
+    MAX_ARCHIVE_BYTES,
+    MAX_BATCH_EXPANDED_BYTES,
+    MAX_FILE_BYTES,
+    UploadError,
+    create_batch,
+)
 from .upload_tasks import process_activity_upload_batch_task
 
 
@@ -124,6 +130,10 @@ class AccountOnboardingView(AccountEndpoint):
             player, _ = create_invited_account(**data.validated_data)
         except AccountError:
             return _private(Response({"detail": "Unable to create this account."}, status=400))
+        except Exception:
+            # The service transaction has already rolled back the account and
+            # redemption when delivery fails; keep transport details private.
+            return _private(Response({"detail": "Unable to create this account."}, status=503))
         return _private(Response(_account_payload(player, authenticated=False), status=201))
 
 
@@ -300,7 +310,30 @@ class ActivityUploadView(AccountEndpoint):
             return _private(
                 Response({"detail": "A data ownership attestation is required."}, status=400)
             )
-        files = [(item.name, item.read()) for item in request.FILES.getlist("files")]
+        files: list[tuple[str, bytes]] = []
+        total_bytes = 0
+        for item in request.FILES.getlist("files"):
+            limit = MAX_ARCHIVE_BYTES if item.name.lower().endswith(".zip") else MAX_FILE_BYTES
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = item.read(min(1024 * 1024, limit - size + 1))
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    return _private(
+                        Response(
+                            {"detail": "The uploaded file exceeds the size limit."}, status=400
+                        )
+                    )
+                chunks.append(chunk)
+            total_bytes += size
+            if total_bytes > MAX_BATCH_EXPANDED_BYTES:
+                return _private(
+                    Response({"detail": "The upload batch exceeds the size limit."}, status=400)
+                )
+            files.append((item.name, b"".join(chunks)))
         try:
             batch = create_batch(player, files, attested=data.validated_data["attested"])
         except UploadError as exc:

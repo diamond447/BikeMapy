@@ -138,7 +138,9 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
     end = header_size + data_size
     if data_size <= 0 or end > len(data) or end > header_size + MAX_FILE_BYTES:
         raise UploadError("The FIT file size is invalid.", code="invalid_fit")
-    definitions: dict[int, tuple[str, int, list[tuple[int, int, int]]]] = {}
+    definitions: dict[
+        int, tuple[str, int, list[tuple[int, int, int]], list[int]]
+    ] = {}
     points: list[tuple[float, float]] = []
     started: datetime | None = None
     cursor = header_size
@@ -173,12 +175,24 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
                 field_number, field_size, base_type = data[cursor : cursor + 3]
                 cursor += 3
                 fields.append((field_number, field_size, base_type))
-            definitions[local_number] = (endian, global_number, fields)
+            developer_sizes: list[int] = []
+            if record_header & 0x20:
+                if cursor >= end:
+                    raise UploadError("The FIT definition is truncated.", code="invalid_fit")
+                developer_count = data[cursor]
+                cursor += 1
+                for _ in range(developer_count):
+                    if cursor + 3 > end:
+                        raise UploadError("The FIT definition is truncated.", code="invalid_fit")
+                    cursor += 1  # developer field number
+                    developer_sizes.append(data[cursor])
+                    cursor += 2  # field size and developer data index
+            definitions[local_number] = (endian, global_number, fields, developer_sizes)
             continue
         definition = definitions.get(local_number)
         if definition is None:
             raise UploadError("The FIT data record has no definition.", code="invalid_fit")
-        endian, global_number, fields = definition
+        endian, global_number, fields, developer_sizes = definition
         values: dict[int, int] = {}
         for field_number, field_size, base_type in fields:
             if cursor + field_size > end:
@@ -202,6 +216,10 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
                 values[field_number] = struct.unpack_from(f"{endian}i", raw)[0]
             else:
                 values[field_number] = struct.unpack_from(f"{endian}I", raw)[0]
+        for developer_size in developer_sizes:
+            if cursor + developer_size > end:
+                raise UploadError("The FIT data record is truncated.", code="invalid_fit")
+            cursor += developer_size
         if compressed_timestamp:
             if last_timestamp is None:
                 raise UploadError("The FIT compressed timestamp has no base.", code="invalid_fit")
@@ -261,7 +279,14 @@ def _safe_archive_members(data: bytes) -> list[tuple[str, bytes]]:
     result: list[tuple[str, bytes]] = []
     for info in infos:
         name = info.filename.replace("\\", "/")
-        if info.is_dir() or name.startswith("/") or ".." in name.split("/"):
+        is_symlink = (info.external_attr >> 16) & 0o170000 == 0o120000
+        if (
+            info.is_dir()
+            or is_symlink
+            or name.startswith("/")
+            or name.split("/", 1)[0].endswith(":")
+            or ".." in name.split("/")
+        ):
             raise UploadError("The archive contains an unsafe path.", code="unsafe_archive")
         suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
         if suffix == ".zip":
@@ -443,6 +468,20 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
             upload.save(
                 update_fields=("status", "error_code", "error_detail", "content", "processed_at")
             )
+        # Publish progress after every file, so a client can recover from a
+        # worker interruption and distinguish a partial batch from a terminal
+        # failure.  Counts are derived from committed rows, not worker memory.
+        statuses_now = list(batch.files.values_list("status", flat=True))
+        ActivityUploadBatch.objects.filter(pk=batch.pk).update(
+            status=ActivityUploadBatch.Status.RUNNING,
+            processed_files=sum(status != ActivityUpload.Status.QUEUED for status in statuses_now),
+            accepted_files=statuses_now.count(ActivityUpload.Status.ACCEPTED),
+            duplicate_files=statuses_now.count(ActivityUpload.Status.DUPLICATE),
+            failed_files=sum(
+                status in {ActivityUpload.Status.FAILED, ActivityUpload.Status.UNSUPPORTED}
+                for status in statuses_now
+            ),
+        )
     counts = batch.files.values_list("status", flat=True)
     statuses = list(counts)
     done = len(statuses)
@@ -453,11 +492,12 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
         status in {ActivityUpload.Status.FAILED, ActivityUpload.Status.UNSUPPORTED}
         for status in statuses
     )
-    batch.status = (
-        ActivityUploadBatch.Status.COMPLETED
-        if batch.failed_files == 0
-        else ActivityUploadBatch.Status.PARTIAL
-    )
+    if batch.failed_files == 0:
+        batch.status = ActivityUploadBatch.Status.COMPLETED
+    elif batch.accepted_files == 0 and batch.duplicate_files == 0:
+        batch.status = ActivityUploadBatch.Status.FAILED
+    else:
+        batch.status = ActivityUploadBatch.Status.PARTIAL
     batch.completed_at = timezone.now()
     batch.save(
         update_fields=(

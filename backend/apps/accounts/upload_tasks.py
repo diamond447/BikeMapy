@@ -26,14 +26,20 @@ def process_activity_upload_batch_task(batch_id: str) -> dict[str, Any]:
 def cleanup_expired_activity_uploads_task() -> dict[str, int]:
     """Delete transient raw upload payloads after the documented retention window."""
 
-    from .models import ActivityUpload, ActivityUploadBatch
+    from .models import ActivityUpload
 
     hours = int(getattr(settings, "ACTIVITY_UPLOAD_MAX_RETENTION_HOURS", 24))
     cutoff = timezone.now() - timedelta(hours=hours)
-    deleted, _ = ActivityUpload.objects.filter(created_at__lt=cutoff).delete()
-    # Keep batch result metadata for auditability, but remove orphaned empty
-    # batches left by interrupted uploads.
-    orphaned, _ = ActivityUploadBatch.objects.filter(
-        created_at__lt=cutoff, files__isnull=True
-    ).delete()
-    return {"uploads": deleted, "batches": orphaned}
+    stale = ActivityUpload.objects.filter(
+        created_at__lt=cutoff, status=ActivityUpload.Status.QUEUED
+    )
+    cleared = stale.update(
+        content=None,
+        status=ActivityUpload.Status.FAILED,
+        error_code="retention_expired",
+        error_detail="The upload expired before processing.",
+        processed_at=timezone.now(),
+    )
+    # Keep per-file result rows and batch metadata for owner-visible audit
+    # history; only transient content is removed.
+    return {"uploads": cleared, "batches": 0}

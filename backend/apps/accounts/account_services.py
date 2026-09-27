@@ -13,6 +13,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
@@ -146,7 +147,19 @@ def authenticate_player(*, identifier: Any, password: Any) -> Player | None:
     authenticated = authenticate(username=user.username, password=str(password or ""))
     if authenticated is None:
         return None
-    return Player.objects.filter(user=authenticated, lifecycle=Player.Lifecycle.CONNECTED).first()
+    player = Player.objects.filter(
+        user=authenticated, lifecycle=Player.Lifecycle.CONNECTED
+    ).first()
+    if player is not None and player.must_change_password:
+        # The generated onboarding credential is a one-login bootstrap secret.
+        # Mark it consumed atomically before returning the forced-change session.
+        updated = Player.objects.filter(
+            pk=player.pk, temporary_password_used=False, must_change_password=True
+        ).update(temporary_password_used=True, updated_at=timezone.now())
+        if not updated:
+            return None
+        player.temporary_password_used = True
+    return player
 
 
 def set_password(player: Player, password: str, *, clear_temporary: bool = True) -> None:
@@ -159,6 +172,7 @@ def set_password(player: Player, password: str, *, clear_temporary: bool = True)
         user.set_password(password)
         user.save(update_fields=("password",))
         locked.must_change_password = False if clear_temporary else locked.must_change_password
+        locked.temporary_password_used = True
         locked.session_epoch += 1
         locked.save(update_fields=("must_change_password", "session_epoch", "updated_at"))
         player.must_change_password = locked.must_change_password
