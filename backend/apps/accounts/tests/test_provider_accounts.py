@@ -8,7 +8,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client
 
-from apps.accounts.account_services import authenticate_player, create_invited_account
+from apps.accounts.account_services import AccountError, authenticate_player, create_invited_account
 from apps.accounts.models import Competition, CompetitionInviteRedemption, Player
 from apps.accounts.upload_services import UploadError, _safe_archive_members, parse_activity
 
@@ -39,7 +39,7 @@ def test_invited_account_is_hashed_and_joined_atomically() -> None:
 
 def test_invalid_invite_does_not_create_an_account() -> None:
     _competition()
-    with pytest.raises(Exception):
+    with pytest.raises(AccountError):
         create_invited_account(
             username="rider", email="rider@example.com", invite_code="invalid"
         )

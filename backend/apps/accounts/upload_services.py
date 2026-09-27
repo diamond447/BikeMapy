@@ -170,7 +170,9 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
         if global_number == 20 and 0 in values and 1 in values:
             points.append((values[1] * 180.0 / 2**31, values[0] * 180.0 / 2**31))
             if len(points) > MAX_GEOMETRY_POINTS:
-                raise UploadError("The activity has too many geometry points.", code="too_many_points")
+                raise UploadError(
+                    "The activity has too many geometry points.", code="too_many_points"
+                )
         if 253 in values and started is None:
             started = datetime.fromtimestamp(values[253] + 631065600, tz=UTC)
     if len(points) < 2:
