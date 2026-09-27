@@ -34,6 +34,7 @@ from .services import (
     refresh_connection,
     revoke_or_schedule,
     save_connection,
+    strava_is_available,
     validate_granted_scopes,
 )
 
@@ -158,7 +159,7 @@ class StravaAuthorizeView(GameEndpoint):
         tags=["game-auth"],
     )
     def get(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         if not request.session.session_key:
             request.session.create()
@@ -180,7 +181,7 @@ class StravaCallbackView(GameEndpoint):
         tags=["game-auth"],
     )
     def get(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         raw_state = str(request.GET.get("state") or "")
         if not raw_state or not request.session.session_key:
@@ -301,7 +302,7 @@ class PlayerRefreshView(GameEndpoint):
         tags=["game-account"],
     )
     def post(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):

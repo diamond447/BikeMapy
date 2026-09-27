@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import struct
 import zipfile
 from datetime import UTC, datetime
 from typing import Any
 
 from defusedxml import ElementTree  # type: ignore[import-untyped]
+from defusedxml.common import DefusedXmlException  # type: ignore[import-untyped]
 from django.db import transaction
 from django.utils import timezone
 
@@ -53,7 +55,7 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
         raise UploadError("The file exceeds the size limit.", code="file_too_large")
     try:
         root = ElementTree.fromstring(data)
-    except (ElementTree.ParseError, ValueError) as exc:
+    except (DefusedXmlException, ElementTree.ParseError, ValueError) as exc:
         raise UploadError("The activity file is not valid XML.", code="invalid_xml") from exc
     points: list[tuple[float, float]] = []
     started: datetime | None = None
@@ -94,18 +96,95 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
     return points, started, suffix[1:].upper()
 
 
+def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None, str]:
+    """Read the standard FIT record position fields without third-party code.
+
+    FIT files are binary protocol streams.  Only the definition/data records
+    needed for cycling geometry and timestamps are decoded; unknown fields are
+    skipped by their declared size, keeping malformed input bounded.
+    """
+
+    if len(data) < 14 or data[8:12] != b".FIT":
+        raise UploadError("The FIT file header is invalid.", code="invalid_fit")
+    header_size = data[0]
+    if header_size < 12 or header_size > len(data):
+        raise UploadError("The FIT file header is invalid.", code="invalid_fit")
+    data_size = struct.unpack_from("<I", data, 4)[0]
+    end = header_size + data_size
+    if data_size <= 0 or end > len(data) or end > header_size + MAX_FILE_BYTES:
+        raise UploadError("The FIT file size is invalid.", code="invalid_fit")
+    definitions: dict[int, tuple[str, int, list[tuple[int, int, int]]]] = {}
+    points: list[tuple[float, float]] = []
+    started: datetime | None = None
+    cursor = header_size
+    sizes = {0x02: 1, 0x84: 2, 0x85: 4, 0x86: 4, 0x07: 1, 0x0D: 4}
+    while cursor < end:
+        record_header = data[cursor]
+        cursor += 1
+        if record_header & 0x80:
+            # Compressed timestamp headers still point to the same local
+            # message, but decoding their rolling timestamp is unnecessary
+            # for safe acceptance; reject rather than guess geometry.
+            raise UploadError("Compressed FIT records are not supported.", code="unsupported_fit")
+        local_number = record_header & 0x0F
+        if record_header & 0x40:
+            if cursor + 5 > end:
+                raise UploadError("The FIT definition is truncated.", code="invalid_fit")
+            cursor += 1  # reserved
+            architecture = data[cursor]
+            cursor += 1
+            endian = ">" if architecture else "<"
+            global_number = struct.unpack_from(f"{endian}H", data, cursor)[0]
+            cursor += 2
+            field_count = data[cursor]
+            cursor += 1
+            fields: list[tuple[int, int, int]] = []
+            for _ in range(field_count):
+                if cursor + 3 > end:
+                    raise UploadError("The FIT definition is truncated.", code="invalid_fit")
+                field_number, field_size, base_type = data[cursor : cursor + 3]
+                cursor += 3
+                fields.append((field_number, field_size, base_type))
+            definitions[local_number] = (endian, global_number, fields)
+            continue
+        definition = definitions.get(local_number)
+        if definition is None:
+            raise UploadError("The FIT data record has no definition.", code="invalid_fit")
+        endian, global_number, fields = definition
+        values: dict[int, int] = {}
+        for field_number, field_size, base_type in fields:
+            if cursor + field_size > end:
+                raise UploadError("The FIT data record is truncated.", code="invalid_fit")
+            raw = data[cursor : cursor + field_size]
+            cursor += field_size
+            if base_type not in sizes or sizes[base_type] != field_size:
+                continue
+            if base_type == 0x02:
+                values[field_number] = raw[0]
+            elif base_type == 0x84:
+                values[field_number] = struct.unpack_from(f"{endian}H", raw)[0]
+            elif base_type == 0x86:
+                values[field_number] = struct.unpack_from(f"{endian}i", raw)[0]
+            else:
+                values[field_number] = struct.unpack_from(f"{endian}I", raw)[0]
+        if global_number == 20 and 0 in values and 1 in values:
+            points.append((values[1] * 180.0 / 2**31, values[0] * 180.0 / 2**31))
+            if len(points) > MAX_GEOMETRY_POINTS:
+                raise UploadError("The activity has too many geometry points.", code="too_many_points")
+        if 253 in values and started is None:
+            started = datetime.fromtimestamp(values[253] + 631065600, tz=UTC)
+    if len(points) < 2:
+        raise UploadError("The activity does not contain a usable track.", code="missing_geometry")
+    return points, started, "FIT"
+
+
 def parse_activity(data: bytes, filename: str) -> tuple[list[tuple[float, float]], datetime, str]:
     suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if suffix not in SUPPORTED_SUFFIXES:
         raise UploadError("Only FIT, GPX, and TCX files are supported.", code="unsupported_type")
     if suffix == ".fit":
-        # FIT is a binary format; accept only files with its mandatory header.
-        # A later parser can enrich timestamps, while the content fingerprint
-        # still makes imports deterministic and idempotent.
-        if len(data) < 14 or data[8:12] != b".FIT":
-            raise UploadError("The FIT file header is invalid.", code="invalid_fit")
-        now = timezone.now()
-        return [], now, "FIT"
+        points, started, kind = _parse_fit(data)
+        return points, started or timezone.now(), kind
     points, started, kind = _parse_xml(data, suffix)
     return points, started or timezone.now(), kind
 

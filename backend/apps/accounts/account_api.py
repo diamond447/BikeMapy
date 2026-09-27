@@ -175,7 +175,7 @@ class AccountLogoutView(AccountEndpoint):
 
 
 class PasswordChangeView(AccountEndpoint):
-    throttle_classes = (PlayerSessionThrottle,)
+    throttle_classes = (AccountThrottle,)
 
     @extend_schema(
         request=PasswordInput,
@@ -289,7 +289,12 @@ def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
         "duplicate_files": batch.duplicate_files,
         "failed_files": batch.failed_files,
         "files": [
-            {"name": item.original_name, "status": item.status, "error_code": item.error_code}
+            {
+                "name": item.original_name,
+                "status": item.status,
+                "error_code": item.error_code,
+                "activity_id": str(item.activity_id) if item.activity_id else None,
+            }
             for item in batch.files.order_by("pk")
         ],
     }

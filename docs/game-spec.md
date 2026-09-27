@@ -30,7 +30,10 @@ been covered?” Capture answers “which bounded areas does a player’s accumu
 network currently own?” These are switchable views, not separate activity
 imports or competing sources of truth.
 
-The player-account layer must be disabled by default (`GAME_ENABLED=false`).
+The player-account layer must be disabled by default (`GAME_ENABLED=false` and
+`PLAYER_ACCOUNTS_ENABLED=false`). Provider-neutral invite-gated accounts may be
+enabled independently with `PLAYER_ACCOUNTS_ENABLED=true`; this does not
+enable Strava synchronization. 
 Cross-member competitions have a separate fail-closed legal and rollout gate
 (`COMPETITION_GAME_ENABLED=false`) and require both flags to be explicitly
 enabled. A deployment with the account flag disabled and no Strava credentials must still build, start, and serve

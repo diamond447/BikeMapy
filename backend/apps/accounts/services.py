@@ -52,7 +52,7 @@ class _RetryPlayerDeletion(Exception):
     """Signal that a deletion snapshot changed before mutation could begin."""
 
 
-def game_is_available() -> bool:
+def strava_is_available() -> bool:
     return bool(
         getattr(settings, "GAME_ENABLED", False)
         and getattr(settings, "STRAVA_OAUTH_CLIENT_ID", "")
@@ -60,6 +60,12 @@ def game_is_available() -> bool:
         and getattr(settings, "STRAVA_TOKEN_ENCRYPTION_KEY", "")
         and getattr(settings, "STRAVA_IDENTITY_GUARD_KEY", "")
     )
+
+
+def game_is_available() -> bool:
+    """Return whether a player session can reach the private game boundary."""
+
+    return bool(strava_is_available() or getattr(settings, "PLAYER_ACCOUNTS_ENABLED", False))
 
 
 def competition_is_available() -> bool:
