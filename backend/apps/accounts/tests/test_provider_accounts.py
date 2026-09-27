@@ -146,7 +146,10 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
     fit.extend(struct.pack("<I", len(fit_payload)))
     fit.extend(b".FIT\x00\x00")
     fit_points, _, fit_kind = parse_activity(bytes(fit + fit_payload), "ride.fit")
-    assert fit_points == pytest.approx([(14.4, 50.1), (14.5, 50.2)], abs=0.001)
+    assert fit_points[0][0] == pytest.approx(14.4, abs=0.001)
+    assert fit_points[0][1] == pytest.approx(50.1, abs=0.001)
+    assert fit_points[1][0] == pytest.approx(14.5, abs=0.001)
+    assert fit_points[1][1] == pytest.approx(50.2, abs=0.001)
     assert fit_kind == "FIT"
 
     archive_data = io.BytesIO()
