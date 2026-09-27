@@ -1,6 +1,8 @@
-from __future__ import annotations
+"""Tests for provider-neutral account onboarding and activity uploads."""
 
 # mypy: disable-error-code="import-untyped"
+
+from __future__ import annotations
 
 import io
 import zipfile
