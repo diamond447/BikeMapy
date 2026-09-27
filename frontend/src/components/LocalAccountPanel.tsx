@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { apiBaseUrl, csrfHeaders, rememberCsrfToken } from '../api/client'
 
@@ -206,10 +206,6 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
       )
     else setMessage('The activity could not be deleted.')
   }
-
-  useEffect(() => {
-    if (authenticated) setMode('change')
-  }, [authenticated])
 
   if (authenticated) {
     return (
