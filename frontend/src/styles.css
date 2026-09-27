@@ -2047,6 +2047,114 @@ h1 {
   color: var(--atlas-orange);
 }
 
+.local-account-panel,
+.local-account-upload {
+  border-top: 1px solid var(--atlas-line);
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.local-account-panel h2,
+.local-account-upload h3 {
+  font-size: 1rem;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+.local-account-panel form,
+.local-account-upload form {
+  display: grid;
+  gap: 7px;
+}
+
+.local-account-panel label,
+.local-account-upload label {
+  color: var(--atlas-moss);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.57rem;
+}
+
+.local-account-panel input,
+.local-account-upload input[type='file'] {
+  background: #f0f3ed;
+  border: 1px solid var(--atlas-line);
+  color: var(--atlas-ink);
+  font-size: 0.73rem;
+  min-width: 0;
+  padding: 8px;
+}
+
+.local-account-panel button,
+.local-account-upload button {
+  background: var(--atlas-ink);
+  border: 0;
+  color: var(--atlas-paper-strong);
+  cursor: pointer;
+  font-size: 0.68rem;
+  padding: 8px 10px;
+}
+
+.local-account-panel button:disabled,
+.local-account-upload button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.local-account-links,
+.local-account-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: space-between;
+}
+
+.local-account-links button,
+.local-account-heading a,
+.local-account-github {
+  background: transparent;
+  color: var(--atlas-orange);
+  cursor: pointer;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.57rem;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.local-account-check {
+  align-items: start;
+  display: flex;
+  gap: 6px;
+  line-height: 1.35;
+}
+
+.local-account-upload ul {
+  border-top: 1px solid var(--atlas-line);
+  list-style: none;
+  margin: 0;
+  padding: 7px 0 0;
+}
+
+.local-account-upload li {
+  align-items: center;
+  display: flex;
+  font-size: 0.65rem;
+  gap: 7px;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+@media (max-width: 700px) {
+  .game-account-panel {
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    right: -8px;
+    width: min(390px, calc(100vw - 20px));
+  }
+}
+
 .game-competitions {
   border-top: 1px solid var(--atlas-line);
   margin: 15px 0;

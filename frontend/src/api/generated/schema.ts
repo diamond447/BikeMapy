@@ -59,6 +59,22 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/account/activities/{activity_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete: operations['v1_game_account_activities_destroy']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/account/activities/full-history/': {
     parameters: {
       query?: never
@@ -91,6 +107,38 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/account/github/link/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_account_github_link_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/password/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_password_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/account/refresh/': {
     parameters: {
       query?: never
@@ -101,6 +149,135 @@ export interface paths {
     get?: never
     put?: never
     post: operations['v1_game_account_refresh_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/uploads/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_uploads_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/uploads/{batch_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_account_uploads_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/github/onboard/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** @description Store a validated invite in the session before first-time OAuth. */
+    post: operations['v1_game_auth_github_onboard_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/login/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_login_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/logout/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_logout_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/onboard/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_onboard_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/reset/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_reset_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/reset/{uidb64}/{token}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['game_local_reset_confirm']
     delete?: never
     options?: never
     head?: never
@@ -567,6 +744,12 @@ export interface paths {
 export type webhooks = Record<string, never>
 export interface components {
   schemas: {
+    AccountInput: {
+      username: string
+      /** Format: email */
+      email: string
+      invite_code: string
+    }
     ActivitySync: {
       status: string
       mode: string
@@ -814,8 +997,15 @@ export interface components {
       /** Format: date-time */
       posted_at?: string | null
     }
+    InviteInput: {
+      invite_code: string
+    }
     LifecycleResponse: {
       lifecycle: string
+    }
+    LoginInput: {
+      identifier: string
+      password: string
     }
     /**
      * @description * `heatmap` - heatmap
@@ -856,6 +1046,9 @@ export interface components {
       previous?: string | null
       results: components['schemas']['Route'][]
     }
+    PasswordInput: {
+      password: string
+    }
     PatchedCompetitionColor: {
       color?: string
     }
@@ -867,7 +1060,7 @@ export interface components {
     }
     Player: {
       id: string
-      athlete_id: string
+      athlete_id: string | null
       display_name: string
       /** Format: uri */
       profile_image_url: string | null
@@ -970,6 +1163,10 @@ export interface components {
       turnstile_token: string
       website?: string
     }
+    ResetInput: {
+      /** Format: email */
+      email: string
+    }
     Route: {
       /** Format: uuid */
       readonly id: string
@@ -1042,6 +1239,9 @@ export interface components {
       aspect_type: string
       event_time: number
       subscription_id: number
+    }
+    UploadInput: {
+      attested: boolean
     }
     Variant: {
       /** Format: uuid */
@@ -1254,6 +1454,26 @@ export interface operations {
       }
     }
   }
+  v1_game_account_activities_destroy: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        activity_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Activity deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
   v1_game_account_activities_full_history_create: {
     parameters: {
       query?: never
@@ -1322,6 +1542,48 @@ export interface operations {
       }
     }
   }
+  v1_game_account_github_link_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Explicit linking URL. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_password_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PasswordInput']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInput']
+        'multipart/form-data': components['schemas']['PasswordInput']
+      }
+    }
+    responses: {
+      /** @description Password changed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
   v1_game_account_refresh_create: {
     parameters: {
       query?: never
@@ -1362,6 +1624,205 @@ export interface operations {
         content: {
           'application/json': components['schemas']['ErrorResponse']
         }
+      }
+    }
+  }
+  v1_game_account_uploads_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['UploadInput']
+        'application/x-www-form-urlencoded': components['schemas']['UploadInput']
+        'multipart/form-data': components['schemas']['UploadInput']
+      }
+    }
+    responses: {
+      /** @description Batch queued. */
+      202: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_uploads_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        batch_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Batch progress. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_github_onboard_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['InviteInput']
+        'application/x-www-form-urlencoded': components['schemas']['InviteInput']
+        'multipart/form-data': components['schemas']['InviteInput']
+      }
+    }
+    responses: {
+      /** @description OAuth URL stored. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_login_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LoginInput']
+        'application/x-www-form-urlencoded': components['schemas']['LoginInput']
+        'multipart/form-data': components['schemas']['LoginInput']
+      }
+    }
+    responses: {
+      /** @description Signed in. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid credentials. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_logout_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Signed out. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_onboard_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AccountInput']
+        'application/x-www-form-urlencoded': components['schemas']['AccountInput']
+        'multipart/form-data': components['schemas']['AccountInput']
+      }
+    }
+    responses: {
+      /** @description Account created. */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid request. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_reset_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ResetInput']
+        'application/x-www-form-urlencoded': components['schemas']['ResetInput']
+        'multipart/form-data': components['schemas']['ResetInput']
+      }
+    }
+    responses: {
+      /** @description Reset request accepted. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  game_local_reset_confirm: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        token: string
+        uidb64: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PasswordInput']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInput']
+        'multipart/form-data': components['schemas']['PasswordInput']
+      }
+    }
+    responses: {
+      /** @description Password reset. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }

@@ -73,6 +73,9 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
 GAME_ENABLED = env_bool("GAME_ENABLED", False)
+# Provider-neutral local accounts can be enabled independently of the legacy
+# Strava OAuth rollout gate.
+PLAYER_ACCOUNTS_ENABLED = env_bool("PLAYER_ACCOUNTS_ENABLED", False)
 # Account authentication and competition/cross-member features have separate
 # rollout and legal gates. Competition endpoints remain unavailable unless
 # both flags are explicitly enabled.
@@ -387,10 +390,12 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("API_ANON_RATE", "120/minute"),
         "user": os.getenv("API_USER_RATE", "600/minute"),
+        "player_accounts": os.getenv("PLAYER_ACCOUNT_RATE", "20/minute"),
     },
 }
 GAME_PLAYER_RATE = os.getenv("GAME_PLAYER_RATE", "600/minute")
 COMPETITION_INVITE_RATE = os.getenv("COMPETITION_INVITE_RATE", "10/minute")
+PLAYER_ACCOUNT_RATE = os.getenv("PLAYER_ACCOUNT_RATE", "20/minute")
 # Analytics is deliberately protected by one coarse, non-identifying bucket;
 # unlike the generic API throttle it never derives a cache key from an IP.
 ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
