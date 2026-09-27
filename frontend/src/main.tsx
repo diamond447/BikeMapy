@@ -9,13 +9,16 @@ import './styles.css'
 const GameApp = lazy(() => import('./GameApp'))
 
 const queryClient = new QueryClient()
+const isGamePath =
+  window.location.pathname === '/game' ||
+  window.location.pathname.startsWith('/game/reset-password/')
 
 setupCloudflareWebAnalytics()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      {window.location.pathname === '/game' ? (
+      {isGamePath ? (
         <Suspense fallback={null}>
           <GameApp />
         </Suspense>

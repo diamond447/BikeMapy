@@ -744,7 +744,7 @@ export interface paths {
 export type webhooks = Record<string, never>
 export interface components {
   schemas: {
-    AccountInput: {
+    AccountInputRequest: {
       username: string
       /** Format: email */
       email: string
@@ -764,8 +764,26 @@ export interface components {
     ActivitySyncResponse: {
       sync: components['schemas']['ActivitySync']
     }
+    ActivityUploadBatch: {
+      /** Format: uuid */
+      batch_id: string
+      status: string
+      total_files: number
+      processed_files: number
+      accepted_files: number
+      duplicate_files: number
+      failed_files: number
+      files: components['schemas']['ActivityUploadResult'][]
+    }
+    ActivityUploadResult: {
+      name: string
+      status: string
+      error_code: string
+      error_detail: string
+      activity_id: string | null
+    }
     /** @description Accept only known event names and no other event metadata. */
-    AnalyticsEvent: {
+    AnalyticsEventRequest: {
       event: components['schemas']['EventEnum']
     }
     CaptureErrorResponse: {
@@ -860,7 +878,7 @@ export interface components {
      * @enum {string}
      */
     CompetitionAccessEnum: 'available' | 'consent_required' | 'competition_disabled'
-    CompetitionCreate: {
+    CompetitionCreateRequest: {
       name: string
       color?: string
     }
@@ -871,7 +889,7 @@ export interface components {
         [key: string]: string[]
       }
     }
-    CompetitionJoin: {
+    CompetitionJoinRequest: {
       invite_code: string
       color?: string
     }
@@ -934,12 +952,12 @@ export interface components {
       next_cursor: string | null
       has_more: boolean
     }
-    CompetitionSharingConsent: {
+    CompetitionSharingConsentRequest: {
       scope: components['schemas']['ScopeEnum']
       disclosure_version: string
       confirmed: boolean
     }
-    CompetitionTransfer: {
+    CompetitionTransferRequest: {
       player_id: number
     }
     CompetitionsResponse: {
@@ -997,13 +1015,13 @@ export interface components {
       /** Format: date-time */
       posted_at?: string | null
     }
-    InviteInput: {
+    InviteInputRequest: {
       invite_code: string
     }
     LifecycleResponse: {
       lifecycle: string
     }
-    LoginInput: {
+    LoginInputRequest: {
       identifier: string
       password: string
     }
@@ -1046,16 +1064,16 @@ export interface components {
       previous?: string | null
       results: components['schemas']['Route'][]
     }
-    PasswordInput: {
+    PasswordInputRequest: {
       password: string
     }
-    PatchedCompetitionColor: {
+    PatchedCompetitionColorRequest: {
       color?: string
     }
-    PatchedCompetitionRename: {
+    PatchedCompetitionRenameRequest: {
       name?: string
     }
-    PatchedNicknameRequest: {
+    PatchedNicknameRequestRequest: {
       nickname?: string
     }
     Player: {
@@ -1153,7 +1171,7 @@ export interface components {
         [key: string]: unknown
       }
     }
-    ReportSubmission: {
+    ReportSubmissionRequest: {
       reason: components['schemas']['ReasonEnum']
       message: string
       /** Format: email */
@@ -1163,7 +1181,7 @@ export interface components {
       turnstile_token: string
       website?: string
     }
-    ResetInput: {
+    ResetInputRequest: {
       /** Format: email */
       email: string
     }
@@ -1232,7 +1250,7 @@ export interface components {
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
     }
-    StravaWebhookPayload: {
+    StravaWebhookPayloadRequest: {
       object_type: string
       object_id: number
       owner_id: number
@@ -1240,8 +1258,9 @@ export interface components {
       event_time: number
       subscription_id: number
     }
-    UploadInput: {
+    UploadInputRequest: {
       attested: boolean
+      files: string[]
     }
     Variant: {
       /** Format: uuid */
@@ -1288,9 +1307,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['AnalyticsEvent']
-        'application/x-www-form-urlencoded': components['schemas']['AnalyticsEvent']
-        'multipart/form-data': components['schemas']['AnalyticsEvent']
+        'application/json': components['schemas']['AnalyticsEventRequest']
+        'application/x-www-form-urlencoded': components['schemas']['AnalyticsEventRequest']
+        'multipart/form-data': components['schemas']['AnalyticsEventRequest']
       }
     }
     responses: {
@@ -1381,9 +1400,9 @@ export interface operations {
     }
     requestBody?: {
       content: {
-        'application/json': components['schemas']['PatchedNicknameRequest']
-        'application/x-www-form-urlencoded': components['schemas']['PatchedNicknameRequest']
-        'multipart/form-data': components['schemas']['PatchedNicknameRequest']
+        'application/json': components['schemas']['PatchedNicknameRequestRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedNicknameRequestRequest']
+        'multipart/form-data': components['schemas']['PatchedNicknameRequestRequest']
       }
     }
     responses: {
@@ -1569,9 +1588,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['PasswordInput']
-        'application/x-www-form-urlencoded': components['schemas']['PasswordInput']
-        'multipart/form-data': components['schemas']['PasswordInput']
+        'application/json': components['schemas']['PasswordInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInputRequest']
+        'multipart/form-data': components['schemas']['PasswordInputRequest']
       }
     }
     responses: {
@@ -1636,18 +1655,17 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['UploadInput']
-        'application/x-www-form-urlencoded': components['schemas']['UploadInput']
-        'multipart/form-data': components['schemas']['UploadInput']
+        'multipart/form-data': components['schemas']['UploadInputRequest']
       }
     }
     responses: {
-      /** @description Batch queued. */
       202: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['ActivityUploadBatch']
+        }
       }
     }
   }
@@ -1662,12 +1680,13 @@ export interface operations {
     }
     requestBody?: never
     responses: {
-      /** @description Batch progress. */
       200: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/json': components['schemas']['ActivityUploadBatch']
+        }
       }
     }
   }
@@ -1680,9 +1699,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['InviteInput']
-        'application/x-www-form-urlencoded': components['schemas']['InviteInput']
-        'multipart/form-data': components['schemas']['InviteInput']
+        'application/json': components['schemas']['InviteInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['InviteInputRequest']
+        'multipart/form-data': components['schemas']['InviteInputRequest']
       }
     }
     responses: {
@@ -1704,9 +1723,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['LoginInput']
-        'application/x-www-form-urlencoded': components['schemas']['LoginInput']
-        'multipart/form-data': components['schemas']['LoginInput']
+        'application/json': components['schemas']['LoginInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['LoginInputRequest']
+        'multipart/form-data': components['schemas']['LoginInputRequest']
       }
     }
     responses: {
@@ -1753,9 +1772,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['AccountInput']
-        'application/x-www-form-urlencoded': components['schemas']['AccountInput']
-        'multipart/form-data': components['schemas']['AccountInput']
+        'application/json': components['schemas']['AccountInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['AccountInputRequest']
+        'multipart/form-data': components['schemas']['AccountInputRequest']
       }
     }
     responses: {
@@ -1784,9 +1803,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['ResetInput']
-        'application/x-www-form-urlencoded': components['schemas']['ResetInput']
-        'multipart/form-data': components['schemas']['ResetInput']
+        'application/json': components['schemas']['ResetInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['ResetInputRequest']
+        'multipart/form-data': components['schemas']['ResetInputRequest']
       }
     }
     responses: {
@@ -1811,9 +1830,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['PasswordInput']
-        'application/x-www-form-urlencoded': components['schemas']['PasswordInput']
-        'multipart/form-data': components['schemas']['PasswordInput']
+        'application/json': components['schemas']['PasswordInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInputRequest']
+        'multipart/form-data': components['schemas']['PasswordInputRequest']
       }
     }
     responses: {
@@ -1999,9 +2018,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionCreate']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionCreate']
-        'multipart/form-data': components['schemas']['CompetitionCreate']
+        'application/json': components['schemas']['CompetitionCreateRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionCreateRequest']
+        'multipart/form-data': components['schemas']['CompetitionCreateRequest']
       }
     }
     responses: {
@@ -2187,9 +2206,9 @@ export interface operations {
     }
     requestBody?: {
       content: {
-        'application/json': components['schemas']['PatchedCompetitionRename']
-        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionRename']
-        'multipart/form-data': components['schemas']['PatchedCompetitionRename']
+        'application/json': components['schemas']['PatchedCompetitionRenameRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionRenameRequest']
+        'multipart/form-data': components['schemas']['PatchedCompetitionRenameRequest']
       }
     }
     responses: {
@@ -2527,9 +2546,9 @@ export interface operations {
     }
     requestBody?: {
       content: {
-        'application/json': components['schemas']['PatchedCompetitionColor']
-        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionColor']
-        'multipart/form-data': components['schemas']['PatchedCompetitionColor']
+        'application/json': components['schemas']['PatchedCompetitionColorRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionColorRequest']
+        'multipart/form-data': components['schemas']['PatchedCompetitionColorRequest']
       }
     }
     responses: {
@@ -2655,9 +2674,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionSharingConsent']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionSharingConsent']
-        'multipart/form-data': components['schemas']['CompetitionSharingConsent']
+        'application/json': components['schemas']['CompetitionSharingConsentRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionSharingConsentRequest']
+        'multipart/form-data': components['schemas']['CompetitionSharingConsentRequest']
       }
     }
     responses: {
@@ -2844,9 +2863,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionTransfer']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionTransfer']
-        'multipart/form-data': components['schemas']['CompetitionTransfer']
+        'application/json': components['schemas']['CompetitionTransferRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionTransferRequest']
+        'multipart/form-data': components['schemas']['CompetitionTransferRequest']
       }
     }
     responses: {
@@ -2909,9 +2928,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionJoin']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionJoin']
-        'multipart/form-data': components['schemas']['CompetitionJoin']
+        'application/json': components['schemas']['CompetitionJoinRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionJoinRequest']
+        'multipart/form-data': components['schemas']['CompetitionJoinRequest']
       }
     }
     responses: {
@@ -3089,9 +3108,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['StravaWebhookPayload']
-        'application/x-www-form-urlencoded': components['schemas']['StravaWebhookPayload']
-        'multipart/form-data': components['schemas']['StravaWebhookPayload']
+        'application/json': components['schemas']['StravaWebhookPayloadRequest']
+        'application/x-www-form-urlencoded': components['schemas']['StravaWebhookPayloadRequest']
+        'multipart/form-data': components['schemas']['StravaWebhookPayloadRequest']
       }
     }
     responses: {
@@ -3230,9 +3249,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['ReportSubmission']
-        'application/x-www-form-urlencoded': components['schemas']['ReportSubmission']
-        'multipart/form-data': components['schemas']['ReportSubmission']
+        'application/json': components['schemas']['ReportSubmissionRequest']
+        'application/x-www-form-urlencoded': components['schemas']['ReportSubmissionRequest']
+        'multipart/form-data': components['schemas']['ReportSubmissionRequest']
       }
     }
     responses: {

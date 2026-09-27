@@ -76,6 +76,9 @@ GAME_ENABLED = env_bool("GAME_ENABLED", False)
 # Provider-neutral local accounts can be enabled independently of the legacy
 # Strava OAuth rollout gate.
 PLAYER_ACCOUNTS_ENABLED = env_bool("PLAYER_ACCOUNTS_ENABLED", False)
+# Raw activity payloads are transient worker input and are never retained for
+# more than this period (the cleanup task runs from the Celery beat schedule).
+ACTIVITY_UPLOAD_MAX_RETENTION_HOURS = env_int("ACTIVITY_UPLOAD_MAX_RETENTION_HOURS", 24)
 # Account authentication and competition/cross-member features have separate
 # rollout and legal gates. Competition endpoints remain unavailable unless
 # both flags are explicitly enabled.
@@ -404,6 +407,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Public, versioned read API for BikeMapy.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
@@ -474,6 +478,10 @@ CELERY_BEAT_SCHEDULE = {
     "retry-player-revocations": {
         "task": "bikemapy.accounts.retry_revocations",
         "schedule": 900,
+    },
+    "cleanup-expired-activity-uploads": {
+        "task": "bikemapy.accounts.cleanup_expired_activity_uploads",
+        "schedule": 3600,
     },
     "dispatch-game-recomputations": {
         "task": "bikemapy.accounts.dispatch_competition_recomputations",

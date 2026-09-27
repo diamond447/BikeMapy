@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.contrib.auth import login as auth_login
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
@@ -30,7 +32,10 @@ from .activity_services import remove_activity
 from .game_api import _private
 from .models import ActivityUploadBatch, Player
 from .services import player_accounts_is_available
-from .upload_services import UploadError, create_batch
+from .upload_services import (
+    UploadError,
+    create_batch,
+)
 from .upload_tasks import process_activity_upload_batch_task
 
 
@@ -61,6 +66,25 @@ class InviteInput(serializers.Serializer[dict[str, Any]]):
     invite_code = serializers.CharField(max_length=64)
 
 
+class ActivityUploadResultSerializer(serializers.Serializer[dict[str, Any]]):
+    name = serializers.CharField()
+    status = serializers.CharField()
+    error_code = serializers.CharField(allow_blank=True)
+    error_detail = serializers.CharField(allow_blank=True)
+    activity_id = serializers.CharField(allow_null=True)
+
+
+class ActivityUploadBatchSerializer(serializers.Serializer[dict[str, Any]]):
+    batch_id = serializers.UUIDField()
+    status = serializers.CharField()
+    total_files = serializers.IntegerField()
+    processed_files = serializers.IntegerField()
+    accepted_files = serializers.IntegerField()
+    duplicate_files = serializers.IntegerField()
+    failed_files = serializers.IntegerField()
+    files = ActivityUploadResultSerializer(many=True)
+
+
 class AccountEndpoint(APIView):
     throttle_classes = (AccountThrottle,)
 
@@ -79,11 +103,19 @@ class AccountEndpoint(APIView):
         return response
 
 
-def _session_player(request: Any) -> Player | None:
+def _session_player(request: Any, *, allow_password_change: bool = False) -> Player | None:
     player_id = request.session.get("player_id")
     if not player_id:
         return None
-    return Player.objects.filter(pk=player_id, lifecycle=Player.Lifecycle.CONNECTED).first()
+    epoch = request.session.get("player_session_epoch")
+    if epoch is None:
+        return None
+    player = Player.objects.filter(pk=player_id, lifecycle=Player.Lifecycle.CONNECTED).first()
+    if player is None or player.session_epoch != epoch:
+        return None
+    if player.must_change_password and not allow_password_change:
+        return None
+    return player
 
 
 def _account_payload(player: Player, *, authenticated: bool = True) -> dict[str, Any]:
@@ -115,6 +147,10 @@ class AccountOnboardingView(AccountEndpoint):
             player, _ = create_invited_account(**data.validated_data)
         except AccountError:
             return _private(Response({"detail": "Unable to create this account."}, status=400))
+        except Exception:
+            # The service transaction has already rolled back the account and
+            # redemption when delivery fails; keep transport details private.
+            return _private(Response({"detail": "Unable to create this account."}, status=503))
         return _private(Response(_account_payload(player, authenticated=False), status=201))
 
 
@@ -186,7 +222,7 @@ class PasswordChangeView(AccountEndpoint):
         tags=["account-auth"],
     )
     def post(self, request: Any) -> Response:
-        player = _session_player(request)
+        player = _session_player(request, allow_password_change=True)
         if player is None:
             return _private(Response({"detail": "Authentication is required."}, status=401))
         data = PasswordInput(data=request.data)
@@ -196,6 +232,8 @@ class PasswordChangeView(AccountEndpoint):
             set_password(player, data.validated_data["password"])
         except AccountError as exc:
             return _private(Response({"detail": exc.detail, "code": exc.code}, status=400))
+        request.session["player_session_epoch"] = player.session_epoch
+        request.session.save()
         return _private(Response({"must_change_password": False}))
 
 
@@ -249,19 +287,34 @@ class GitHubLinkView(AccountEndpoint):
         player = _session_player(request)
         if player is None:
             return _private(Response({"detail": "Authentication is required."}, status=401))
+        # allauth's connect flow is bound to this exact local session/player;
+        # a random intent prevents a copied callback URL from being reused.
+        import secrets
+
+        request.session["github_link_intent"] = secrets.token_urlsafe(32)
+        request.session["github_link_player_id"] = str(player.pk)
+        request.session["github_link_epoch"] = player.session_epoch
+        auth_login(
+            request,
+            player.user,
+            backend="allauth.account.auth_backends.AuthenticationBackend",
+        )
+        request.session.save()
         return _private(Response({"url": "/accounts/github/login/?process=connect"}))
 
 
 class UploadInput(serializers.Serializer[dict[str, Any]]):
     attested = serializers.BooleanField(required=True)
+    files = serializers.ListField(child=serializers.FileField(), required=True, allow_empty=False)
 
 
 class ActivityUploadView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
+    parser_classes = (MultiPartParser,)
 
     @extend_schema(
         request=UploadInput,
-        responses={202: OpenApiResponse(description="Batch queued.")},
+        responses={202: ActivityUploadBatchSerializer},
         tags=["game-activities"],
     )
     def post(self, request: Any) -> Response:
@@ -273,13 +326,15 @@ class ActivityUploadView(AccountEndpoint):
             return _private(
                 Response({"detail": "A data ownership attestation is required."}, status=400)
             )
-        files = [(item.name, item.read()) for item in request.FILES.getlist("files")]
+        files: list[tuple[str, Any]] = []
+        for item in request.FILES.getlist("files"):
+            files.append((item.name, item))
         try:
             batch = create_batch(player, files, attested=data.validated_data["attested"])
         except UploadError as exc:
             return _private(Response({"detail": exc.detail, "code": exc.code}, status=400))
         process_activity_upload_batch_task.apply_async(args=(str(batch.pk),))
-        return _private(Response({"batch_id": str(batch.pk), "status": batch.status}, status=202))
+        return _private(Response(_batch_payload(batch), status=202))
 
 
 def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
@@ -296,6 +351,7 @@ def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
                 "name": item.original_name,
                 "status": item.status,
                 "error_code": item.error_code,
+                "error_detail": item.error_detail,
                 "activity_id": str(item.activity_id) if item.activity_id else None,
             }
             for item in batch.files.order_by("pk")
@@ -306,9 +362,7 @@ def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
 class ActivityUploadBatchView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
 
-    @extend_schema(
-        responses={200: OpenApiResponse(description="Batch progress.")}, tags=["game-activities"]
-    )
+    @extend_schema(responses={200: ActivityUploadBatchSerializer}, tags=["game-activities"])
     def get(self, request: Any, batch_id: Any) -> Response:
         player = _session_player(request)
         if player is None:

@@ -58,6 +58,7 @@ class Player(models.Model):
     disconnected_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
     must_change_password = models.BooleanField(default=False)
+    temporary_password_used = models.BooleanField(default=False)
 
     class Meta:
         ordering = ("pk",)
@@ -191,7 +192,11 @@ class CompetitionInviteRedemption(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=("competition", "player"), name="accounts_invite_redemption_unique"
-            )
+            ),
+            models.UniqueConstraint(
+                fields=("competition", "code_digest"),
+                name="accounts_invite_redemption_code_unique",
+            ),
         ]
         indexes = [models.Index(fields=("competition", "code_digest"))]
 
@@ -291,10 +296,11 @@ class ActivityUploadBatch(models.Model):
 
 
 class ActivityUpload(models.Model):
-    """One upload result.  ``content`` is transient and cleared by workers."""
+    """One upload result with a transient private, file-backed payload."""
 
     class Status(models.TextChoices):
         QUEUED = "queued", "Queued"
+        PROCESSING = "processing", "Processing"
         ACCEPTED = "accepted", "Accepted"
         DUPLICATE = "duplicate", "Duplicate"
         UNSUPPORTED = "unsupported", "Unsupported"
@@ -303,6 +309,9 @@ class ActivityUpload(models.Model):
     batch = models.ForeignKey(ActivityUploadBatch, on_delete=models.CASCADE, related_name="files")
     original_name = models.CharField(max_length=240)
     content_sha256 = models.CharField(max_length=64)
+    content_path = models.FileField(upload_to="private/activity_uploads/", null=True, blank=True)
+    # Legacy database payloads are read only for migration compatibility and
+    # are never populated by new uploads.
     content = models.BinaryField(null=True, blank=True)
     size_bytes = models.PositiveIntegerField()
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)

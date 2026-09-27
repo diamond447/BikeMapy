@@ -84,6 +84,24 @@ describe('LocalAccountPanel', () => {
     )
   })
 
+  it('confirms a reset token from the reset URL', async () => {
+    window.history.pushState({}, '', '/game/reset-password/uid-1/token-1/')
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response({ detail: 'Password reset.' }))
+    render(<LocalAccountPanel />)
+    fireEvent.change(screen.getByLabelText('New password'), {
+      target: { value: 'new-secure-password' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm password reset' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Password reset.'))
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/game/auth/local/reset/uid-1/token-1/'),
+      expect.objectContaining({ method: 'POST' }),
+    )
+    window.history.pushState({}, '', '/')
+  })
+
   it('requires an invite before starting GitHub onboarding', () => {
     render(<LocalAccountPanel />)
     fireEvent.click(screen.getByRole('button', { name: 'Use GitHub with an invite' }))
@@ -163,6 +181,20 @@ describe('LocalAccountPanel', () => {
     expect(fetchMock).toHaveBeenLastCalledWith(
       expect.stringContaining('/api/v1/game/account/activities/activity-1/'),
       expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+
+  it('requests a session-bound GitHub link intent before redirecting', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response({ url: '/accounts/github/login/?process=connect' }))
+    render(<LocalAccountPanel authenticated />)
+    fireEvent.click(screen.getByRole('button', { name: 'Link GitHub' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/game/account/github/link/'),
+        expect.objectContaining({ credentials: 'include' }),
+      ),
     )
   })
 })

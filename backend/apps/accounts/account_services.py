@@ -11,8 +11,9 @@ from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
@@ -75,7 +76,7 @@ def _send_temporary_password(user: Any, password: str) -> None:
         ),
         from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@localhost"),
         recipient_list=[user.email],
-        fail_silently=True,
+        fail_silently=False,
     )
 
 
@@ -85,7 +86,11 @@ def create_invited_account(*, username: Any, email: Any, invite_code: Any) -> tu
 
     username_value = normalize_username(username)
     email_value = normalize_email(email)
+    # Serialise onboarding against the competition row.  The ordinary join
+    # invite remains reusable, while the account-onboarding redemption is a
+    # separate, single-use lifecycle.
     competition = validate_invite_code(invite_code)
+    competition = Competition.objects.select_for_update().get(pk=competition.pk)
     user_model = get_user_model()
     if user_model.objects.filter(username__iexact=username_value).exists():
         raise AccountError("Unable to create this account.", code="account_unavailable")
@@ -94,24 +99,39 @@ def create_invited_account(*, username: Any, email: Any, invite_code: Any) -> tu
     if user_model.objects.filter(email__iexact=email_value).exists():
         raise AccountError("Unable to create this account.", code="account_unavailable")
     temporary_password = _temporary_password()
-    user = user_model.objects.create_user(
-        username=username_value, email=email_value, password=temporary_password
-    )
-    player = Player.objects.create(
-        user=user,
-        strava_athlete_id=None,
-        strava_display_name=username_value,
-        nickname=username_value,
-        must_change_password=True,
-    )
+    if CompetitionInviteRedemption.objects.filter(
+        competition=competition,
+        code_digest=invite_digest(competition.invite_code),
+    ).exists():
+        raise AccountError("Unable to create this account.", code="account_unavailable")
+    try:
+        user = user_model.objects.create_user(
+            username=username_value, email=email_value, password=temporary_password
+        )
+        player = Player.objects.create(
+            user=user,
+            strava_athlete_id=None,
+            strava_display_name=username_value,
+            nickname=username_value,
+            must_change_password=True,
+        )
+    except IntegrityError as exc:
+        raise AccountError("Unable to create this account.", code="account_unavailable") from exc
     try:
         join_competition(player, invite_code=competition.invite_code)
     except CompetitionError as exc:
         raise AccountError(exc.detail, code=exc.code) from exc
-    CompetitionInviteRedemption.objects.create(
-        competition=competition, player=player, code_digest=invite_digest(competition.invite_code)
-    )
-    transaction.on_commit(lambda: _send_temporary_password(user, temporary_password))
+    try:
+        CompetitionInviteRedemption.objects.create(
+            competition=competition,
+            player=player,
+            code_digest=invite_digest(competition.invite_code),
+        )
+    except IntegrityError as exc:
+        raise AccountError("Unable to create this account.", code="account_unavailable") from exc
+    # Delivery is part of the transaction.  A backend failure rolls back the
+    # user, membership, redemption, and any capacity reservation together.
+    _send_temporary_password(user, temporary_password)
     return player, temporary_password
 
 
@@ -127,19 +147,34 @@ def authenticate_player(*, identifier: Any, password: Any) -> Player | None:
     authenticated = authenticate(username=user.username, password=str(password or ""))
     if authenticated is None:
         return None
-    return Player.objects.filter(user=authenticated, lifecycle=Player.Lifecycle.CONNECTED).first()
+    player = Player.objects.filter(user=authenticated, lifecycle=Player.Lifecycle.CONNECTED).first()
+    if player is not None and player.must_change_password:
+        # The generated onboarding credential is a one-login bootstrap secret.
+        # Mark it consumed atomically before returning the forced-change session.
+        updated = Player.objects.filter(
+            pk=player.pk, temporary_password_used=False, must_change_password=True
+        ).update(temporary_password_used=True, updated_at=timezone.now())
+        if not updated:
+            return None
+        player.temporary_password_used = True
+    return player
 
 
 def set_password(player: Player, password: str, *, clear_temporary: bool = True) -> None:
     password = str(password or "")
     if len(password) < 12:
         raise AccountError("Password must contain at least 12 characters.", code="weak_password")
-    user = player.user
-    user.set_password(password)
-    user.save(update_fields=("password",))
-    if clear_temporary and player.must_change_password:
-        Player.objects.filter(pk=player.pk).update(must_change_password=False)
-        player.must_change_password = False
+    with transaction.atomic():
+        locked = Player.objects.select_for_update().select_related("user").get(pk=player.pk)
+        user = locked.user
+        user.set_password(password)
+        user.save(update_fields=("password",))
+        locked.must_change_password = False if clear_temporary else locked.must_change_password
+        locked.temporary_password_used = True
+        locked.session_epoch += 1
+        locked.save(update_fields=("must_change_password", "session_epoch", "updated_at"))
+        player.must_change_password = locked.must_change_password
+        player.session_epoch = locked.session_epoch
 
 
 def request_password_reset(email: Any) -> None:
