@@ -67,20 +67,20 @@ def _parse_xml(data: bytes, suffix: str) -> tuple[list[tuple[float, float]], dat
                 continue
             points.append((lon, lat))
         elif name == "trackpoint":
-            lat: float | None = None
-            lon: float | None = None
+            lat_value: float | None = None
+            lon_value: float | None = None
             for child in element:
                 child_name = _local_name(child.tag)
                 if child_name == "latitude":
                     for value in child.iter():
                         if _local_name(value.tag) == "degrees":
-                            lat = float(_text(value.text))
+                            lat_value = float(_text(value.text))
                 elif child_name == "longitude":
                     for value in child.iter():
                         if _local_name(value.tag) == "degrees":
-                            lon = float(_text(value.text))
-            if lat is not None and lon is not None:
-                points.append((lon, lat))
+                            lon_value = float(_text(value.text))
+            if lat_value is not None and lon_value is not None:
+                points.append((lon_value, lat_value))
         elif name in {"time", "starttime"} and started is None:
             parsed = _parse_timestamp(_text(element.text))
             if parsed:
