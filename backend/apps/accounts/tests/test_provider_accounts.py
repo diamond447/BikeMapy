@@ -109,11 +109,14 @@ def test_local_account_endpoints_cover_onboarding_login_password_and_reset() -> 
     )
     assert response.status_code == 201
 
-    assert client.post(
-        "/api/v1/game/auth/local/login/",
-        {"identifier": "rider", "password": "wrong-password"},
-        format="json",
-    ).status_code == 401
+    assert (
+        client.post(
+            "/api/v1/game/auth/local/login/",
+            {"identifier": "rider", "password": "wrong-password"},
+            format="json",
+        ).status_code
+        == 401
+    )
     response = client.post(
         "/api/v1/game/auth/local/login/",
         {"identifier": "rider", "password": "temporary-password"},
@@ -147,11 +150,14 @@ def test_local_account_endpoints_cover_onboarding_login_password_and_reset() -> 
         )
     assert response.status_code == 200
     send_mail.assert_called_once()
-    assert client.post(
-        "/api/v1/game/auth/local/reset/not-a-user/not-a-token/",
-        {"password": "a-secure-password"},
-        format="json",
-    ).status_code == 400
+    assert (
+        client.post(
+            "/api/v1/game/auth/local/reset/not-a-user/not-a-token/",
+            {"password": "a-secure-password"},
+            format="json",
+        ).status_code
+        == 400
+    )
 
 
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)
@@ -163,17 +169,23 @@ def test_upload_api_queues_batches_and_scopes_progress_to_session_player() -> No
     player.user.set_password(temporary)
     player.user.save(update_fields=("password",))
     client = APIClient()
-    assert client.post(
-        "/api/v1/game/auth/local/login/",
-        {"identifier": "rider", "password": temporary},
-        format="json",
-    ).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/game/auth/local/login/",
+            {"identifier": "rider", "password": temporary},
+            format="json",
+        ).status_code
+        == 200
+    )
 
     assert client.post("/api/v1/game/account/uploads/", {}, format="multipart").status_code == 400
     batch = ActivityUploadBatch.objects.create(player=player, total_files=1, attested=True)
-    with patch("apps.accounts.account_api.create_batch", return_value=batch), patch(
-        "apps.accounts.account_api.process_activity_upload_batch_task.apply_async"
-    ) as apply_async:
+    with (
+        patch("apps.accounts.account_api.create_batch", return_value=batch),
+        patch(
+            "apps.accounts.account_api.process_activity_upload_batch_task.apply_async"
+        ) as apply_async,
+    ):
         response = client.post(
             "/api/v1/game/account/uploads/",
             {
@@ -190,6 +202,9 @@ def test_upload_api_queues_batches_and_scopes_progress_to_session_player() -> No
     assert client.get(
         "/api/v1/game/account/uploads/00000000-0000-0000-0000-000000000000/"
     ).status_code == 404
-    assert client.delete(
-        "/api/v1/game/account/activities/00000000-0000-0000-0000-000000000000/"
-    ).status_code == 404
+    assert (
+        client.delete(
+            "/api/v1/game/account/activities/00000000-0000-0000-0000-000000000000/"
+        ).status_code
+        == 404
+    )
