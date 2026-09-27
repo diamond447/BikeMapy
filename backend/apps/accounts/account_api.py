@@ -12,6 +12,7 @@ from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import serializers
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
@@ -66,6 +67,25 @@ class ResetInput(serializers.Serializer[dict[str, Any]]):
 
 class InviteInput(serializers.Serializer[dict[str, Any]]):
     invite_code = serializers.CharField(max_length=64)
+
+
+class ActivityUploadResultSerializer(serializers.Serializer[dict[str, Any]]):
+    name = serializers.CharField()
+    status = serializers.CharField()
+    error_code = serializers.CharField(allow_blank=True)
+    error_detail = serializers.CharField(allow_blank=True)
+    activity_id = serializers.CharField(allow_null=True)
+
+
+class ActivityUploadBatchSerializer(serializers.Serializer[dict[str, Any]]):
+    batch_id = serializers.UUIDField()
+    status = serializers.CharField()
+    total_files = serializers.IntegerField()
+    processed_files = serializers.IntegerField()
+    accepted_files = serializers.IntegerField()
+    duplicate_files = serializers.IntegerField()
+    failed_files = serializers.IntegerField()
+    files = ActivityUploadResultSerializer(many=True)
 
 
 class AccountEndpoint(APIView):
@@ -295,10 +315,11 @@ class UploadInput(serializers.Serializer[dict[str, Any]]):
 
 class ActivityUploadView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
+    parser_classes = (MultiPartParser,)
 
     @extend_schema(
         request=UploadInput,
-        responses={202: OpenApiResponse(description="Batch queued.")},
+        responses={202: ActivityUploadBatchSerializer},
         tags=["game-activities"],
     )
     def post(self, request: Any) -> Response:
@@ -339,7 +360,7 @@ class ActivityUploadView(AccountEndpoint):
         except UploadError as exc:
             return _private(Response({"detail": exc.detail, "code": exc.code}, status=400))
         process_activity_upload_batch_task.apply_async(args=(str(batch.pk),))
-        return _private(Response({"batch_id": str(batch.pk), "status": batch.status}, status=202))
+        return _private(Response(_batch_payload(batch), status=202))
 
 
 def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
@@ -368,7 +389,7 @@ class ActivityUploadBatchView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
 
     @extend_schema(
-        responses={200: OpenApiResponse(description="Batch progress.")}, tags=["game-activities"]
+        responses={200: ActivityUploadBatchSerializer}, tags=["game-activities"]
     )
     def get(self, request: Any, batch_id: Any) -> Response:
         player = _session_player(request)

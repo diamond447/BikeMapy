@@ -407,6 +407,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Public, versioned read API for BikeMapy.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
