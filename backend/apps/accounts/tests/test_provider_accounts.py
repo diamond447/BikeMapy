@@ -190,18 +190,17 @@ def test_upload_api_queues_batches_and_scopes_progress_to_session_player() -> No
             "/api/v1/game/account/uploads/",
             {
                 "attested": "true",
-                "files": SimpleUploadedFile(
-                    "ride.gpx", b"<gpx />", content_type="application/gpx"
-                ),
+                "files": SimpleUploadedFile("ride.gpx", b"<gpx />", content_type="application/gpx"),
             },
             format="multipart",
         )
     assert response.status_code == 202
     apply_async.assert_called_once_with(args=(str(batch.pk),))
     assert client.get(f"/api/v1/game/account/uploads/{batch.pk}/").status_code == 200
-    assert client.get(
-        "/api/v1/game/account/uploads/00000000-0000-0000-0000-000000000000/"
-    ).status_code == 404
+    assert (
+        client.get("/api/v1/game/account/uploads/00000000-0000-0000-0000-000000000000/").status_code
+        == 404
+    )
     assert (
         client.delete(
             "/api/v1/game/account/activities/00000000-0000-0000-0000-000000000000/"
