@@ -40,9 +40,7 @@ def test_invited_account_is_hashed_and_joined_atomically() -> None:
 def test_invalid_invite_does_not_create_an_account() -> None:
     _competition()
     with pytest.raises(AccountError):
-        create_invited_account(
-            username="rider", email="rider@example.com", invite_code="invalid"
-        )
+        create_invited_account(username="rider", email="rider@example.com", invite_code="invalid")
     assert not get_user_model().objects.filter(username="rider").exists()
 
 
