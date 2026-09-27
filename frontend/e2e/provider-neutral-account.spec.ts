@@ -43,7 +43,7 @@ async function installAccountFixtures(page: Page) {
       json: { detail: 'If the account exists, reset instructions were sent.' },
     }),
   )
-  await page.route('**/api/v1/game/auth/local/reset/*/*/', (route) =>
+  await page.route('**/api/v1/game/auth/local/reset/**', (route) =>
     route.fulfill({ status: 200, json: { detail: 'Password reset.' } }),
   )
   await page.route('**/api/v1/game/auth/github/onboard/', (route) =>
