@@ -4,6 +4,7 @@ import { apiBaseUrl, apiClient, csrfHeaders, rememberCsrfToken } from '../api/cl
 import type { components } from '../api/generated/schema'
 import type { Copy } from '../i18n/types'
 import { GameCompetitions } from './GameCompetitions'
+import { LocalAccountPanel } from './LocalAccountPanel'
 import { notifyGameDataRefresh, notifyGameMapReset } from '../gameState'
 
 type Player = components['schemas']['Player']
@@ -263,6 +264,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
         <div className="game-account-message">
           <h2>{copy.gameUnavailable}</h2>
           <p>{copy.gameUnavailableDescription}</p>
+          <LocalAccountPanel onAuthenticated={() => setRetryToken((value) => value + 1)} />
         </div>
       )
     }
@@ -287,9 +289,10 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
           <h2>{copy.gameAccount}</h2>
           {message && <p role="status">{message}</p>}
           <p>{copy.gameSignIn}</p>
-          <a className="game-account-primary" href={signInUrl}>
+          <a className="game-account-secondary" href={signInUrl}>
             {message === copy.gameRefreshFailure ? copy.gameReconnect : copy.gameSignInStrava}
           </a>
+          <LocalAccountPanel onAuthenticated={() => setRetryToken((value) => value + 1)} />
         </div>
       )
     }
@@ -361,6 +364,7 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
             {copy.gameActivityFullHistory}
           </button>
         </section>
+        <LocalAccountPanel authenticated />
         {player.competition_game_enabled && <GameCompetitions copy={copy} />}
         <div className="game-account-actions">
           <button type="button" onClick={() => void refresh()} disabled={busy}>

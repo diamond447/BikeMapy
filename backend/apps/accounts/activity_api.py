@@ -26,7 +26,7 @@ from .activity_services import (
 )
 from .game_api import GameEndpoint, _private
 from .models import ImportedActivity, Player, StravaSyncState, StravaWebhookEvent
-from .services import game_is_available
+from .services import strava_is_available
 
 
 class ActivitySyncSerializer(serializers.Serializer[dict[str, Any]]):
@@ -95,7 +95,7 @@ class PlayerActivitySettingsView(GameEndpoint):
         tags=["game-activities"],
     )
     def get(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):
@@ -116,7 +116,7 @@ class PlayerFullHistoryView(GameEndpoint):
         tags=["game-activities"],
     )
     def post(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):

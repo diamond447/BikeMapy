@@ -59,6 +59,7 @@ class ReferenceStageSerializer(serializers.ModelSerializer[ReferenceRoute]):
 
 class ReferenceRouteListSerializer(serializers.ModelSerializer[ReferenceRoute]):
     attribution = serializers.SerializerMethodField()
+    source_kind = serializers.CharField(source="collection.source_kind", read_only=True)
 
     class Meta:
         model = ReferenceRoute
@@ -71,6 +72,7 @@ class ReferenceRouteListSerializer(serializers.ModelSerializer[ReferenceRoute]):
             "network",
             "publication_status",
             "attribution",
+            "source_kind",
         )
 
     def get_attribution(self, route: ReferenceRoute) -> dict[str, Any]:

@@ -1314,6 +1314,14 @@ def test_reference_endpoints_require_current_competition_membership() -> None:
     assert "geometry" not in body["results"][0]
     assert response["Cache-Control"] == "private, no-store"
     assert response["X-Robots-Tag"] == "noindex, nofollow, noarchive"
+    for missing_setting in (
+        "STRAVA_OAUTH_CLIENT_ID",
+        "STRAVA_OAUTH_CLIENT_SECRET",
+        "STRAVA_TOKEN_ENCRYPTION_KEY",
+        "STRAVA_IDENTITY_GUARD_KEY",
+    ):
+        with override_settings(**{missing_setting: ""}):
+            assert client.get("/api/v1/game/reference-routes/").status_code == 403
     player.active_competition = None
     player.save(update_fields=("active_competition",))
     assert client.get("/api/v1/game/reference-routes/").status_code == 403

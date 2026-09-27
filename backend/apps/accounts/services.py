@@ -52,7 +52,7 @@ class _RetryPlayerDeletion(Exception):
     """Signal that a deletion snapshot changed before mutation could begin."""
 
 
-def game_is_available() -> bool:
+def strava_is_available() -> bool:
     return bool(
         getattr(settings, "GAME_ENABLED", False)
         and getattr(settings, "STRAVA_OAUTH_CLIENT_ID", "")
@@ -60,6 +60,16 @@ def game_is_available() -> bool:
         and getattr(settings, "STRAVA_TOKEN_ENCRYPTION_KEY", "")
         and getattr(settings, "STRAVA_IDENTITY_GUARD_KEY", "")
     )
+
+
+def game_is_available() -> bool:
+    """Return whether a player session can reach the private game boundary."""
+
+    return bool(strava_is_available() or getattr(settings, "PLAYER_ACCOUNTS_ENABLED", False))
+
+
+def player_accounts_is_available() -> bool:
+    return bool(getattr(settings, "PLAYER_ACCOUNTS_ENABLED", False))
 
 
 def competition_is_available() -> bool:
@@ -435,7 +445,11 @@ def disconnect_player(
     with transaction.atomic():
         # Lock the identity before the player so callbacks and lifecycle changes
         # share one portable serialization boundary.
-        guard = _locked_identity_guard(player.strava_athlete_id)
+        guard = (
+            _locked_identity_guard(player.strava_athlete_id)
+            if player.strava_athlete_id is not None
+            else None
+        )
         player = Player.objects.select_for_update().get(pk=player.pk)
         try:
             access_token = (
@@ -450,8 +464,9 @@ def disconnect_player(
                 expires_at=timezone.now() + timedelta(days=7),
             )
         PlayerCredential.objects.filter(player=player).delete()
-        guard.invalidated_at = timezone.now()
-        guard.save(update_fields=("invalidated_at", "updated_at"))
+        if guard is not None:
+            guard.invalidated_at = timezone.now()
+            guard.save(update_fields=("invalidated_at", "updated_at"))
         state_filter = Q(player=player)
         if session_key:
             state_filter |= Q(player__isnull=True, session_key=session_key)
@@ -498,7 +513,11 @@ def _delete_player_once(
     access_token = None
     job = None
     with transaction.atomic():
-        guard = _locked_identity_guard(player.strava_athlete_id)
+        guard = (
+            _locked_identity_guard(player.strava_athlete_id)
+            if player.strava_athlete_id is not None
+            else None
+        )
         StravaSyncState.objects.select_for_update().filter(player_id=player.pk).first()
         list(StravaSyncJob.objects.select_for_update().filter(player_id=player.pk).order_by("pk"))
         affected_competition_ids = _competition_ids_for_player(player.pk)
@@ -546,8 +565,10 @@ def _delete_player_once(
         for competition in surviving_competitions:
             CompetitionResult.objects.filter(competition=competition, player=player).delete()
             CompetitionMembership.objects.filter(competition=competition, player=player).delete()
+            from .capture_services import invalidate_current_capture
             from .competition_services import schedule_recomputation
 
+            invalidate_current_capture(competition)
             schedule_recomputation(competition, affected_player_id=player.pk)
         for competition in affected_competitions:
             if competition.owner_id == player.pk:
@@ -569,8 +590,9 @@ def _delete_player_once(
                 "competition_id", flat=True
             )
         )
-        guard.invalidated_at = timezone.now()
-        guard.save(update_fields=("invalidated_at", "updated_at"))
+        if guard is not None:
+            guard.invalidated_at = timezone.now()
+            guard.save(update_fields=("invalidated_at", "updated_at"))
         state_filter = Q(player=player)
         if session_key:
             state_filter |= Q(player__isnull=True, session_key=session_key)

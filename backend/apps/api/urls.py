@@ -1,5 +1,18 @@
 from django.urls import path
 
+from apps.accounts.account_api import (
+    AccountLoginView,
+    AccountLogoutView,
+    AccountOnboardingView,
+    ActivityUploadBatchView,
+    ActivityUploadView,
+    GitHubLinkView,
+    GitHubOnboardingInviteView,
+    PasswordChangeView,
+    PasswordResetConfirmView,
+    PasswordResetRequestView,
+    UploadedActivityDeleteView,
+)
 from apps.accounts.activity_api import (
     PlayerActivitySettingsView,
     PlayerFullHistoryView,
@@ -18,6 +31,7 @@ from apps.accounts.competition_api import (
     CompetitionSwitchView,
     CompetitionTransferView,
 )
+from apps.accounts.competition_capture_api import CompetitionCaptureView
 from apps.accounts.competition_map_api import CompetitionMapView
 from apps.accounts.game_api import (
     PlayerAccountView,
@@ -55,10 +69,26 @@ urlpatterns = [
         name="game-strava-callback",
     ),
     path("game/auth/session/", PlayerSessionView.as_view(), name="game-player-session"),
+    path("game/auth/local/onboard/", AccountOnboardingView.as_view(), name="game-local-onboard"),
+    path("game/auth/local/login/", AccountLoginView.as_view(), name="game-local-login"),
+    path(
+        "game/auth/github/onboard/",
+        GitHubOnboardingInviteView.as_view(),
+        name="game-github-onboard",
+    ),
+    path("game/auth/local/logout/", AccountLogoutView.as_view(), name="game-local-logout"),
+    path("game/auth/local/reset/", PasswordResetRequestView.as_view(), name="game-local-reset"),
+    path(
+        "game/auth/local/reset/<uidb64>/<token>/",
+        PasswordResetConfirmView.as_view(),
+        name="game-local-reset-confirm",
+    ),
     path("game/auth/logout/", PlayerLogoutView.as_view(), name="game-player-logout"),
     path("game/account/refresh/", PlayerRefreshView.as_view(), name="game-player-refresh"),
     path("game/account/disconnect/", PlayerDisconnectView.as_view(), name="game-player-disconnect"),
     path("game/account/", PlayerAccountView.as_view(), name="game-player-account"),
+    path("game/account/password/", PasswordChangeView.as_view(), name="game-account-password"),
+    path("game/account/github/link/", GitHubLinkView.as_view(), name="game-account-github-link"),
     path(
         "game/account/activities/",
         PlayerActivitySettingsView.as_view(),
@@ -68,6 +98,17 @@ urlpatterns = [
         "game/account/activities/full-history/",
         PlayerFullHistoryView.as_view(),
         name="game-player-full-history",
+    ),
+    path("game/account/uploads/", ActivityUploadView.as_view(), name="game-activity-upload"),
+    path(
+        "game/account/uploads/<uuid:batch_id>/",
+        ActivityUploadBatchView.as_view(),
+        name="game-activity-upload-batch",
+    ),
+    path(
+        "game/account/activities/<uuid:activity_id>/",
+        UploadedActivityDeleteView.as_view(),
+        name="game-uploaded-activity-delete",
     ),
     path("game/webhooks/strava/", StravaWebhookView.as_view(), name="game-strava-webhook"),
     path("game/competitions/", CompetitionListView.as_view(), name="game-competition-list"),
@@ -86,6 +127,11 @@ urlpatterns = [
         "game/competitions/<uuid:competition_id>/map/",
         CompetitionMapView.as_view(),
         name="game-competition-map",
+    ),
+    path(
+        "game/competitions/<uuid:competition_id>/capture/",
+        CompetitionCaptureView.as_view(),
+        name="game-competition-capture",
     ),
     path(
         "game/competitions/<uuid:competition_id>/rotate-invite/",

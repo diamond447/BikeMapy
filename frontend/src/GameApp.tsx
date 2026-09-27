@@ -11,7 +11,9 @@ import type { FilterSpecification } from 'maplibre-gl'
 import { apiClient, rememberCsrfToken } from './api/client'
 import type { components } from './api/generated/schema'
 import { GameAccount } from './components/GameAccount'
+import { CompletionDashboard } from './components/CompletionDashboard'
 import { subscribeToGameDataRefresh, subscribeToGameMapReset } from './gameState'
+import { CaptureDashboard } from './components/CaptureDashboard'
 import { MAP_PROVIDER } from './mapProvider'
 import { setMapLibreWorker } from './maplibreWorker'
 import { translations } from './i18n/translations'
@@ -547,9 +549,19 @@ export default function GameApp() {
   const [mapLoading, setMapLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [signedOut, setSignedOut] = useState(false)
+  const [competitionDisabled, setCompetitionDisabled] = useState(false)
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<'activity' | 'completion' | 'capture'>(() => {
+    try {
+      const stored = sessionStorage.getItem('bikemapy:game-view')
+      return stored === 'completion' || stored === 'capture' ? stored : 'activity'
+    } catch {
+      return 'activity'
+    }
+  })
   const [traceListLimit, setTraceListLimit] = useState(TRACE_PAGE_SIZE)
   const [mapReady, setMapReady] = useState(false)
+  const [mapSourceLoaded, setMapSourceLoaded] = useState(false)
   const traceCloseRef = useRef<HTMLButtonElement>(null)
   const traceButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const originatingTraceRef = useRef<string | null>(null)
@@ -561,6 +573,10 @@ export default function GameApp() {
   const lastMapRequestKey = useRef<string | null>(null)
   const latestMapRequestKey = useRef<string | null>(null)
   const mapRequestPending = useRef(false)
+  const pendingMapRequestKeys = useRef(new Set<string>())
+  const initialCompetitionsLoadStarted = useRef(false)
+  const suppressMapMoveRequests = useRef(false)
+  const previousViewMode = useRef(viewMode)
   const mapMeasureSequence = useRef(0)
   const visibleMemberIdsRef = useRef<number[]>([])
   const rosterMembersRef = useRef<RosterMember[]>([])
@@ -584,16 +600,22 @@ export default function GameApp() {
   const clearMapData = useCallback(() => {
     fullMapDataRef.current = null
     fullMapRequestKey.current = null
-    lastMapRequestKey.current = null
-    latestMapRequestKey.current = null
     mapRequestPending.current = false
-    mapRequestInFlight.current = false
+    // Keep an in-flight request deduplicated across StrictMode remounts and
+    // competition refreshes. Its response will be accepted only if the next
+    // load selects the same request key.
+    if (mapRequestInFlight.current) latestMapRequestKey.current = null
+    else {
+      lastMapRequestKey.current = null
+      latestMapRequestKey.current = null
+    }
     visibleMemberIdsRef.current = []
     activityIndexRef.current = buildActivitySpatialIndex([])
     visualDataRef.current = memberFeatureCollection([])
     drawVisualDataRef.current()
     setMapData(null)
     setMapDataIncludesAllMembers(false)
+    setMapSourceLoaded(false)
     setSelectedTraceId(null)
     setTraceListLimit(TRACE_PAGE_SIZE)
     setError(null)
@@ -608,34 +630,52 @@ export default function GameApp() {
     setRosterCursor(null)
   }, [clearMapData])
 
-  const loadCompetitions = useCallback(async () => {
-    clearMapData()
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
-      rememberCsrfToken(result.response)
-      if (result.response?.status === 401) {
-        clearSessionState()
-        setSignedOut(true)
-        setCompetitions([])
-        return
+  const loadCompetitions = useCallback(
+    async (force = false) => {
+      if (!force) {
+        if (initialCompetitionsLoadStarted.current) return
+        initialCompetitionsLoadStarted.current = true
       }
-      if (!result.data) throw new Error('competition-load')
-      setSignedOut(false)
-      setRosterMembers([])
-      setRosterCursor(null)
-      setCompetitions(result.data.competitions)
-      setCompetitionId((current) => {
-        const selected = result.data.competitions.find((item) => item.id === current)
-        return selected?.id ?? result.data.active_competition_id ?? result.data.competitions[0]?.id
-      })
-    } catch {
-      setError(copy.gameMapError)
-    } finally {
-      setLoading(false)
-    }
-  }, [clearMapData, clearSessionState, copy.gameMapError])
+      clearMapData()
+      setLoading(true)
+      setError(null)
+      setCompetitionDisabled(false)
+      try {
+        const result = await apiClient.GET('/api/v1/game/competitions/', { credentials: 'include' })
+        rememberCsrfToken(result.response)
+        if (result.response?.status === 401) {
+          clearSessionState()
+          setSignedOut(true)
+          setCompetitions([])
+          return
+        }
+        if (result.response?.status === 404) {
+          setSignedOut(false)
+          setCompetitions([])
+          setCompetitionId(undefined)
+          setCompetitionDisabled(true)
+          return
+        }
+        if (!result.data) throw new Error('competition-load')
+        setSignedOut(false)
+        setCompetitionDisabled(false)
+        setRosterMembers([])
+        setRosterCursor(null)
+        setCompetitions(result.data.competitions)
+        setCompetitionId((current) => {
+          const selected = result.data.competitions.find((item) => item.id === current)
+          return (
+            selected?.id ?? result.data.active_competition_id ?? result.data.competitions[0]?.id
+          )
+        })
+      } catch {
+        setError(copy.gameMapError)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [clearMapData, clearSessionState, copy.gameMapError],
+  )
 
   const loadRosterPage = useCallback(async (competition: Competition, cursor?: string) => {
     try {
@@ -681,7 +721,7 @@ export default function GameApp() {
         clearMapData()
       }
     })
-    const unsubscribeRefresh = subscribeToGameDataRefresh(() => void loadCompetitions())
+    const unsubscribeRefresh = subscribeToGameDataRefresh(() => void loadCompetitions(true))
     return () => {
       unsubscribeReset()
       unsubscribeRefresh()
@@ -747,13 +787,16 @@ export default function GameApp() {
       drawVisualDataRef.current()
       return
     }
+    if (pendingMapRequestKeys.current.has(requestKey)) return
     if (mapRequestInFlight.current) {
       if (lastMapRequestKey.current !== requestKey) mapRequestPending.current = true
       return
     }
     if (lastMapRequestKey.current === requestKey) return
     lastMapRequestKey.current = requestKey
+    pendingMapRequestKeys.current.add(requestKey)
     mapRequestInFlight.current = true
+    setMapSourceLoaded(false)
     setMapLoading(true)
     try {
       const result = await apiClient.GET('/api/v1/game/competitions/{competition_id}/map/', {
@@ -808,6 +851,7 @@ export default function GameApp() {
       performance.mark(overlayUpdateStart)
       visibleMemberIdsRef.current = selected
       drawVisualDataRef.current()
+      setMapSourceLoaded(true)
       performance.measure('game-map-overlay-update', overlayUpdateStart)
       performance.clearMarks(overlayUpdateStart)
       window.requestAnimationFrame(() => {
@@ -827,6 +871,7 @@ export default function GameApp() {
         setError(copy.gameMapError)
       }
     } finally {
+      pendingMapRequestKeys.current.delete(requestKey)
       const followUp = mapRequestPending.current || latestMapRequestKey.current !== requestKey
       mapRequestPending.current = false
       mapRequestInFlight.current = false
@@ -866,6 +911,13 @@ export default function GameApp() {
     let pendingInteractionPoint: { lng: number; lat: number } | null = null
     instance.addControl(new NavigationControl({ showCompass: true }), 'top-right')
     instance.addControl(new AttributionControl({ customAttribution: MAP_PROVIDER.attribution }))
+    const enableMapRequests = () => {
+      suppressMapMoveRequests.current = false
+    }
+    instance.on('dragstart', enableMapRequests)
+    instance.on('zoomstart', enableMapRequests)
+    instance.on('rotatestart', enableMapRequests)
+    instance.on('pitchstart', enableMapRequests)
     instance.on('moveend', () => {
       const current = instance.getBounds()
       bounds.current = normalizeMapBounds({
@@ -876,6 +928,7 @@ export default function GameApp() {
         zoom: instance.getZoom(),
       })
       if (!mapCanRequest.current) return
+      if (suppressMapMoveRequests.current) return
       scheduleMapLoad()
     })
     instance.on('load', () => {
@@ -1041,10 +1094,6 @@ export default function GameApp() {
     return () => {
       mapLoaded.current = false
       mapCanRequest.current = false
-      mapRequestInFlight.current = false
-      lastMapRequestKey.current = null
-      latestMapRequestKey.current = null
-      mapRequestPending.current = false
       fullMapDataRef.current = null
       fullMapRequestKey.current = null
       activityIndexRef.current = buildActivitySpatialIndex([])
@@ -1068,10 +1117,25 @@ export default function GameApp() {
   }, [benchmarkFullUpdate, scheduleMapLoad])
 
   useEffect(() => {
+    if (previousViewMode.current === viewMode) return
+    previousViewMode.current = viewMode
+    // Mode panels stay mounted. Ignore any synthetic MapLibre moveend emitted
+    // while the browser hides or reveals the activity panel; user navigation
+    // clears this guard through drag/zoom/rotate start events.
+    suppressMapMoveRequests.current = true
+  }, [viewMode])
+
+  useEffect(() => {
     if (!competitionId) return
     const timer = window.setTimeout(() => void loadMap(), 0)
     return () => window.clearTimeout(timer)
   }, [competitionId, loadMap])
+
+  useEffect(() => {
+    if (!competitionId || visibleMembers === null) return
+    const timer = window.setTimeout(() => void loadMap(), 0)
+    return () => window.clearTimeout(timer)
+  }, [competitionId, loadMap, visibleMembers])
 
   useEffect(() => {
     writePrivateState(competitionId, visibleMembers ?? undefined)
@@ -1181,6 +1245,15 @@ export default function GameApp() {
       )
     })
 
+  const changeViewMode = (mode: 'activity' | 'completion' | 'capture') => {
+    setViewMode(mode)
+    try {
+      sessionStorage.setItem('bikemapy:game-view', mode)
+    } catch {
+      /* Private browsing can disable session storage. */
+    }
+  }
+
   return (
     <main className="game-shell">
       <header className="game-topbar">
@@ -1202,157 +1275,218 @@ export default function GameApp() {
           <GameAccount copy={copy} />
         </div>
       </header>
-      <section className="game-map-layout" aria-labelledby="game-map-title">
-        <aside className="game-map-controls">
-          <span className="game-account-kicker">{copy.gameMapKicker}</span>
-          <h1 id="game-map-title">{copy.gameMapTitle}</h1>
-          <p>{copy.gameMapDescription}</p>
-          {signedOut ? (
-            <div className="game-map-state">
-              <strong>{copy.gameMapSignedOut}</strong>
-              <p>{copy.gameMapSignedOutDescription}</p>
-            </div>
-          ) : loading ? (
-            <p role="status">{copy.gameMapLoading}</p>
-          ) : error ? (
-            <div className="game-map-state">
-              <p role="alert">{error}</p>
-              <button type="button" onClick={() => void loadCompetitions()}>
-                {copy.gameMapRetry}
-              </button>
-            </div>
-          ) : competitions.length === 0 ? (
-            <p>{copy.gameMapNoCompetitions}</p>
-          ) : (
-            <>
-              <label className="game-map-label" htmlFor="game-competition">
-                {copy.gameMapCompetition}
-              </label>
-              <select
-                id="game-competition"
-                value={competitionId ?? ''}
-                onChange={(event) => {
-                  clearMapData()
-                  setRosterMembers([])
-                  setRosterCursor(null)
-                  setCompetitionId(event.target.value)
-                }}
-              >
-                {competitions.map((competition) => (
-                  <option value={competition.id} key={competition.id}>
-                    {competition.name}
-                  </option>
-                ))}
-              </select>
-              <fieldset className="game-member-list">
-                <legend>{copy.gameMapMembers}</legend>
-                {mapMembers.map((member) => (
-                  <label key={member.player_id}>
-                    <input
-                      type="checkbox"
-                      checked={
-                        visibleMembers === null
-                          ? defaultMapMemberIds.has(member.player_id)
-                          : visibleMembers.includes(member.player_id)
-                      }
-                      onChange={() => toggleMember(member.player_id)}
-                    />
-                    <span
-                      className="member-swatch"
-                      style={{ backgroundColor: member.color }}
-                      aria-hidden="true"
-                    />
-                    {member.nickname || member.display_name}
-                  </label>
-                ))}
-                {mapMembers.length > MAX_MAP_MEMBERS && (
-                  <p className="game-map-member-limit" role="status">
-                    {copy.gameMapMemberLimit}
-                  </p>
-                )}
-                {selectedCompetition?.roster_truncated && rosterCursor && (
-                  <button
-                    type="button"
-                    className="game-map-more-traces"
-                    onClick={() => void loadRosterPage(selectedCompetition, rosterCursor)}
-                  >
-                    {copy.gameCompetitionMemberLoadMore}
-                  </button>
-                )}
-              </fieldset>
-              {mapData && (
-                <p className="game-map-status" role="status">
-                  {statusMessage(mapData.status, copy)}
-                  {mapData.truncated ? ` ${copy.gameMapTruncated}` : ''}
-                </p>
-              )}
-              {mapData && mapData.activities.length > 0 && (
-                <section className="game-trace-list" aria-labelledby="game-trace-list-title">
-                  <h2 id="game-trace-list-title">{copy.gameMapTraceList}</h2>
-                  <div id="game-trace-viewport" ref={traceListRef} className="game-trace-viewport">
-                    {traceButtons}
-                  </div>
-                  {traceListLimit < traceActivities.length && (
-                    <button
-                      type="button"
-                      className="game-map-more-traces"
-                      aria-controls="game-trace-viewport"
-                      onClick={() => setTraceListLimit((limit) => limit + TRACE_PAGE_SIZE)}
-                    >
-                      {copy.gameMapShowMore}
-                    </button>
-                  )}
-                </section>
-              )}
-            </>
-          )}
-        </aside>
-        <section
-          className="game-map-stage"
-          aria-label={copy.gameMapInteractive}
-          data-map-source-loaded={mapReady ? 'true' : 'false'}
-          data-map-response-loaded={mapData ? 'true' : 'false'}
+      <div className="game-view-switch" role="tablist" aria-label="Game view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === 'activity'}
+          className={viewMode === 'activity' ? 'is-active' : ''}
+          onClick={() => changeViewMode('activity')}
         >
-          <div
-            ref={mapNode}
-            className="game-map-canvas"
-            role="application"
-            aria-label={copy.gameMapInteractive}
+          {copy.gameActivityMode}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === 'completion'}
+          className={viewMode === 'completion' ? 'is-active' : ''}
+          onClick={() => changeViewMode('completion')}
+        >
+          {copy.gameCompletionMode}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === 'capture'}
+          className={viewMode === 'capture' ? 'is-active' : ''}
+          onClick={() => changeViewMode('capture')}
+        >
+          {copy.gameCaptureMode}
+        </button>
+      </div>
+      <div className="game-mode-panels">
+        <div className="game-mode-panel" hidden={viewMode !== 'completion'}>
+          <CompletionDashboard
+            copy={copy}
+            competitions={competitions}
+            competitionId={competitionId}
+            setCompetitionId={(id) => {
+              clearMapData()
+              setCompetitionId(id)
+            }}
+            signedOut={signedOut}
+            competitionDisabled={competitionDisabled}
           />
-          {mapLoading && (
-            <span className="game-map-loading" role="status">
-              {copy.gameMapLoading}
-            </span>
-          )}
-          {selectedTrace && (
-            <aside
-              className="game-trace-detail"
-              aria-label={copy.gameMapTraceDetail}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  event.preventDefault()
-                  closeTrace()
-                }
-              }}
-            >
-              <button
-                ref={traceCloseRef}
-                type="button"
-                className="game-trace-close"
-                onClick={closeTrace}
-                aria-label={copy.gameMapCloseTrace}
-              >
-                ×
-              </button>
-              <span className="game-account-kicker">{copy.gameMapTraceDetail}</span>
-              <strong>{copy.gameMapRideDate}</strong>
-              <time dateTime={selectedTrace.calendar_date ?? undefined}>
-                {selectedTrace.calendar_date ?? copy.gameMapDateUnknown}
-              </time>
+        </div>
+        <div className="game-mode-panel" hidden={viewMode !== 'capture'}>
+          <CaptureDashboard
+            copy={copy}
+            competitions={competitions}
+            competitionId={competitionId}
+            setCompetitionId={setCompetitionId}
+            signedOut={signedOut}
+          />
+        </div>
+        <div className="game-mode-panel" hidden={viewMode !== 'activity'}>
+          <section className="game-map-layout" aria-labelledby="game-map-title">
+            <aside className="game-map-controls">
+              <span className="game-account-kicker">{copy.gameMapKicker}</span>
+              <h1 id="game-map-title">{copy.gameMapTitle}</h1>
+              <p>{copy.gameMapDescription}</p>
+              {signedOut ? (
+                <div className="game-map-state">
+                  <strong>{copy.gameMapSignedOut}</strong>
+                  <p>{copy.gameMapSignedOutDescription}</p>
+                </div>
+              ) : loading ? (
+                <p role="status">{copy.gameMapLoading}</p>
+              ) : error ? (
+                <div className="game-map-state">
+                  <p role="alert">{error}</p>
+                  <button type="button" onClick={() => void loadCompetitions(true)}>
+                    {copy.gameMapRetry}
+                  </button>
+                </div>
+              ) : competitions.length === 0 ? (
+                <p>{copy.gameMapNoCompetitions}</p>
+              ) : (
+                <>
+                  <label className="game-map-label" htmlFor="game-competition">
+                    {copy.gameMapCompetition}
+                  </label>
+                  <select
+                    id="game-competition"
+                    value={competitionId ?? ''}
+                    onChange={(event) => {
+                      clearMapData()
+                      setRosterMembers([])
+                      setRosterCursor(null)
+                      setCompetitionId(event.target.value)
+                    }}
+                  >
+                    {competitions.map((competition) => (
+                      <option value={competition.id} key={competition.id}>
+                        {competition.name}
+                      </option>
+                    ))}
+                  </select>
+                  <fieldset className="game-member-list">
+                    <legend>{copy.gameMapMembers}</legend>
+                    {mapMembers.map((member) => (
+                      <label key={member.player_id}>
+                        <input
+                          type="checkbox"
+                          checked={
+                            visibleMembers === null
+                              ? defaultMapMemberIds.has(member.player_id)
+                              : visibleMembers.includes(member.player_id)
+                          }
+                          onChange={() => toggleMember(member.player_id)}
+                        />
+                        <span
+                          className="member-swatch"
+                          style={{ backgroundColor: member.color }}
+                          aria-hidden="true"
+                        />
+                        {member.nickname || member.display_name}
+                      </label>
+                    ))}
+                    {mapMembers.length > MAX_MAP_MEMBERS && (
+                      <p className="game-map-member-limit" role="status">
+                        {copy.gameMapMemberLimit}
+                      </p>
+                    )}
+                    {selectedCompetition?.roster_truncated && rosterCursor && (
+                      <button
+                        type="button"
+                        className="game-map-more-traces"
+                        onClick={() => void loadRosterPage(selectedCompetition, rosterCursor)}
+                      >
+                        {copy.gameCompetitionMemberLoadMore}
+                      </button>
+                    )}
+                  </fieldset>
+                  {mapData && (
+                    <p className="game-map-status" role="status">
+                      {statusMessage(mapData.status, copy)}
+                      {mapData.truncated ? ` ${copy.gameMapTruncated}` : ''}
+                    </p>
+                  )}
+                  {mapData && mapData.activities.length > 0 && (
+                    <section className="game-trace-list" aria-labelledby="game-trace-list-title">
+                      <h2 id="game-trace-list-title">{copy.gameMapTraceList}</h2>
+                      <div
+                        id="game-trace-viewport"
+                        ref={traceListRef}
+                        className="game-trace-viewport"
+                      >
+                        {traceButtons}
+                      </div>
+                      {traceListLimit < traceActivities.length && (
+                        <button
+                          type="button"
+                          className="game-map-more-traces"
+                          aria-controls="game-trace-viewport"
+                          onClick={() => setTraceListLimit((limit) => limit + TRACE_PAGE_SIZE)}
+                        >
+                          {copy.gameMapShowMore}
+                        </button>
+                      )}
+                    </section>
+                  )}
+                </>
+              )}
             </aside>
-          )}
-        </section>
-      </section>
+            <section
+              className="game-map-stage"
+              aria-label={copy.gameMapInteractive}
+              data-map-source-loaded={mapReady ? 'true' : 'false'}
+              data-map-response-loaded={mapData ? 'true' : 'false'}
+              data-map-source-data-loaded={mapSourceLoaded ? 'true' : 'false'}
+              data-map-feature-count={mapData?.activities.length ?? 0}
+            >
+              <div
+                ref={mapNode}
+                className="game-map-canvas"
+                role="application"
+                aria-label={copy.gameMapInteractive}
+              />
+              {mapLoading && (
+                <span className="game-map-loading" role="status">
+                  {copy.gameMapLoading}
+                </span>
+              )}
+              {selectedTrace && (
+                <aside
+                  className="game-trace-detail"
+                  aria-label={copy.gameMapTraceDetail}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault()
+                      closeTrace()
+                    }
+                  }}
+                >
+                  <button
+                    ref={traceCloseRef}
+                    type="button"
+                    className="game-trace-close"
+                    onClick={closeTrace}
+                    aria-label={copy.gameMapCloseTrace}
+                  >
+                    ×
+                  </button>
+                  <span className="game-account-kicker">{copy.gameMapTraceDetail}</span>
+                  <strong>{copy.gameMapRideDate}</strong>
+                  <time dateTime={selectedTrace.calendar_date ?? undefined}>
+                    {selectedTrace.calendar_date ?? copy.gameMapDateUnknown}
+                  </time>
+                </aside>
+              )}
+            </section>
+          </section>
+        </div>
+      </div>
     </main>
   )
 }

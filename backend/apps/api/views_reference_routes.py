@@ -9,7 +9,6 @@ from uuid import UUID
 
 from django.conf import settings
 from django.db.models import Prefetch, QuerySet
-from django.utils.module_loading import import_string
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.exceptions import NotFound
@@ -21,37 +20,52 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.game_api import current_player
-from apps.accounts.services import competition_is_available
-from apps.api.reference_authorization import active_competition_for_player
+from apps.accounts.models import CompetitionMembership
+from apps.accounts.services import game_is_available
 from apps.reference_routes.models import (
     ReferenceRoute,
     ReferenceRouteVersion,
     ReferenceSourceKind,
     ReferenceValidationStatus,
     has_deployable_derivative_offer,
+    has_publishable_reference_source,
 )
 
 from .serializers_reference_routes import ReferenceRouteListSerializer, ReferenceRouteSerializer
 
 
-def reference_route_authorizer() -> Any:
-    """Resolve the authoritative competition-membership checker per request."""
-    return import_string(settings.REFERENCE_ROUTE_AUTHORIZER)
+def reference_competition_id(request: Request, player: Any) -> str | None:
+    """Return the requested or active competition visible to the player."""
+    raw = str(request.query_params.get("competition_id") or player.active_competition_id or "")
+    if not raw:
+        return None
+    try:
+        return str(UUID(raw))
+    except ValueError:
+        return None
+
+
+def reference_player_has_competition(request: Request, player: Any) -> bool:
+    competition_id = reference_competition_id(request, player)
+    if competition_id is None:
+        return False
+    return CompetitionMembership.objects.filter(
+        competition_id=competition_id,
+        player=player,
+        competition__is_active=True,
+    ).exists()
 
 
 class GameReferencePermission(BasePermission):
-    """Require the future game session contract, not any arbitrary Django user."""
+    """Require a current Strava player session and active membership."""
 
     def has_permission(self, request: Request, view: object) -> bool:
-        if not competition_is_available():
+        if not game_is_available():
             return False
         player = current_player(request)
         if player is None:
             return False
-        competition = active_competition_for_player(player)
-        if competition is None:
-            return False
-        return bool(reference_route_authorizer()(player.user, str(competition.pk), request))
+        return reference_player_has_competition(request, player)
 
 
 class ReferenceRoutePagination(CursorPagination):
@@ -75,7 +89,11 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
     active_stage_version_ids = [
         version.pk
         for version in active_stage_versions
-        if has_deployable_derivative_offer(version.route.collection, version.source_import)
+        if (
+            has_deployable_derivative_offer(version.route.collection, version.source_import)
+            if version.route.collection.source_kind == ReferenceSourceKind.OSM_NUMBERED
+            else has_publishable_reference_source(version.route.collection, version.source_import)
+        )
     ]
     active_stage_versions = active_stage_versions.filter(pk__in=active_stage_version_ids)
     active_stages = ReferenceRoute.objects.filter(
@@ -93,7 +111,13 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
         route.pk
         for route in active_stages
         if route.current_version
-        and has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+        and (
+            has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+            if route.collection.source_kind == ReferenceSourceKind.OSM_NUMBERED
+            else has_publishable_reference_source(
+                route.collection, route.current_version.source_import
+            )
+        )
     ]
     active_stages = active_stages.filter(pk__in=active_stage_ids).prefetch_related(
         Prefetch("current_version", queryset=active_stage_versions)
@@ -105,7 +129,10 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
         current_version__validation_status=ReferenceValidationStatus.VALID,
         collection__active=True,
         collection__permission_granted=True,
-        collection__source_kind=ReferenceSourceKind.OSM_NUMBERED,
+        collection__source_kind__in=(
+            ReferenceSourceKind.OSM_NUMBERED,
+            ReferenceSourceKind.VIA_CZECHIA,
+        ),
         parent__isnull=True,
     ).select_related(
         "collection",
@@ -117,7 +144,13 @@ def reference_queryset() -> QuerySet[ReferenceRoute]:
         route.pk
         for route in candidates
         if route.current_version
-        and has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+        and (
+            has_deployable_derivative_offer(route.collection, route.current_version.source_import)
+            if route.collection.source_kind == ReferenceSourceKind.OSM_NUMBERED
+            else has_publishable_reference_source(
+                route.collection, route.current_version.source_import
+            )
+        )
     ]
     return candidates.filter(pk__in=candidate_ids).prefetch_related(
         Prefetch("stages", queryset=active_stages)
@@ -131,6 +164,7 @@ def _private_headers(response: Response) -> Response:
 
 
 REFERENCE_PARAMETERS = [
+    OpenApiParameter("competition_id", OpenApiTypes.UUID, OpenApiParameter.QUERY),
     OpenApiParameter("source", OpenApiTypes.STR, OpenApiParameter.QUERY),
     OpenApiParameter("route_number", OpenApiTypes.STR, OpenApiParameter.QUERY),
     OpenApiParameter("cursor", OpenApiTypes.STR, OpenApiParameter.QUERY),

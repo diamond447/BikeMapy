@@ -8,7 +8,7 @@ import logging
 from collections.abc import Iterable
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from django.conf import settings
@@ -66,6 +66,7 @@ def _reset_completion_projection(completion: RouteCompletion) -> None:
     completion.calculated_at = None
     completion.evidence_digest = ""
     completion.evidence_generation = uuid4()
+    cast(Any, completion).covered_geometry = None
     completion.error = ""
     completion.save(
         update_fields=(
@@ -75,6 +76,7 @@ def _reset_completion_projection(completion: RouteCompletion) -> None:
             "calculated_at",
             "evidence_digest",
             "evidence_generation",
+            "covered_geometry",
             "error",
             "updated_at",
         )
@@ -449,6 +451,7 @@ def calculate_completion(
         completion.algorithm_version = ALGORITHM_VERSION
         completion.route_checksum = version.checksum
         completion.membership_revision = competition.revision if competition else None
+        cast(Any, completion).covered_geometry = _geographic(union) if not union.empty else None
         completion.error = ""
         digest_payload = [
             {

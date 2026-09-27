@@ -59,6 +59,22 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/account/activities/{activity_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete: operations['v1_game_account_activities_destroy']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/account/activities/full-history/': {
     parameters: {
       query?: never
@@ -91,6 +107,38 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/account/github/link/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_github_link_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/password/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_password_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/game/account/refresh/': {
     parameters: {
       query?: never
@@ -101,6 +149,135 @@ export interface paths {
     get?: never
     put?: never
     post: operations['v1_game_account_refresh_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/uploads/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_uploads_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/uploads/{batch_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_account_uploads_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/github/onboard/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** @description Store a validated invite in the session before first-time OAuth. */
+    post: operations['v1_game_auth_github_onboard_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/login/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_login_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/logout/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_logout_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/onboard/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_onboard_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/reset/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_reset_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/reset/{uidb64}/{token}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['game_local_reset_confirm']
     delete?: never
     options?: never
     head?: never
@@ -201,6 +378,23 @@ export interface paths {
     options?: never
     head?: never
     patch: operations['v1_game_competitions_partial_update']
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/capture/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Return only the authenticated member's competition capture snapshot. */
+    get: operations['v1_game_competitions_capture_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
     trace?: never
   }
   '/api/v1/game/competitions/{competition_id}/leave/': {
@@ -550,6 +744,12 @@ export interface paths {
 export type webhooks = Record<string, never>
 export interface components {
   schemas: {
+    AccountInputRequest: {
+      username: string
+      /** Format: email */
+      email: string
+      invite_code: string
+    }
     ActivitySync: {
       status: string
       mode: string
@@ -564,10 +764,90 @@ export interface components {
     ActivitySyncResponse: {
       sync: components['schemas']['ActivitySync']
     }
+    ActivityUploadBatch: {
+      /** Format: uuid */
+      batch_id: string
+      status: string
+      total_files: number
+      processed_files: number
+      accepted_files: number
+      duplicate_files: number
+      failed_files: number
+      files: components['schemas']['ActivityUploadResult'][]
+    }
+    ActivityUploadResult: {
+      name: string
+      status: string
+      error_code: string
+      error_detail: string
+      activity_id: string | null
+    }
     /** @description Accept only known event names and no other event metadata. */
-    AnalyticsEvent: {
+    AnalyticsEventRequest: {
       event: components['schemas']['EventEnum']
     }
+    CaptureErrorResponse: {
+      detail: string
+      code?: string
+    }
+    CaptureFace: {
+      id: number
+      geometry: unknown
+      /** Format: decimal */
+      area_m2: string
+      /** Format: date */
+      effective_date: string | null
+      shared: boolean
+      owners: components['schemas']['CaptureOwner'][]
+    }
+    CaptureMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+      /** Format: decimal */
+      area_m2: string
+      rank: number
+      monthly_net_change_m2: components['schemas']['MonthlyChange'][]
+    }
+    CaptureOwner: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      /** Format: decimal */
+      shared_area_m2: string
+    }
+    CaptureResponse: {
+      status: components['schemas']['CaptureResponseStatusEnum']
+      is_final: boolean
+      /** Format: uuid */
+      competition_id: string
+      generation: number | null
+      snapshot_generation: number | null
+      /** Format: date-time */
+      calculated_at: string | null
+      has_published_snapshot: boolean
+      faces: components['schemas']['CaptureFace'][]
+      returned_face_count: number
+      truncated: boolean
+      members: components['schemas']['CaptureMember'][]
+      help: {
+        [key: string]: string
+      }
+      limits: {
+        [key: string]: number
+      }
+    }
+    /**
+     * @description * `fresh` - fresh
+     *     * `pending` - pending
+     *     * `failed` - failed
+     *     * `empty` - empty
+     * @enum {string}
+     */
+    CaptureResponseStatusEnum: 'fresh' | 'pending' | 'failed' | 'empty'
     Category: {
       slug: string
       name: string
@@ -591,7 +871,14 @@ export interface components {
       roster_truncated: boolean
       sharing_scope: components['schemas']['SharingScopeEnum']
     }
-    CompetitionCreate: {
+    /**
+     * @description * `available` - available
+     *     * `consent_required` - consent_required
+     *     * `competition_disabled` - competition_disabled
+     * @enum {string}
+     */
+    CompetitionAccessEnum: 'available' | 'consent_required' | 'competition_disabled'
+    CompetitionCreateRequest: {
       name: string
       color?: string
     }
@@ -602,7 +889,7 @@ export interface components {
         [key: string]: string[]
       }
     }
-    CompetitionJoin: {
+    CompetitionJoinRequest: {
       invite_code: string
       color?: string
     }
@@ -622,7 +909,7 @@ export interface components {
       is_owner: boolean
     }
     CompetitionMapResponse: {
-      status: components['schemas']['StatusEnum']
+      status: components['schemas']['CompetitionMapResponseStatusEnum']
       /** Format: uuid */
       competition_id: string
       members: components['schemas']['CompetitionMapMember'][]
@@ -635,6 +922,13 @@ export interface components {
         [key: string]: number
       }
     }
+    /**
+     * @description * `loaded` - loaded
+     *     * `empty` - empty
+     *     * `syncing` - syncing
+     * @enum {string}
+     */
+    CompetitionMapResponseStatusEnum: 'loaded' | 'empty' | 'syncing'
     CompetitionMember: {
       player_id: number
       display_name: string
@@ -658,18 +952,26 @@ export interface components {
       next_cursor: string | null
       has_more: boolean
     }
-    CompetitionSharingConsent: {
+    CompetitionSharingConsentRequest: {
       scope: components['schemas']['ScopeEnum']
       disclosure_version: string
       confirmed: boolean
     }
-    CompetitionTransfer: {
+    CompetitionTransferRequest: {
       player_id: number
     }
     CompetitionsResponse: {
       competitions: components['schemas']['Competition'][]
       /** Format: uuid */
       active_competition_id: string | null
+    }
+    CompletionMonthly: {
+      /** Format: date */
+      month: string
+      /** Format: decimal */
+      covered_length_meters: string
+      /** Format: decimal */
+      gain_length_meters: string
     }
     CompletionProjection: {
       status: string
@@ -682,6 +984,10 @@ export interface components {
       /** Format: date-time */
       calculated_at: string | null
       error: string
+      covered_geometry: unknown
+      monthly: components['schemas']['CompletionMonthly'][]
+      partial: boolean
+      sync_status: string
     }
     ElevationProfilePoint: {
       /** Format: double */
@@ -709,8 +1015,15 @@ export interface components {
       /** Format: date-time */
       posted_at?: string | null
     }
+    InviteInputRequest: {
+      invite_code: string
+    }
     LifecycleResponse: {
       lifecycle: string
+    }
+    LoginInputRequest: {
+      identifier: string
+      password: string
     }
     /**
      * @description * `heatmap` - heatmap
@@ -718,6 +1031,11 @@ export interface components {
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
+    MonthlyChange: {
+      month: string
+      /** Format: decimal */
+      net_change_m2: string
+    }
     PaginatedReferenceRouteListList: {
       /**
        * Format: uri
@@ -746,18 +1064,21 @@ export interface components {
       previous?: string | null
       results: components['schemas']['Route'][]
     }
-    PatchedCompetitionColor: {
+    PasswordInputRequest: {
+      password: string
+    }
+    PatchedCompetitionColorRequest: {
       color?: string
     }
-    PatchedCompetitionRename: {
+    PatchedCompetitionRenameRequest: {
       name?: string
     }
-    PatchedNicknameRequest: {
+    PatchedNicknameRequestRequest: {
       nickname?: string
     }
     Player: {
       id: string
-      athlete_id: string
+      athlete_id: string | null
       display_name: string
       /** Format: uri */
       profile_image_url: string | null
@@ -793,9 +1114,17 @@ export interface components {
       version: number
       player: components['schemas']['CompletionProjection'] | null
       competition: components['schemas']['CompletionProjection'] | null
+      competition_access: components['schemas']['CompetitionAccessEnum']
       stages: {
         [key: string]: unknown
       }[]
+      title: string
+      route_number: string
+      source_kind: string
+      geometry: unknown
+      attribution: {
+        [key: string]: unknown
+      }
     }
     ReferenceRoute: {
       /** Format: uuid */
@@ -809,6 +1138,7 @@ export interface components {
       readonly attribution: {
         [key: string]: unknown
       }
+      readonly source_kind: string
       readonly version: number
       readonly version_attribution_metadata: {
         [key: string]: unknown
@@ -828,6 +1158,7 @@ export interface components {
       readonly attribution: {
         [key: string]: unknown
       }
+      readonly source_kind: string
     }
     ReferenceStage: {
       /** Format: uuid */
@@ -840,7 +1171,7 @@ export interface components {
         [key: string]: unknown
       }
     }
-    ReportSubmission: {
+    ReportSubmissionRequest: {
       reason: components['schemas']['ReasonEnum']
       message: string
       /** Format: email */
@@ -849,6 +1180,10 @@ export interface components {
       email?: string
       turnstile_token: string
       website?: string
+    }
+    ResetInputRequest: {
+      /** Format: email */
+      email: string
     }
     Route: {
       /** Format: uuid */
@@ -915,20 +1250,17 @@ export interface components {
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
     }
-    /**
-     * @description * `loaded` - loaded
-     *     * `empty` - empty
-     *     * `syncing` - syncing
-     * @enum {string}
-     */
-    StatusEnum: 'loaded' | 'empty' | 'syncing'
-    StravaWebhookPayload: {
+    StravaWebhookPayloadRequest: {
       object_type: string
       object_id: number
       owner_id: number
       aspect_type: string
       event_time: number
       subscription_id: number
+    }
+    UploadInputRequest: {
+      attested: boolean
+      files: string[]
     }
     Variant: {
       /** Format: uuid */
@@ -975,9 +1307,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['AnalyticsEvent']
-        'application/x-www-form-urlencoded': components['schemas']['AnalyticsEvent']
-        'multipart/form-data': components['schemas']['AnalyticsEvent']
+        'application/json': components['schemas']['AnalyticsEventRequest']
+        'application/x-www-form-urlencoded': components['schemas']['AnalyticsEventRequest']
+        'multipart/form-data': components['schemas']['AnalyticsEventRequest']
       }
     }
     responses: {
@@ -1068,9 +1400,9 @@ export interface operations {
     }
     requestBody?: {
       content: {
-        'application/json': components['schemas']['PatchedNicknameRequest']
-        'application/x-www-form-urlencoded': components['schemas']['PatchedNicknameRequest']
-        'multipart/form-data': components['schemas']['PatchedNicknameRequest']
+        'application/json': components['schemas']['PatchedNicknameRequestRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedNicknameRequestRequest']
+        'multipart/form-data': components['schemas']['PatchedNicknameRequestRequest']
       }
     }
     responses: {
@@ -1134,6 +1466,26 @@ export interface operations {
       }
       /** @description The private game is unavailable. */
       404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_activities_destroy: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        activity_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Activity deleted. */
+      204: {
         headers: {
           [name: string]: unknown
         }
@@ -1209,6 +1561,48 @@ export interface operations {
       }
     }
   }
+  v1_game_account_github_link_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Explicit linking URL. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_password_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PasswordInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInputRequest']
+        'multipart/form-data': components['schemas']['PasswordInputRequest']
+      }
+    }
+    responses: {
+      /** @description Password changed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
   v1_game_account_refresh_create: {
     parameters: {
       query?: never
@@ -1249,6 +1643,205 @@ export interface operations {
         content: {
           'application/json': components['schemas']['ErrorResponse']
         }
+      }
+    }
+  }
+  v1_game_account_uploads_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['UploadInputRequest']
+      }
+    }
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivityUploadBatch']
+        }
+      }
+    }
+  }
+  v1_game_account_uploads_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        batch_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivityUploadBatch']
+        }
+      }
+    }
+  }
+  v1_game_auth_github_onboard_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['InviteInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['InviteInputRequest']
+        'multipart/form-data': components['schemas']['InviteInputRequest']
+      }
+    }
+    responses: {
+      /** @description OAuth URL stored. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_login_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LoginInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['LoginInputRequest']
+        'multipart/form-data': components['schemas']['LoginInputRequest']
+      }
+    }
+    responses: {
+      /** @description Signed in. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid credentials. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_logout_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Signed out. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_onboard_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AccountInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['AccountInputRequest']
+        'multipart/form-data': components['schemas']['AccountInputRequest']
+      }
+    }
+    responses: {
+      /** @description Account created. */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid request. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_reset_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ResetInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['ResetInputRequest']
+        'multipart/form-data': components['schemas']['ResetInputRequest']
+      }
+    }
+    responses: {
+      /** @description Reset request accepted. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  game_local_reset_confirm: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        token: string
+        uidb64: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PasswordInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInputRequest']
+        'multipart/form-data': components['schemas']['PasswordInputRequest']
+      }
+    }
+    responses: {
+      /** @description Password reset. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }
@@ -1425,9 +2018,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionCreate']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionCreate']
-        'multipart/form-data': components['schemas']['CompetitionCreate']
+        'application/json': components['schemas']['CompetitionCreateRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionCreateRequest']
+        'multipart/form-data': components['schemas']['CompetitionCreateRequest']
       }
     }
     responses: {
@@ -1613,9 +2206,9 @@ export interface operations {
     }
     requestBody?: {
       content: {
-        'application/json': components['schemas']['PatchedCompetitionRename']
-        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionRename']
-        'multipart/form-data': components['schemas']['PatchedCompetitionRename']
+        'application/json': components['schemas']['PatchedCompetitionRenameRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionRenameRequest']
+        'multipart/form-data': components['schemas']['PatchedCompetitionRenameRequest']
       }
     }
     responses: {
@@ -1665,6 +2258,66 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_capture_retrieve: {
+    parameters: {
+      query: {
+        east: number
+        member?: number[]
+        north: number
+        south: number
+        west: number
+        zoom: number
+      }
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
+      }
+      413: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
         }
       }
     }
@@ -1893,9 +2546,9 @@ export interface operations {
     }
     requestBody?: {
       content: {
-        'application/json': components['schemas']['PatchedCompetitionColor']
-        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionColor']
-        'multipart/form-data': components['schemas']['PatchedCompetitionColor']
+        'application/json': components['schemas']['PatchedCompetitionColorRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionColorRequest']
+        'multipart/form-data': components['schemas']['PatchedCompetitionColorRequest']
       }
     }
     responses: {
@@ -2021,9 +2674,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionSharingConsent']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionSharingConsent']
-        'multipart/form-data': components['schemas']['CompetitionSharingConsent']
+        'application/json': components['schemas']['CompetitionSharingConsentRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionSharingConsentRequest']
+        'multipart/form-data': components['schemas']['CompetitionSharingConsentRequest']
       }
     }
     responses: {
@@ -2210,9 +2863,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionTransfer']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionTransfer']
-        'multipart/form-data': components['schemas']['CompetitionTransfer']
+        'application/json': components['schemas']['CompetitionTransferRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionTransferRequest']
+        'multipart/form-data': components['schemas']['CompetitionTransferRequest']
       }
     }
     responses: {
@@ -2275,9 +2928,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['CompetitionJoin']
-        'application/x-www-form-urlencoded': components['schemas']['CompetitionJoin']
-        'multipart/form-data': components['schemas']['CompetitionJoin']
+        'application/json': components['schemas']['CompetitionJoinRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionJoinRequest']
+        'multipart/form-data': components['schemas']['CompetitionJoinRequest']
       }
     }
     responses: {
@@ -2334,6 +2987,7 @@ export interface operations {
   v1_game_reference_routes_list: {
     parameters: {
       query?: {
+        competition_id?: string
         cursor?: string
         page_size?: number
         route_number?: string
@@ -2378,7 +3032,9 @@ export interface operations {
   }
   v1_game_reference_routes_completion_retrieve: {
     parameters: {
-      query?: never
+      query?: {
+        competition_id?: string
+      }
       header?: never
       path: {
         route_id: string
@@ -2452,9 +3108,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['StravaWebhookPayload']
-        'application/x-www-form-urlencoded': components['schemas']['StravaWebhookPayload']
-        'multipart/form-data': components['schemas']['StravaWebhookPayload']
+        'application/json': components['schemas']['StravaWebhookPayloadRequest']
+        'application/x-www-form-urlencoded': components['schemas']['StravaWebhookPayloadRequest']
+        'multipart/form-data': components['schemas']['StravaWebhookPayloadRequest']
       }
     }
     responses: {
@@ -2593,9 +3249,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['ReportSubmission']
-        'application/x-www-form-urlencoded': components['schemas']['ReportSubmission']
-        'multipart/form-data': components['schemas']['ReportSubmission']
+        'application/json': components['schemas']['ReportSubmissionRequest']
+        'application/x-www-form-urlencoded': components['schemas']['ReportSubmissionRequest']
+        'multipart/form-data': components['schemas']['ReportSubmissionRequest']
       }
     }
     responses: {

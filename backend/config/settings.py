@@ -73,6 +73,12 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
 GAME_ENABLED = env_bool("GAME_ENABLED", False)
+# Provider-neutral local accounts can be enabled independently of the legacy
+# Strava OAuth rollout gate.
+PLAYER_ACCOUNTS_ENABLED = env_bool("PLAYER_ACCOUNTS_ENABLED", False)
+# Raw activity payloads are transient worker input and are never retained for
+# more than this period (the cleanup task runs from the Celery beat schedule).
+ACTIVITY_UPLOAD_MAX_RETENTION_HOURS = env_int("ACTIVITY_UPLOAD_MAX_RETENTION_HOURS", 24)
 # Account authentication and competition/cross-member features have separate
 # rollout and legal gates. Competition endpoints remain unavailable unless
 # both flags are explicitly enabled.
@@ -387,10 +393,12 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("API_ANON_RATE", "120/minute"),
         "user": os.getenv("API_USER_RATE", "600/minute"),
+        "player_accounts": os.getenv("PLAYER_ACCOUNT_RATE", "20/minute"),
     },
 }
 GAME_PLAYER_RATE = os.getenv("GAME_PLAYER_RATE", "600/minute")
 COMPETITION_INVITE_RATE = os.getenv("COMPETITION_INVITE_RATE", "10/minute")
+PLAYER_ACCOUNT_RATE = os.getenv("PLAYER_ACCOUNT_RATE", "20/minute")
 # Analytics is deliberately protected by one coarse, non-identifying bucket;
 # unlike the generic API throttle it never derives a cache key from an IP.
 ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
@@ -399,6 +407,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Public, versioned read API for BikeMapy.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
@@ -470,8 +479,16 @@ CELERY_BEAT_SCHEDULE = {
         "task": "bikemapy.accounts.retry_revocations",
         "schedule": 900,
     },
+    "cleanup-expired-activity-uploads": {
+        "task": "bikemapy.accounts.cleanup_expired_activity_uploads",
+        "schedule": 3600,
+    },
     "dispatch-game-recomputations": {
         "task": "bikemapy.accounts.dispatch_competition_recomputations",
+        "schedule": 60,
+    },
+    "dispatch-capture-calculations": {
+        "task": "bikemapy.accounts.dispatch_capture_calculations",
         "schedule": 60,
     },
     "dispatch-strava-sync": {

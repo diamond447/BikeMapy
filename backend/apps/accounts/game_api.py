@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.contrib.auth import logout as auth_logout
 from django.db import transaction
 from django.middleware.csrf import get_token
 from django.shortcuts import redirect
@@ -34,6 +35,7 @@ from .services import (
     refresh_connection,
     revoke_or_schedule,
     save_connection,
+    strava_is_available,
     validate_granted_scopes,
 )
 
@@ -53,7 +55,11 @@ def current_player(request: Any) -> Player | None:
         player = Player.objects.get(pk=player_id)
     except Player.DoesNotExist:
         return None
-    if player.session_epoch != epoch or player.lifecycle != Player.Lifecycle.CONNECTED:
+    if (
+        player.session_epoch != epoch
+        or player.lifecycle != Player.Lifecycle.CONNECTED
+        or player.must_change_password
+    ):
         return None
     return player
 
@@ -70,10 +76,18 @@ def _clear_player_session(request: Any) -> None:
     request.session.save()
 
 
+def _logout_player_session(request: Any) -> None:
+    """End every authenticated player session, including linked OAuth state."""
+
+    auth_logout(request)
+
+
 def _player_payload(player: Player) -> dict[str, Any]:
     return {
         "id": str(player.pk),
-        "athlete_id": str(player.strava_athlete_id),
+        "athlete_id": str(player.strava_athlete_id)
+        if player.strava_athlete_id is not None
+        else None,
         "display_name": player.strava_display_name,
         "profile_image_url": player.strava_profile_image_url or None,
         "nickname": player.nickname or None,
@@ -85,7 +99,7 @@ def _player_payload(player: Player) -> dict[str, Any]:
 
 class PlayerSerializer(serializers.Serializer[Player]):
     id = serializers.CharField()
-    athlete_id = serializers.CharField()
+    athlete_id = serializers.CharField(allow_null=True)
     display_name = serializers.CharField()
     profile_image_url = serializers.URLField(allow_null=True)
     nickname = serializers.CharField(allow_null=True)
@@ -152,7 +166,7 @@ class StravaAuthorizeView(GameEndpoint):
         tags=["game-auth"],
     )
     def get(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         if not request.session.session_key:
             request.session.create()
@@ -174,7 +188,7 @@ class StravaCallbackView(GameEndpoint):
         tags=["game-auth"],
     )
     def get(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         raw_state = str(request.GET.get("state") or "")
         if not raw_state or not request.session.session_key:
@@ -258,7 +272,7 @@ class PlayerLogoutView(GameEndpoint):
     def post(self, request: Any) -> Response:
         if not game_is_available():
             return self.unavailable()
-        _clear_player_session(request)
+        _logout_player_session(request)
         return _private(Response(status=status.HTTP_204_NO_CONTENT))
 
 
@@ -295,7 +309,7 @@ class PlayerRefreshView(GameEndpoint):
         tags=["game-account"],
     )
     def post(self, request: Any) -> Response:
-        if not game_is_available():
+        if not strava_is_available():
             return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):
