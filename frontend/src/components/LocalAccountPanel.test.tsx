@@ -193,8 +193,21 @@ describe('LocalAccountPanel', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining('/api/v1/game/account/github/link/'),
-        expect.objectContaining({ credentials: 'include' }),
+        expect.objectContaining({ credentials: 'include', method: 'POST' }),
       ),
+    )
+  })
+
+  it('does not redirect to an untrusted GitHub URL', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response({ url: 'https://evil.example/phishing' }))
+    render(<LocalAccountPanel authenticated />)
+    fireEvent.click(screen.getByRole('button', { name: 'Link GitHub' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('GitHub linking'))
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/v1/game/account/github/link/'),
+      expect.objectContaining({ method: 'POST' }),
     )
   })
 })

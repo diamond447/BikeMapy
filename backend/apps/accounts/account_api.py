@@ -29,7 +29,7 @@ from .account_services import (
     validate_invite_code,
 )
 from .activity_services import remove_activity
-from .game_api import _private
+from .game_api import _logout_player_session, _private
 from .models import ActivityUploadBatch, Player
 from .services import player_accounts_is_available
 from .upload_services import (
@@ -207,9 +207,7 @@ class AccountLogoutView(AccountEndpoint):
         tags=["account-auth"],
     )
     def post(self, request: Any) -> Response:
-        request.session.pop("player_id", None)
-        request.session.pop("player_session_epoch", None)
-        request.session.save()
+        _logout_player_session(request)
         return _private(Response(status=204))
 
 
@@ -281,9 +279,11 @@ class PasswordResetConfirmView(AccountEndpoint):
 
 class GitHubLinkView(AccountEndpoint):
     @extend_schema(
-        responses={200: OpenApiResponse(description="Explicit linking URL.")}, tags=["account-auth"]
+        request=None,
+        responses={200: OpenApiResponse(description="Explicit linking URL.")},
+        tags=["account-auth"],
     )
-    def get(self, request: Any) -> Response:
+    def post(self, request: Any) -> Response:
         player = _session_player(request)
         if player is None:
             return _private(Response({"detail": "Authentication is required."}, status=401))

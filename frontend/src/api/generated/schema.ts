@@ -114,9 +114,9 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get: operations['v1_game_account_github_link_retrieve']
+    get?: never
     put?: never
-    post?: never
+    post: operations['v1_game_account_github_link_create']
     delete?: never
     options?: never
     head?: never
@@ -1561,7 +1561,7 @@ export interface operations {
       }
     }
   }
-  v1_game_account_github_link_retrieve: {
+  v1_game_account_github_link_create: {
     parameters: {
       query?: never
       header?: never
