@@ -497,9 +497,9 @@ def test_local_account_endpoints_cover_onboarding_login_password_and_reset() -> 
         format="json",
     )
     assert response.status_code == 200
-    assert client.get("/api/v1/game/account/github/link/").status_code == 200
+    assert client.post("/api/v1/game/account/github/link/", {}, format="json").status_code == 200
     assert client.post("/api/v1/game/auth/local/logout/", {}, format="json").status_code == 204
-    assert client.get("/api/v1/game/account/github/link/").status_code == 401
+    assert client.post("/api/v1/game/account/github/link/", {}, format="json").status_code == 401
 
     with patch("apps.accounts.account_services.send_mail") as send_mail:
         response = client.post(
@@ -515,6 +515,59 @@ def test_local_account_endpoints_cover_onboarding_login_password_and_reset() -> 
         ).status_code
         == 400
     )
+
+
+@override_settings(PLAYER_ACCOUNTS_ENABLED=True)
+def test_github_link_and_local_logout_are_csrf_protected_and_flush_auth_state() -> None:
+    user = get_user_model().objects.create_user(username="rider", password="password")
+    player = Player.objects.create(user=user, must_change_password=False)
+    client = Client(enforce_csrf_checks=True)
+    session = client.session
+    session["player_id"] = player.pk
+    session["player_session_epoch"] = player.session_epoch
+    session.save()
+
+    # Link intent creation is a mutation and must not be reachable through GET.
+    response = client.get("/api/v1/game/account/github/link/")
+    assert response.status_code == 405
+    assert "github_link_intent" not in client.session
+
+    response = client.post("/api/v1/game/account/github/link/", {}, content_type="application/json")
+    assert response.status_code == 403
+    assert "github_link_intent" not in client.session
+
+    session_response = client.get("/api/v1/game/auth/session/")
+    assert session_response.status_code == 200
+    csrf_token = client.cookies["csrftoken"].value
+    response = client.post(
+        "/api/v1/game/account/github/link/",
+        {},
+        content_type="application/json",
+        HTTP_X_CSRFTOKEN=csrf_token,
+    )
+    assert response.status_code == 200
+    linked_session = client.session
+    assert linked_session["_auth_user_id"] == str(user.pk)
+    assert linked_session["player_id"] == player.pk
+    assert linked_session["github_link_intent"]
+    assert linked_session["github_link_player_id"] == str(player.pk)
+    assert linked_session["github_link_epoch"] == player.session_epoch
+
+    csrf_token = response["X-CSRFToken"]
+    response = client.post(
+        "/api/v1/game/auth/local/logout/",
+        {},
+        content_type="application/json",
+        HTTP_X_CSRFTOKEN=csrf_token,
+    )
+    assert response.status_code == 204
+    logged_out_session = client.session
+    assert "_auth_user_id" not in logged_out_session
+    assert "player_id" not in logged_out_session
+    assert "player_session_epoch" not in logged_out_session
+    assert "github_link_intent" not in logged_out_session
+    assert "github_link_player_id" not in logged_out_session
+    assert "github_link_epoch" not in logged_out_session
 
 
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)

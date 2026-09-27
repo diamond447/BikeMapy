@@ -51,6 +51,17 @@ function detail(data: unknown, fallback: string) {
     : fallback
 }
 
+function trustedRelativeUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return null
+  try {
+    const url = new URL(value, window.location.origin)
+    if (url.origin !== window.location.origin) return null
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return null
+  }
+}
+
 export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSignedOut }: Props) {
   const resetParts =
     typeof window !== 'undefined'
@@ -216,10 +227,13 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
   const beginGithubLink = async () => {
     setBusy(true)
     try {
-      const result = await request('/api/v1/game/account/github/link/')
+      const result = await request('/api/v1/game/account/github/link/', { method: 'POST' })
       if (!result.response.ok) setMessage(detail(result.data, 'GitHub linking is unavailable.'))
-      else if (result.data && typeof result.data === 'object' && 'url' in result.data)
-        window.location.assign(String(result.data.url))
+      else if (result.data && typeof result.data === 'object' && 'url' in result.data) {
+        const url = trustedRelativeUrl(result.data.url)
+        if (url) window.location.assign(url)
+        else setMessage('GitHub linking is unavailable.')
+      } else setMessage('GitHub linking is unavailable.')
     } catch {
       setMessage('The account service is temporarily unavailable.')
     } finally {

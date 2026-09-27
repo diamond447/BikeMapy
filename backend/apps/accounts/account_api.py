@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.contrib.auth import login as auth_login
+from django.contrib.auth import logout as auth_logout
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -207,9 +208,11 @@ class AccountLogoutView(AccountEndpoint):
         tags=["account-auth"],
     )
     def post(self, request: Any) -> Response:
-        request.session.pop("player_id", None)
-        request.session.pop("player_session_epoch", None)
-        request.session.save()
+        # Django's logout flushes the entire session, including the custom
+        # player identity, OAuth link intent, invite, and authentication keys.
+        # Keeping this as the single logout path prevents stale link intents
+        # from surviving a local sign-out or session fixation boundary.
+        auth_logout(request)
         return _private(Response(status=204))
 
 
@@ -281,9 +284,11 @@ class PasswordResetConfirmView(AccountEndpoint):
 
 class GitHubLinkView(AccountEndpoint):
     @extend_schema(
-        responses={200: OpenApiResponse(description="Explicit linking URL.")}, tags=["account-auth"]
+        request=None,
+        responses={200: OpenApiResponse(description="Explicit linking URL.")},
+        tags=["account-auth"],
     )
-    def get(self, request: Any) -> Response:
+    def post(self, request: Any) -> Response:
         player = _session_player(request)
         if player is None:
             return _private(Response({"detail": "Authentication is required."}, status=401))
