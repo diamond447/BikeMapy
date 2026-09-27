@@ -262,6 +262,8 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     if (status === 'unavailable') {
       return (
         <div className="game-account-message">
+          <h2>{copy.gameUnavailable}</h2>
+          <p>{copy.gameUnavailableDescription}</p>
           <LocalAccountPanel onAuthenticated={() => setRetryToken((value) => value + 1)} />
         </div>
       )
@@ -284,11 +286,13 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
     if (status === 'signed-out' || !player) {
       return (
         <div className="game-account-message">
-          <LocalAccountPanel onAuthenticated={() => setRetryToken((value) => value + 1)} />
+          <h2>{copy.gameAccount}</h2>
+          {message && <p role="status">{message}</p>}
           <p>{copy.gameSignIn}</p>
           <a className="game-account-secondary" href={signInUrl}>
             {message === copy.gameRefreshFailure ? copy.gameReconnect : copy.gameSignInStrava}
           </a>
+          <LocalAccountPanel onAuthenticated={() => setRetryToken((value) => value + 1)} />
         </div>
       )
     }
