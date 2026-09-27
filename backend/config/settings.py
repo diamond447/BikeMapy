@@ -387,10 +387,12 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("API_ANON_RATE", "120/minute"),
         "user": os.getenv("API_USER_RATE", "600/minute"),
+        "player_accounts": os.getenv("PLAYER_ACCOUNT_RATE", "20/minute"),
     },
 }
 GAME_PLAYER_RATE = os.getenv("GAME_PLAYER_RATE", "600/minute")
 COMPETITION_INVITE_RATE = os.getenv("COMPETITION_INVITE_RATE", "10/minute")
+PLAYER_ACCOUNT_RATE = os.getenv("PLAYER_ACCOUNT_RATE", "20/minute")
 # Analytics is deliberately protected by one coarse, non-identifying bucket;
 # unlike the generic API throttle it never derives a cache key from an IP.
 ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")

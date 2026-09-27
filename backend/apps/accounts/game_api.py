@@ -53,7 +53,11 @@ def current_player(request: Any) -> Player | None:
         player = Player.objects.get(pk=player_id)
     except Player.DoesNotExist:
         return None
-    if player.session_epoch != epoch or player.lifecycle != Player.Lifecycle.CONNECTED:
+    if (
+        player.session_epoch != epoch
+        or player.lifecycle != Player.Lifecycle.CONNECTED
+        or player.must_change_password
+    ):
         return None
     return player
 

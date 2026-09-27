@@ -1,4 +1,4 @@
-"""Private player identity and Strava credential lifecycle models."""
+"""Private player identity, account, and activity lifecycle models."""
 
 from __future__ import annotations
 
@@ -36,7 +36,9 @@ class Player(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="player"
     )
-    strava_athlete_id = models.PositiveBigIntegerField(unique=True)
+    # Strava is an optional legacy provider.  New player accounts are
+    # provider-neutral and can import activities directly.
+    strava_athlete_id = models.PositiveBigIntegerField(unique=True, null=True, blank=True)
     strava_display_name = models.CharField(max_length=240, blank=True)
     strava_profile_image_url = models.URLField(max_length=500, blank=True)
     nickname = models.CharField(max_length=80, blank=True)
@@ -55,12 +57,13 @@ class Player(models.Model):
     connected_at = models.DateTimeField(default=timezone.now)
     disconnected_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+    must_change_password = models.BooleanField(default=False)
 
     class Meta:
         ordering = ("pk",)
 
     def __str__(self) -> str:
-        return f"Player {self.strava_athlete_id}"
+        return f"Player {self.user.username}"
 
     def invalidate_sessions(self) -> None:
         self.session_epoch += 1
@@ -169,6 +172,33 @@ class CompetitionMembership(models.Model):
         return f"{self.player_id} in {self.competition_id}"
 
 
+class CompetitionInviteRedemption(models.Model):
+    """Audit row for an invite used during account onboarding.
+
+    Invite codes remain reusable for the existing join flow.  This row makes
+    onboarding idempotent and records that the code was consumed only after
+    the account and membership transaction committed.
+    """
+
+    competition = models.ForeignKey(
+        Competition, on_delete=models.CASCADE, related_name="invite_redemptions"
+    )
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="invite_redemptions")
+    code_digest = models.CharField(max_length=64)
+    redeemed_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("competition", "player"), name="accounts_invite_redemption_unique"
+            )
+        ]
+        indexes = [models.Index(fields=("competition", "code_digest"))]
+
+    def __str__(self) -> str:
+        return f"Invite redemption {self.competition_id}/{self.player_id}"
+
+
 class CompetitionSharingConsentAudit(models.Model):
     """Durable, non-PII record of each competition sharing decision."""
 
@@ -231,6 +261,75 @@ class ImportedActivity(models.Model):
 
     def __str__(self) -> str:
         return self.title or self.provider_activity_id
+
+
+class ActivityUploadBatch(models.Model):
+    """Bounded asynchronous batch of direct activity uploads."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        PARTIAL = "partial", "Partial"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="upload_batches")
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
+    total_files = models.PositiveIntegerField(default=0)
+    processed_files = models.PositiveIntegerField(default=0)
+    accepted_files = models.PositiveIntegerField(default=0)
+    duplicate_files = models.PositiveIntegerField(default=0)
+    failed_files = models.PositiveIntegerField(default=0)
+    attested = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self) -> str:
+        return f"Upload batch {self.pk}"
+
+
+class ActivityUpload(models.Model):
+    """One upload result.  ``content`` is transient and cleared by workers."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        ACCEPTED = "accepted", "Accepted"
+        DUPLICATE = "duplicate", "Duplicate"
+        UNSUPPORTED = "unsupported", "Unsupported"
+        FAILED = "failed", "Failed"
+
+    batch = models.ForeignKey(ActivityUploadBatch, on_delete=models.CASCADE, related_name="files")
+    original_name = models.CharField(max_length=240)
+    content_sha256 = models.CharField(max_length=64)
+    content = models.BinaryField(null=True, blank=True)
+    size_bytes = models.PositiveIntegerField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
+    fingerprint = models.CharField(max_length=64, blank=True)
+    error_code = models.CharField(max_length=48, blank=True)
+    error_detail = models.CharField(max_length=240, blank=True)
+    activity = models.ForeignKey(
+        ImportedActivity,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="upload_files",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("batch", "original_name", "content_sha256"),
+                name="accounts_upload_file_unique",
+            )
+        ]
+        indexes = [models.Index(fields=("batch", "status"))]
+
+    def __str__(self) -> str:
+        return f"Upload {self.original_name}"
 
 
 class StravaSyncState(models.Model):
