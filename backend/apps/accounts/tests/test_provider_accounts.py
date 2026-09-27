@@ -231,12 +231,14 @@ def test_processing_claim_and_replay_preserve_accepted_result() -> None:
         b"<trkpt lat='50' lon='14'/><trkpt lat='50.1' lon='14.1'/></trk></gpx>"
     )
     batch = create_batch(player, [("ride.gpx", gpx)], attested=True)
-    first = process_batch(batch.pk)
-    second = process_batch(batch.pk)
-    assert first.status == second.status == ActivityUploadBatch.Status.COMPLETED
-    assert second.accepted_files == 1
-    assert second.duplicate_files == 0
-    assert second.files.get().status == "accepted"
+    process_batch(batch.pk)
+    process_batch(batch.pk)
+    batch.refresh_from_db()
+    result = batch.files.get()
+    assert batch.status == ActivityUploadBatch.Status.COMPLETED, result.error_detail
+    assert batch.accepted_files == 1
+    assert batch.duplicate_files == 0
+    assert result.status == "accepted", result.error_detail
 
 
 def test_expired_processing_upload_finalizes_parent_batch() -> None:
