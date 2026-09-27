@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.contrib.auth import logout as auth_logout
 from django.db import transaction
 from django.middleware.csrf import get_token
 from django.shortcuts import redirect
@@ -73,6 +74,12 @@ def _clear_player_session(request: Any) -> None:
         if not isinstance(method, dict) or method.get("provider") != "strava"
     ]
     request.session.save()
+
+
+def _logout_player_session(request: Any) -> None:
+    """End every authenticated player session, including linked OAuth state."""
+
+    auth_logout(request)
 
 
 def _player_payload(player: Player) -> dict[str, Any]:
@@ -265,7 +272,7 @@ class PlayerLogoutView(GameEndpoint):
     def post(self, request: Any) -> Response:
         if not game_is_available():
             return self.unavailable()
-        _clear_player_session(request)
+        _logout_player_session(request)
         return _private(Response(status=status.HTTP_204_NO_CONTENT))
 
 

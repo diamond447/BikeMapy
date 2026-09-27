@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any
 
 from django.contrib.auth import login as auth_login
-from django.contrib.auth import logout as auth_logout
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
@@ -30,7 +29,7 @@ from .account_services import (
     validate_invite_code,
 )
 from .activity_services import remove_activity
-from .game_api import _private
+from .game_api import _logout_player_session, _private
 from .models import ActivityUploadBatch, Player
 from .services import player_accounts_is_available
 from .upload_services import (
@@ -208,11 +207,7 @@ class AccountLogoutView(AccountEndpoint):
         tags=["account-auth"],
     )
     def post(self, request: Any) -> Response:
-        # Django's logout flushes the entire session, including the custom
-        # player identity, OAuth link intent, invite, and authentication keys.
-        # Keeping this as the single logout path prevents stale link intents
-        # from surviving a local sign-out or session fixation boundary.
-        auth_logout(request)
+        _logout_player_session(request)
         return _private(Response(status=204))
 
 

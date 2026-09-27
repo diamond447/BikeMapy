@@ -498,7 +498,7 @@ def test_local_account_endpoints_cover_onboarding_login_password_and_reset() -> 
     )
     assert response.status_code == 200
     assert client.post("/api/v1/game/account/github/link/", {}, format="json").status_code == 200
-    assert client.post("/api/v1/game/auth/local/logout/", {}, format="json").status_code == 204
+    assert client.post("/api/v1/game/auth/logout/", {}, format="json").status_code == 204
     assert client.post("/api/v1/game/account/github/link/", {}, format="json").status_code == 401
 
     with patch("apps.accounts.account_services.send_mail") as send_mail:
@@ -525,6 +525,8 @@ def test_github_link_and_local_logout_are_csrf_protected_and_flush_auth_state() 
     session = client.session
     session["player_id"] = player.pk
     session["player_session_epoch"] = player.session_epoch
+    session["account_invite_code"] = "RIDE-123"
+    session["account_authentication_methods"] = [{"method": "player", "provider": "github"}]
     session.save()
 
     # Link intent creation is a mutation and must not be reachable through GET.
@@ -555,7 +557,7 @@ def test_github_link_and_local_logout_are_csrf_protected_and_flush_auth_state() 
 
     csrf_token = response["X-CSRFToken"]
     response = client.post(
-        "/api/v1/game/auth/local/logout/",
+        "/api/v1/game/auth/logout/",
         {},
         content_type="application/json",
         HTTP_X_CSRFTOKEN=csrf_token,
@@ -565,6 +567,8 @@ def test_github_link_and_local_logout_are_csrf_protected_and_flush_auth_state() 
     assert "_auth_user_id" not in logged_out_session
     assert "player_id" not in logged_out_session
     assert "player_session_epoch" not in logged_out_session
+    assert "account_invite_code" not in logged_out_session
+    assert "account_authentication_methods" not in logged_out_session
     assert "github_link_intent" not in logged_out_session
     assert "github_link_player_id" not in logged_out_session
     assert "github_link_epoch" not in logged_out_session
