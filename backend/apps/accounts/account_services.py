@@ -13,10 +13,8 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Q
-from django.utils.encoding import force_bytes
-from django.utils.encoding import force_str
-from django.utils.http import urlsafe_base64_decode
-from django.utils.http import urlsafe_base64_encode
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 
 from .competition_services import CompetitionError, join_competition
 from .models import Competition, CompetitionInviteRedemption, Player
