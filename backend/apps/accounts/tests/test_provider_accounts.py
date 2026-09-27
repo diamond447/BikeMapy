@@ -91,7 +91,13 @@ def test_login_accepts_username_or_email_and_unknown_is_generic() -> None:
         username="rider", email="rider@example.com", invite_code=competition.invite_code
     )
     assert authenticate_player(identifier="rider", password=temporary) == player
-    assert authenticate_player(identifier="RIDER@EXAMPLE.COM", password=temporary) == player
+    player.user.set_password("permanent-password")
+    player.user.save(update_fields=("password",))
+    player.must_change_password = False
+    player.save(update_fields=("must_change_password",))
+    assert (
+        authenticate_player(identifier="RIDER@EXAMPLE.COM", password="permanent-password") == player
+    )
     assert authenticate_player(identifier="missing@example.com", password=temporary) is None
 
 
@@ -273,6 +279,8 @@ def test_upload_api_queues_batches_and_scopes_progress_to_session_player() -> No
     )
     player.user.set_password(temporary)
     player.user.save(update_fields=("password",))
+    player.must_change_password = False
+    player.save(update_fields=("must_change_password",))
     client = APIClient()
     assert (
         client.post(
