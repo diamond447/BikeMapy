@@ -296,7 +296,7 @@ class ActivityUploadBatch(models.Model):
 
 
 class ActivityUpload(models.Model):
-    """One upload result.  ``content`` is transient and cleared by workers."""
+    """One upload result with a transient private, file-backed payload."""
 
     class Status(models.TextChoices):
         QUEUED = "queued", "Queued"
@@ -309,6 +309,9 @@ class ActivityUpload(models.Model):
     batch = models.ForeignKey(ActivityUploadBatch, on_delete=models.CASCADE, related_name="files")
     original_name = models.CharField(max_length=240)
     content_sha256 = models.CharField(max_length=64)
+    content_path = models.FileField(upload_to="private/activity_uploads/", null=True, blank=True)
+    # Legacy database payloads are read only for migration compatibility and
+    # are never populated by new uploads.
     content = models.BinaryField(null=True, blank=True)
     size_bytes = models.PositiveIntegerField()
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)

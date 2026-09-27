@@ -7,7 +7,7 @@ from __future__ import annotations
 import io
 import struct
 import zipfile
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +31,7 @@ from apps.accounts.models import (
 from apps.accounts.upload_services import (
     UploadError,
     _fit_crc,
+    _reconstruct_compressed_timestamp,
     _safe_archive_members,
     create_batch,
     parse_activity,
@@ -45,6 +46,39 @@ def _competition() -> Competition:
     owner_user = get_user_model().objects.create_user(username="owner", password="owner-pass")
     owner = Player.objects.create(user=owner_user, nickname="Owner")
     return Competition.objects.create(owner=owner, name="Private ride", invite_code="RIDE-123")
+
+
+def _compressed_fit_fixture() -> bytes:
+    """A CRC-valid FIT stream with omitted compressed timestamp bytes."""
+
+    payload = bytearray()
+    # Session definition: sport=cycling (enum 2).
+    payload.extend(bytes((0x41, 0, 0, 18, 0, 1, 5, 1, 0x02)))
+    payload.extend(bytes((0x01, 2)))
+    # Record definition: signed coordinates, uint timestamp, and one
+    # developer byte.  Compressed records omit field 253 from their payload.
+    payload.extend(bytes((0x60, 0, 0, 20, 0, 3)))
+    payload.extend(bytes((0, 4, 0x85, 1, 4, 0x85, 253, 4, 0x86)))
+    payload.extend(bytes((1, 0, 1, 0)))
+
+    def point(latitude: float, longitude: float, timestamp: int, header: int) -> None:
+        payload.append(header)
+        payload.extend(struct.pack("<i", int(latitude * 2**31 / 180)))
+        payload.extend(struct.pack("<i", int(longitude * 2**31 / 180)))
+        if not header & 0x80:
+            payload.extend(struct.pack("<I", timestamp))
+        payload.append(0x2A)  # developer field, also present on compressed records
+
+    point(50.1, 14.4, 1000, 0)
+    point(50.2, 14.5, 1000, 0x88)  # equal offset: no false rollover
+    point(50.3, 14.6, 1031, 0x87)  # lower offset: one 32-second rollover
+    header = bytearray((14, 0x10, 0, 0))
+    header.extend(struct.pack("<I", len(payload)))
+    header.extend(b".FIT\x00\x00")
+    header[12:14] = struct.pack("<H", _fit_crc(bytes(header[:12])))
+    result = header + payload
+    result.extend(struct.pack("<H", _fit_crc(bytes(result))))
+    return bytes(result)
 
 
 def test_invited_account_is_hashed_and_joined_atomically() -> None:
@@ -202,6 +236,22 @@ def test_upload_parsers_accept_gpx_tcx_and_safe_zip_members() -> None:
             b"</Track></Activity></Activities></TrainingCenterDatabase>",
             "ride.tcx",
         )
+
+
+def test_fit_compressed_timestamps_skip_omitted_bytes_and_validate_crc() -> None:
+    payload = _compressed_fit_fixture()
+    points, started, kind = parse_activity(io.BytesIO(payload), "ride.fit")
+    assert [round(point[0], 1) for point in points] == [14.4, 14.5, 14.6]
+    assert [round(point[1], 1) for point in points] == [50.1, 50.2, 50.3]
+    assert started == datetime.fromtimestamp(1000 + 631065600, tz=UTC)
+    assert kind == "FIT"
+    assert _reconstruct_compressed_timestamp(1000, 8) == 1000
+    assert _reconstruct_compressed_timestamp(1000, 7) == 1031
+
+    corrupted = bytearray(payload)
+    corrupted[-3] ^= 0x01
+    with pytest.raises(UploadError, match="checksum"):
+        parse_activity(io.BytesIO(corrupted), "ride.fit")
 
 
 def test_create_batch_requires_attestation_and_expands_zip() -> None:

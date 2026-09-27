@@ -35,13 +35,28 @@ def cleanup_expired_activity_uploads_task() -> dict[str, int]:
         status__in=(ActivityUpload.Status.QUEUED, ActivityUpload.Status.PROCESSING),
     )
     batch_ids = list(stale.values_list("batch_id", flat=True).distinct())
-    cleared = stale.update(
-        content=None,
-        status=ActivityUpload.Status.FAILED,
-        error_code="retention_expired",
-        error_detail="The upload expired before processing.",
-        processed_at=timezone.now(),
-    )
+    expired = list(stale)
+    cleared = 0
+    for upload in expired:
+        if upload.content_path:
+            upload.content_path.delete(save=False)
+        upload.content = None
+        upload.content_path = None
+        upload.status = ActivityUpload.Status.FAILED
+        upload.error_code = "retention_expired"
+        upload.error_detail = "The upload expired before processing."
+        upload.processed_at = timezone.now()
+        upload.save(
+            update_fields=(
+                "content",
+                "content_path",
+                "status",
+                "error_code",
+                "error_detail",
+                "processed_at",
+            )
+        )
+        cleared += 1
     for batch in ActivityUploadBatch.objects.filter(pk__in=batch_ids):
         statuses = list(batch.files.values_list("status", flat=True))
         terminal = [

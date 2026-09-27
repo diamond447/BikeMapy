@@ -16,12 +16,14 @@ are intentionally enumeration-safe and account endpoints are rate-limited.
 Players can upload FIT, GPX, and TCX files individually or in a ZIP archive.
 Uploads require an ownership/authorization attestation and are processed by a
 bounded asynchronous batch. XML external entities are disabled, archive paths
-and expansion are bounded, and raw upload bytes are cleared after terminal
-processing. Raw payloads are purged by the hourly cleanup task after at most
-24 hours. A deterministic content fingerprint makes retries idempotent;
-duplicate results are reported per file. Normalized activities use the same
-private `ImportedActivity` model and recomputation lifecycle as provider
-imports.
+and expansion are bounded, and each payload is persisted as one private,
+file-backed object and consumed sequentially; raw bytes are never accumulated
+as a batch or retained in the database. Payload objects are cleared after
+terminal processing and by the hourly cleanup task after at most 24 hours
+(`ACTIVITY_UPLOAD_MAX_RETENTION_HOURS`). A deterministic content fingerprint
+makes retries idempotent; duplicate results are reported per file. Normalized
+activities use the same private `ImportedActivity` model and recomputation
+lifecycle as provider imports.
 
 The legacy Strava integration remains isolated and optional. Direct uploads do
 not create or require Strava credentials.

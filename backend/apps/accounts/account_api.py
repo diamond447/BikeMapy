@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from tempfile import SpooledTemporaryFile
 from typing import Any
 
 from django.contrib.auth import login as auth_login
@@ -34,9 +33,6 @@ from .game_api import _private
 from .models import ActivityUploadBatch, Player
 from .services import player_accounts_is_available
 from .upload_services import (
-    MAX_ARCHIVE_BYTES,
-    MAX_BATCH_EXPANDED_BYTES,
-    MAX_FILE_BYTES,
     UploadError,
     create_batch,
 )
@@ -330,32 +326,9 @@ class ActivityUploadView(AccountEndpoint):
             return _private(
                 Response({"detail": "A data ownership attestation is required."}, status=400)
             )
-        files: list[tuple[str, bytes]] = []
-        total_bytes = 0
+        files: list[tuple[str, Any]] = []
         for item in request.FILES.getlist("files"):
-            limit = MAX_ARCHIVE_BYTES if item.name.lower().endswith(".zip") else MAX_FILE_BYTES
-            spooled = SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
-            size = 0
-            while True:
-                chunk = item.read(min(1024 * 1024, limit - size + 1))
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > limit:
-                    return _private(
-                        Response(
-                            {"detail": "The uploaded file exceeds the size limit."}, status=400
-                        )
-                    )
-                spooled.write(chunk)
-            total_bytes += size
-            if total_bytes > MAX_BATCH_EXPANDED_BYTES:
-                return _private(
-                    Response({"detail": "The upload batch exceeds the size limit."}, status=400)
-                )
-            spooled.seek(0)
-            files.append((item.name, spooled.read()))
-            spooled.close()
+            files.append((item.name, item))
         try:
             batch = create_batch(player, files, attested=data.validated_data["attested"])
         except UploadError as exc:
