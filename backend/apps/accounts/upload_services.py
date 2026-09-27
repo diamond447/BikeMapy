@@ -138,9 +138,7 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
     end = header_size + data_size
     if data_size <= 0 or end > len(data) or end > header_size + MAX_FILE_BYTES:
         raise UploadError("The FIT file size is invalid.", code="invalid_fit")
-    definitions: dict[
-        int, tuple[str, int, list[tuple[int, int, int]], list[int]]
-    ] = {}
+    definitions: dict[int, tuple[str, int, list[tuple[int, int, int]], list[int]]] = {}
     points: list[tuple[float, float]] = []
     started: datetime | None = None
     cursor = header_size
@@ -152,9 +150,7 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
         cursor += 1
         compressed_timestamp = bool(record_header & 0x80)
         local_number = (
-            ((record_header >> 5) & 0x03)
-            if compressed_timestamp
-            else record_header & 0x0F
+            ((record_header >> 5) & 0x03) if compressed_timestamp else record_header & 0x0F
         )
         compressed_offset = record_header & 0x1F
         if not compressed_timestamp and record_header & 0x40:
@@ -204,9 +200,7 @@ def _parse_fit(data: bytes) -> tuple[list[tuple[float, float]], datetime | None,
                 continue
             if base_type in {0x01, 0x02, 0x07, 0x0D}:
                 values[field_number] = (
-                    raw[0]
-                    if field_size == 1
-                    else struct.unpack_from(f"{endian}I", raw)[0]
+                    raw[0] if field_size == 1 else struct.unpack_from(f"{endian}I", raw)[0]
                 )
             elif base_type == 0x83:
                 values[field_number] = struct.unpack_from(f"{endian}h", raw)[0]

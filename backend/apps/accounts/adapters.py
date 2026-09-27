@@ -30,18 +30,23 @@ class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
         link_epoch = session.get("github_link_epoch")
         local_player = None
         if link_intent and link_player_id and link_epoch is not None:
-            local_player = Player.objects.filter(
-                pk=link_player_id,
-                lifecycle=Player.Lifecycle.CONNECTED,
-                session_epoch=link_epoch,
-            ).select_related("user").first()
+            local_player = (
+                Player.objects.filter(
+                    pk=link_player_id,
+                    lifecycle=Player.Lifecycle.CONNECTED,
+                    session_epoch=link_epoch,
+                )
+                .select_related("user")
+                .first()
+            )
             if local_player is None or not getattr(request.user, "is_authenticated", False):
                 raise ImmediateHttpResponse(HttpResponseRedirect("/game?game_auth=error"))
             if request.user.pk != local_player.user_id:
                 raise ImmediateHttpResponse(HttpResponseRedirect("/game?game_auth=error"))
-        elif getattr(request.user, "is_authenticated", False) and Player.objects.filter(
-            user_id=getattr(request.user, "pk", None)
-        ).exists():
+        elif (
+            getattr(request.user, "is_authenticated", False)
+            and Player.objects.filter(user_id=getattr(request.user, "pk", None)).exists()
+        ):
             # A custom local session must explicitly opt into linking.  Do not
             # let a normal social login silently replace or merge identities.
             raise ImmediateHttpResponse(HttpResponseRedirect("/game?game_auth=link_required"))
@@ -76,11 +81,15 @@ class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
     def save_user(self, request: Any, sociallogin: Any, form: Any = None) -> Any:
         with transaction.atomic():
             if request.session.get("github_link_intent"):
-                player = Player.objects.select_for_update().filter(
-                    pk=request.session.get("github_link_player_id"),
-                    session_epoch=request.session.get("github_link_epoch"),
-                    lifecycle=Player.Lifecycle.CONNECTED,
-                ).first()
+                player = (
+                    Player.objects.select_for_update()
+                    .filter(
+                        pk=request.session.get("github_link_player_id"),
+                        session_epoch=request.session.get("github_link_epoch"),
+                        lifecycle=Player.Lifecycle.CONNECTED,
+                    )
+                    .first()
+                )
                 if player is None or getattr(request.user, "pk", None) != player.user_id:
                     raise ImmediateHttpResponse(HttpResponseRedirect("/game?game_auth=error"))
                 user = player.user

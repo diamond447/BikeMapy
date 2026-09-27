@@ -147,9 +147,7 @@ def authenticate_player(*, identifier: Any, password: Any) -> Player | None:
     authenticated = authenticate(username=user.username, password=str(password or ""))
     if authenticated is None:
         return None
-    player = Player.objects.filter(
-        user=authenticated, lifecycle=Player.Lifecycle.CONNECTED
-    ).first()
+    player = Player.objects.filter(user=authenticated, lifecycle=Player.Lifecycle.CONNECTED).first()
     if player is not None and player.must_change_password:
         # The generated onboarding credential is a one-login bootstrap secret.
         # Mark it consumed atomically before returning the forced-change session.

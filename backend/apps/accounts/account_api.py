@@ -308,9 +308,7 @@ class GitHubLinkView(AccountEndpoint):
 
 class UploadInput(serializers.Serializer[dict[str, Any]]):
     attested = serializers.BooleanField(required=True)
-    files = serializers.ListField(
-        child=serializers.FileField(), required=True, allow_empty=False
-    )
+    files = serializers.ListField(child=serializers.FileField(), required=True, allow_empty=False)
 
 
 class ActivityUploadView(AccountEndpoint):
@@ -388,9 +386,7 @@ def _batch_payload(batch: ActivityUploadBatch) -> dict[str, Any]:
 class ActivityUploadBatchView(AccountEndpoint):
     throttle_classes = (PlayerSessionThrottle,)
 
-    @extend_schema(
-        responses={200: ActivityUploadBatchSerializer}, tags=["game-activities"]
-    )
+    @extend_schema(responses={200: ActivityUploadBatchSerializer}, tags=["game-activities"])
     def get(self, request: Any, batch_id: Any) -> Response:
         player = _session_player(request)
         if player is None:
