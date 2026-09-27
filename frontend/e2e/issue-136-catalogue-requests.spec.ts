@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page, type Request } from '@playwright/test'
 
 const routeData = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -29,7 +29,7 @@ const json = (body: unknown) => ({
   body: JSON.stringify(body),
 })
 
-async function installFixtures(page: Page, requests: string[]) {
+async function installFixtures(page: Page, requests: string[], abortedRequests: string[]) {
   await page.route('**/styles/liberty*', (route) =>
     route.fulfill(
       json({
@@ -41,17 +41,70 @@ async function installFixtures(page: Page, requests: string[]) {
       }),
     ),
   )
+  type HeldRequest = {
+    release: () => void
+    cancellationCandidate: boolean
+    canceled: boolean
+  }
   let initialListRequests = 0
-  const releaseInitialLists: Array<() => void> = []
+  const releaseInitialLists = new Map<Request, HeldRequest>()
+  let latestListCandidate: HeldRequest | undefined
+  let resolveInitialListHeld: (() => void) | undefined
+  const initialListHeld = new Promise<void>((resolve) => {
+    resolveInitialListHeld = resolve
+  })
   let initialViewportRequests = 0
-  const releaseInitialViewports: Array<() => void> = []
+  const releaseInitialViewports = new Map<Request, HeldRequest>()
+  let latestViewportCandidate: HeldRequest | undefined
+  let resolveInitialViewportHeld: (() => void) | undefined
+  const initialViewportHeld = new Promise<void>((resolve) => {
+    resolveInitialViewportHeld = resolve
+  })
+  let observeCancellations = false
+  page.on('requestfailed', (request) => {
+    const requestUrl = new URL(request.url())
+    // Let only the matching intercepted handler finish after the browser has cancelled it.
+    // Releasing another same-type request can leak a stale response into the final list.
+    const heldList = releaseInitialLists.get(request)
+    releaseInitialLists.delete(request)
+    const heldViewport = releaseInitialViewports.get(request)
+    releaseInitialViewports.delete(request)
+    if (heldList) heldList.canceled = true
+    if (heldViewport) heldViewport.canceled = true
+    heldList?.release()
+    heldViewport?.release()
+    if (!observeCancellations || !/abort/i.test(request.failure()?.errorText ?? '')) return
+    if (heldList?.cancellationCandidate || heldViewport?.cancellationCandidate)
+      abortedRequests.push(requestUrl.toString())
+  })
   await page.route('**/api/v1/routes/**', async (route) => {
-    const requestUrl = new URL(route.request().url())
+    const request = route.request()
+    const requestUrl = new URL(request.url())
     requests.push(requestUrl.toString())
     if (requestUrl.pathname.endsWith('/viewport/') && !requestUrl.searchParams.has('search')) {
       initialViewportRequests += 1
       if (initialViewportRequests <= 2) {
-        await new Promise<void>((resolve) => releaseInitialViewports.push(resolve))
+        if (latestViewportCandidate) latestViewportCandidate.cancellationCandidate = false
+        const held: HeldRequest = {
+          release: () => undefined,
+          cancellationCandidate: true,
+          canceled: false,
+        }
+        latestViewportCandidate = held
+        await new Promise<void>((resolve) => {
+          held.release = resolve
+          releaseInitialViewports.set(request, held)
+          resolveInitialViewportHeld?.()
+        })
+        releaseInitialViewports.delete(request)
+        if (held.canceled) {
+          try {
+            await route.abort()
+          } catch {
+            // The browser may have already aborted the request.
+          }
+          return
+        }
         try {
           await route.fulfill(
             json({ mode: 'routes', zoom: 8, cells: [], routes: [], truncated: false }),
@@ -83,13 +136,32 @@ async function installFixtures(page: Page, requests: string[]) {
           truncated: false,
         }),
       )
-      releaseInitialViewports.splice(0).forEach((release) => release())
       return
     }
 
     if (!requestUrl.searchParams.has('search') && initialListRequests < 2) {
       initialListRequests += 1
-      await new Promise<void>((resolve) => releaseInitialLists.push(resolve))
+      if (latestListCandidate) latestListCandidate.cancellationCandidate = false
+      const held: HeldRequest = {
+        release: () => undefined,
+        cancellationCandidate: true,
+        canceled: false,
+      }
+      latestListCandidate = held
+      await new Promise<void>((resolve) => {
+        held.release = resolve
+        releaseInitialLists.set(request, held)
+        if (initialListRequests === 2) resolveInitialListHeld?.()
+      })
+      releaseInitialLists.delete(request)
+      if (held.canceled) {
+        try {
+          await route.abort()
+        } catch {
+          // The browser may have already aborted the request.
+        }
+        return
+      }
       try {
         await route.fulfill(json({ count: 1, next: null, previous: null, results: [routeData] }))
       } catch {
@@ -98,8 +170,15 @@ async function installFixtures(page: Page, requests: string[]) {
       return
     }
     await route.fulfill(json({ count: 1, next: null, previous: null, results: [filteredRoute] }))
-    releaseInitialLists.splice(0).forEach((release) => release())
   })
+  return {
+    waitForPendingRequests: () => Promise.all([initialListHeld, initialViewportHeld]),
+    startObservingCancellations: () => {
+      // Ignore startup cancellations and observe only failures caused by the upcoming filter input.
+      abortedRequests.splice(0)
+      observeCancellations = true
+    },
+  }
 }
 
 test('debounces catalogue typing, cancels the old list, and keeps final list and map requests', async ({
@@ -107,18 +186,13 @@ test('debounces catalogue typing, cancels the old list, and keeps final list and
 }) => {
   const requests: string[] = []
   const abortedRequests: string[] = []
-  page.on('requestfailed', (request) => {
-    if (
-      request.url().includes('/api/v1/routes/') &&
-      /abort/i.test(request.failure()?.errorText ?? '')
-    )
-      abortedRequests.push(request.url())
-  })
-  await installFixtures(page, requests)
+  const fixtures = await installFixtures(page, requests, abortedRequests)
   await page.goto('/')
   await expect(page.locator('.map-canvas')).toHaveAttribute('data-map-ready', 'true')
 
   const search = page.getByRole('searchbox', { name: /search routes/i })
+  await fixtures.waitForPendingRequests()
+  fixtures.startObservingCancellations()
   await search.pressSequentially('ridge', { delay: 10 })
   await expect(page.getByRole('button', { name: /north ridge loop/i })).toBeVisible()
   await page.waitForTimeout(550)
@@ -135,6 +209,11 @@ test('debounces catalogue typing, cancels the old list, and keeps final list and
       (url) => url.includes('/viewport/') && !new URL(url).searchParams.has('search'),
     ),
   ).toBe(true)
+  expect(
+    abortedRequests.some(
+      (url) => !url.includes('/viewport/') && !new URL(url).searchParams.has('search'),
+    ),
+  ).toBe(true)
   expect(listRequests.filter((url) => !new URL(url).searchParams.has('search'))).toHaveLength(2)
   expect(
     listRequests.filter((url) => new URL(url).searchParams.get('search') === 'ridge'),
@@ -143,5 +222,7 @@ test('debounces catalogue typing, cancels the old list, and keeps final list and
   expect(
     viewportRequests.filter((url) => new URL(url).searchParams.get('search') === 'ridge'),
   ).toHaveLength(1)
-  expect(page.getByRole('button', { name: /south ridge loop/i })).not.toBeVisible()
+  await expect(page.getByRole('button', { name: /south ridge loop/i })).not.toBeVisible({
+    timeout: 15_000,
+  })
 })

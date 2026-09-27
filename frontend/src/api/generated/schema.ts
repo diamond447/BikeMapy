@@ -27,6 +27,602 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/game/account/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_account_retrieve']
+    put?: never
+    post?: never
+    delete: operations['v1_game_account_destroy']
+    options?: never
+    head?: never
+    patch: operations['v1_game_account_partial_update']
+    trace?: never
+  }
+  '/api/v1/game/account/activities/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_account_activities_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/activities/{activity_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete: operations['v1_game_account_activities_destroy']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/activities/full-history/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_activities_full_history_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/disconnect/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_disconnect_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/github/link/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_github_link_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/password/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_password_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/refresh/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_refresh_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/uploads/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_account_uploads_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/account/uploads/{batch_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_account_uploads_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/github/onboard/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** @description Store a validated invite in the session before first-time OAuth. */
+    post: operations['v1_game_auth_github_onboard_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/login/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_login_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/logout/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_logout_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/onboard/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_onboard_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/reset/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_local_reset_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/local/reset/{uidb64}/{token}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['game_local_reset_confirm']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/logout/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_auth_logout_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/session/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_auth_session_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/strava/authorize/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_auth_strava_authorize_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/auth/strava/callback/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_auth_strava_callback_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['game_competition_list']
+    put?: never
+    post: operations['v1_game_competitions_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['game_competition_detail']
+    put?: never
+    post?: never
+    delete: operations['v1_game_competitions_destroy']
+    options?: never
+    head?: never
+    patch: operations['v1_game_competitions_partial_update']
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/capture/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Return only the authenticated member's competition capture snapshot. */
+    get: operations['v1_game_competitions_capture_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/leave/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_competitions_leave_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/map/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Return only date-labelled traces inside an authenticated viewport. */
+    get: operations['v1_game_competitions_map_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/members/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description Return a bounded, pseudonymous, cursor-paginated member roster. */
+    get: operations['v1_game_competitions_members_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/members/{player_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete: operations['v1_game_competitions_members_destroy']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/members/me/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch: operations['v1_game_competitions_members_me_partial_update']
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/rotate-invite/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_competitions_rotate_invite_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/sharing-consent/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_competitions_sharing_consent_create']
+    delete: operations['v1_game_competitions_sharing_consent_destroy']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/switch/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_competitions_switch_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/{competition_id}/transfer/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_competitions_transfer_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/competitions/join/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post: operations['v1_game_competitions_join_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_list']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/{route_id}/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/reference-routes/{route_id}/completion/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_reference_routes_completion_retrieve']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/game/webhooks/strava/': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get: operations['v1_game_webhooks_strava_retrieve']
+    put?: never
+    post: operations['v1_game_webhooks_strava_create']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/routes/': {
     parameters: {
       query?: never
@@ -148,20 +744,259 @@ export interface paths {
 export type webhooks = Record<string, never>
 export interface components {
   schemas: {
+    AccountInputRequest: {
+      username: string
+      /** Format: email */
+      email: string
+      invite_code: string
+    }
+    ActivitySync: {
+      status: string
+      mode: string
+      imported_count: number
+      rejected_count: number
+      processed_count: number
+      cursor_page: number
+      last_error: string
+      /** Format: date-time */
+      completed_at: string | null
+    }
+    ActivitySyncResponse: {
+      sync: components['schemas']['ActivitySync']
+    }
+    ActivityUploadBatch: {
+      /** Format: uuid */
+      batch_id: string
+      status: string
+      total_files: number
+      processed_files: number
+      accepted_files: number
+      duplicate_files: number
+      failed_files: number
+      files: components['schemas']['ActivityUploadResult'][]
+    }
+    ActivityUploadResult: {
+      name: string
+      status: string
+      error_code: string
+      error_detail: string
+      activity_id: string | null
+    }
     /** @description Accept only known event names and no other event metadata. */
-    AnalyticsEvent: {
+    AnalyticsEventRequest: {
       event: components['schemas']['EventEnum']
     }
+    CaptureErrorResponse: {
+      detail: string
+      code?: string
+    }
+    CaptureFace: {
+      id: number
+      geometry: unknown
+      /** Format: decimal */
+      area_m2: string
+      /** Format: date */
+      effective_date: string | null
+      shared: boolean
+      owners: components['schemas']['CaptureOwner'][]
+    }
+    CaptureMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+      /** Format: decimal */
+      area_m2: string
+      rank: number
+      monthly_net_change_m2: components['schemas']['MonthlyChange'][]
+    }
+    CaptureOwner: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      /** Format: decimal */
+      shared_area_m2: string
+    }
+    CaptureResponse: {
+      status: components['schemas']['CaptureResponseStatusEnum']
+      is_final: boolean
+      /** Format: uuid */
+      competition_id: string
+      generation: number | null
+      snapshot_generation: number | null
+      /** Format: date-time */
+      calculated_at: string | null
+      has_published_snapshot: boolean
+      faces: components['schemas']['CaptureFace'][]
+      returned_face_count: number
+      truncated: boolean
+      members: components['schemas']['CaptureMember'][]
+      help: {
+        [key: string]: string
+      }
+      limits: {
+        [key: string]: number
+      }
+    }
+    /**
+     * @description * `fresh` - fresh
+     *     * `pending` - pending
+     *     * `failed` - failed
+     *     * `empty` - empty
+     * @enum {string}
+     */
+    CaptureResponseStatusEnum: 'fresh' | 'pending' | 'failed' | 'empty'
     Category: {
       slug: string
       name: string
       description?: string
+    }
+    Competition: {
+      /** Format: uuid */
+      id: string
+      name: string
+      invite_code: string
+      owner_player_id: number
+      is_owner: boolean
+      is_active: boolean
+      is_selected: boolean
+      color: string
+      /** Format: date-time */
+      created_at: string
+      members: components['schemas']['CompetitionMember'][]
+      members_truncated: boolean
+      roster_count: number
+      roster_truncated: boolean
+      sharing_scope: components['schemas']['SharingScopeEnum']
+    }
+    /**
+     * @description * `available` - available
+     *     * `consent_required` - consent_required
+     *     * `competition_disabled` - competition_disabled
+     * @enum {string}
+     */
+    CompetitionAccessEnum: 'available' | 'consent_required' | 'competition_disabled'
+    CompetitionCreateRequest: {
+      name: string
+      color?: string
+    }
+    CompetitionErrorResponse: {
+      detail: string
+      code?: string
+      fields?: {
+        [key: string]: string[]
+      }
+    }
+    CompetitionJoinRequest: {
+      invite_code: string
+      color?: string
+    }
+    CompetitionMapActivity: {
+      /** Format: uuid */
+      id: string
+      player_id: number
+      /** Format: date */
+      calendar_date: string | null
+      geometry: unknown
+    }
+    CompetitionMapMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+    }
+    CompetitionMapResponse: {
+      status: components['schemas']['CompetitionMapResponseStatusEnum']
+      /** Format: uuid */
+      competition_id: string
+      members: components['schemas']['CompetitionMapMember'][]
+      activities: components['schemas']['CompetitionMapActivity'][]
+      truncated: boolean
+      limits: {
+        [key: string]: number
+      }
+      bounds: {
+        [key: string]: number
+      }
+    }
+    /**
+     * @description * `loaded` - loaded
+     *     * `empty` - empty
+     *     * `syncing` - syncing
+     * @enum {string}
+     */
+    CompetitionMapResponseStatusEnum: 'loaded' | 'empty' | 'syncing'
+    CompetitionMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+    }
+    CompetitionResponse: {
+      competition: components['schemas']['Competition']
+    }
+    CompetitionRosterMember: {
+      player_id: number
+      display_name: string
+      nickname: string | null
+      color: string
+      is_owner: boolean
+      sharing_active: boolean
+    }
+    CompetitionRosterResponse: {
+      members: components['schemas']['CompetitionRosterMember'][]
+      next_cursor: string | null
+      has_more: boolean
+    }
+    CompetitionSharingConsentRequest: {
+      scope: components['schemas']['ScopeEnum']
+      disclosure_version: string
+      confirmed: boolean
+    }
+    CompetitionTransferRequest: {
+      player_id: number
+    }
+    CompetitionsResponse: {
+      competitions: components['schemas']['Competition'][]
+      /** Format: uuid */
+      active_competition_id: string | null
+    }
+    CompletionMonthly: {
+      /** Format: date */
+      month: string
+      /** Format: decimal */
+      covered_length_meters: string
+      /** Format: decimal */
+      gain_length_meters: string
+    }
+    CompletionProjection: {
+      status: string
+      /** Format: decimal */
+      total_length_meters: string
+      /** Format: decimal */
+      covered_length_meters: string
+      /** Format: decimal */
+      completion_percent: string
+      /** Format: date-time */
+      calculated_at: string | null
+      error: string
+      covered_geometry: unknown
+      monthly: components['schemas']['CompletionMonthly'][]
+      partial: boolean
+      sync_status: string
     }
     ElevationProfilePoint: {
       /** Format: double */
       distance_m: number
       /** Format: double */
       elevation_m: number
+    }
+    ErrorResponse: {
+      detail: string
     }
     /**
      * @description * `route_detail_view` - Route-detail view
@@ -180,12 +1015,40 @@ export interface components {
       /** Format: date-time */
       posted_at?: string | null
     }
+    InviteInputRequest: {
+      invite_code: string
+    }
+    LifecycleResponse: {
+      lifecycle: string
+    }
+    LoginInputRequest: {
+      identifier: string
+      password: string
+    }
     /**
      * @description * `heatmap` - heatmap
      *     * `routes` - routes
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
+    MonthlyChange: {
+      month: string
+      /** Format: decimal */
+      net_change_m2: string
+    }
+    PaginatedReferenceRouteListList: {
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cD00ODY%3D"
+       */
+      next?: string | null
+      /**
+       * Format: uri
+       * @example http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+       */
+      previous?: string | null
+      results: components['schemas']['ReferenceRouteList'][]
+    }
     PaginatedRouteList: {
       /** @example 123 */
       count: number
@@ -201,6 +1064,40 @@ export interface components {
       previous?: string | null
       results: components['schemas']['Route'][]
     }
+    PasswordInputRequest: {
+      password: string
+    }
+    PatchedCompetitionColorRequest: {
+      color?: string
+    }
+    PatchedCompetitionRenameRequest: {
+      name?: string
+    }
+    PatchedNicknameRequestRequest: {
+      nickname?: string
+    }
+    Player: {
+      id: string
+      athlete_id: string | null
+      display_name: string
+      /** Format: uri */
+      profile_image_url: string | null
+      nickname: string | null
+      lifecycle: string
+      /** Format: date-time */
+      connected_at: string
+      competition_game_enabled: boolean
+    }
+    PlayerResponse: {
+      player: components['schemas']['Player']
+    }
+    /**
+     * @description * `pending` - Pending publication review
+     *     * `approved` - Approved
+     *     * `rejected` - Rejected
+     * @enum {string}
+     */
+    PublicationStatusEnum: 'pending' | 'approved' | 'rejected'
     /**
      * @description * `incorrect_route` - Incorrect route
      *     * `source_attribution` - Source or attribution
@@ -211,7 +1108,70 @@ export interface components {
      */
     ReasonEnum:
       'incorrect_route' | 'source_attribution' | 'author_removal' | 'rights_holder' | 'other'
-    ReportSubmission: {
+    ReferenceCompletion: {
+      /** Format: uuid */
+      route_id: string
+      version: number
+      player: components['schemas']['CompletionProjection'] | null
+      competition: components['schemas']['CompletionProjection'] | null
+      competition_access: components['schemas']['CompetitionAccessEnum']
+      stages: {
+        [key: string]: unknown
+      }[]
+      title: string
+      route_number: string
+      source_kind: string
+      geometry: unknown
+      attribution: {
+        [key: string]: unknown
+      }
+    }
+    ReferenceRoute: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+      readonly source_kind: string
+      readonly version: number
+      readonly version_attribution_metadata: {
+        [key: string]: unknown
+      }
+      readonly geometry: unknown
+      readonly stages: components['schemas']['ReferenceStage'][]
+    }
+    ReferenceRouteList: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      operator?: string
+      network?: string
+      publication_status?: components['schemas']['PublicationStatusEnum']
+      readonly attribution: {
+        [key: string]: unknown
+      }
+      readonly source_kind: string
+    }
+    ReferenceStage: {
+      /** Format: uuid */
+      readonly id: string
+      source_identifier: string
+      route_number?: string
+      title: string
+      readonly geometry: unknown
+      readonly attribution: {
+        [key: string]: unknown
+      }
+    }
+    ReportSubmissionRequest: {
       reason: components['schemas']['ReasonEnum']
       message: string
       /** Format: email */
@@ -220,6 +1180,10 @@ export interface components {
       email?: string
       turnstile_token: string
       website?: string
+    }
+    ResetInputRequest: {
+      /** Format: email */
+      email: string
     }
     Route: {
       /** Format: uuid */
@@ -251,6 +1215,19 @@ export interface components {
       /** Format: date-time */
       readonly updated_at: string
     }
+    /**
+     * @description * `recent` - recent
+     *     * `full_history` - full_history
+     * @enum {string}
+     */
+    ScopeEnum: 'recent' | 'full_history'
+    /**
+     * @description * `none` - none
+     *     * `recent` - recent
+     *     * `full_history` - full_history
+     * @enum {string}
+     */
+    SharingScopeEnum: 'none' | 'recent' | 'full_history'
     SourceAttribution: {
       /** Format: uri */
       mapy_url: string
@@ -272,6 +1249,18 @@ export interface components {
         type: 'Point' | 'LineString' | 'MultiLineString' | 'Polygon' | 'MultiPolygon'
         coordinates: number[] | number[][] | number[][][] | number[][][][]
       } | null
+    }
+    StravaWebhookPayloadRequest: {
+      object_type: string
+      object_id: number
+      owner_id: number
+      aspect_type: string
+      event_time: number
+      subscription_id: number
+    }
+    UploadInputRequest: {
+      attested: boolean
+      files: string[]
     }
     Variant: {
       /** Format: uuid */
@@ -318,14 +1307,1822 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['AnalyticsEvent']
-        'application/x-www-form-urlencoded': components['schemas']['AnalyticsEvent']
-        'multipart/form-data': components['schemas']['AnalyticsEvent']
+        'application/json': components['schemas']['AnalyticsEventRequest']
+        'application/x-www-form-urlencoded': components['schemas']['AnalyticsEventRequest']
+        'multipart/form-data': components['schemas']['AnalyticsEventRequest']
       }
     }
     responses: {
       /** @description Event accepted for aggregation. */
       202: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PlayerResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_account_destroy: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Player account deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_account_partial_update: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: {
+      content: {
+        'application/json': components['schemas']['PatchedNicknameRequestRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedNicknameRequestRequest']
+        'multipart/form-data': components['schemas']['PatchedNicknameRequestRequest']
+      }
+    }
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PlayerResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_account_activities_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivitySyncResponse']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The private game is unavailable. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_activities_destroy: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        activity_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Activity deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_activities_full_history_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivitySyncResponse']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The private game is unavailable. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_disconnect_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['LifecycleResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_account_github_link_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Explicit linking URL. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_password_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PasswordInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInputRequest']
+        'multipart/form-data': components['schemas']['PasswordInputRequest']
+      }
+    }
+    responses: {
+      /** @description Password changed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_account_refresh_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PlayerResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_account_uploads_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['UploadInputRequest']
+      }
+    }
+    responses: {
+      202: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivityUploadBatch']
+        }
+      }
+    }
+  }
+  v1_game_account_uploads_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        batch_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ActivityUploadBatch']
+        }
+      }
+    }
+  }
+  v1_game_auth_github_onboard_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['InviteInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['InviteInputRequest']
+        'multipart/form-data': components['schemas']['InviteInputRequest']
+      }
+    }
+    responses: {
+      /** @description OAuth URL stored. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_login_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LoginInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['LoginInputRequest']
+        'multipart/form-data': components['schemas']['LoginInputRequest']
+      }
+    }
+    responses: {
+      /** @description Signed in. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid credentials. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_logout_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Signed out. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_onboard_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AccountInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['AccountInputRequest']
+        'multipart/form-data': components['schemas']['AccountInputRequest']
+      }
+    }
+    responses: {
+      /** @description Account created. */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid request. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_local_reset_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ResetInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['ResetInputRequest']
+        'multipart/form-data': components['schemas']['ResetInputRequest']
+      }
+    }
+    responses: {
+      /** @description Reset request accepted. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  game_local_reset_confirm: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        token: string
+        uidb64: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PasswordInputRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PasswordInputRequest']
+        'multipart/form-data': components['schemas']['PasswordInputRequest']
+      }
+    }
+    responses: {
+      /** @description Password reset. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_logout_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Player session ended. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_auth_session_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PlayerResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_auth_strava_authorize_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Redirect to Strava authorization. */
+      302: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_auth_strava_callback_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Redirect to the game after OAuth completion. */
+      302: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ErrorResponse']
+        }
+      }
+    }
+  }
+  game_competition_list: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionsResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CompetitionCreateRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionCreateRequest']
+        'multipart/form-data': components['schemas']['CompetitionCreateRequest']
+      }
+    }
+    responses: {
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  game_competition_detail: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_destroy: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Competition deleted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_partial_update: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: {
+      content: {
+        'application/json': components['schemas']['PatchedCompetitionRenameRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionRenameRequest']
+        'multipart/form-data': components['schemas']['PatchedCompetitionRenameRequest']
+      }
+    }
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_capture_retrieve: {
+    parameters: {
+      query: {
+        east: number
+        member?: number[]
+        north: number
+        south: number
+        west: number
+        zoom: number
+      }
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
+      }
+      413: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CaptureErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_leave_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Membership removed. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_map_retrieve: {
+    parameters: {
+      query: {
+        east: number
+        member?: number[]
+        north: number
+        south: number
+        west: number
+        zoom: number
+      }
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionMapResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_members_retrieve: {
+    parameters: {
+      query?: {
+        cursor?: string
+        search?: string
+      }
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionRosterResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_members_destroy: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+        player_id: number
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Member removed. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_members_me_partial_update: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: {
+      content: {
+        'application/json': components['schemas']['PatchedCompetitionColorRequest']
+        'application/x-www-form-urlencoded': components['schemas']['PatchedCompetitionColorRequest']
+        'multipart/form-data': components['schemas']['PatchedCompetitionColorRequest']
+      }
+    }
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_rotate_invite_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_sharing_consent_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CompetitionSharingConsentRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionSharingConsentRequest']
+        'multipart/form-data': components['schemas']['CompetitionSharingConsentRequest']
+      }
+    }
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_sharing_consent_destroy: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_switch_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_transfer_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        competition_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CompetitionTransferRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionTransferRequest']
+        'multipart/form-data': components['schemas']['CompetitionTransferRequest']
+      }
+    }
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_competitions_join_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CompetitionJoinRequest']
+        'application/x-www-form-urlencoded': components['schemas']['CompetitionJoinRequest']
+        'multipart/form-data': components['schemas']['CompetitionJoinRequest']
+      }
+    }
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionResponse']
+        }
+      }
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CompetitionErrorResponse']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_list: {
+    parameters: {
+      query?: {
+        competition_id?: string
+        cursor?: string
+        page_size?: number
+        route_number?: string
+        source?: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PaginatedReferenceRouteListList']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceRoute']
+        }
+      }
+    }
+  }
+  v1_game_reference_routes_completion_retrieve: {
+    parameters: {
+      query?: {
+        competition_id?: string
+      }
+      header?: never
+      path: {
+        route_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ReferenceCompletion']
+        }
+      }
+      /** @description Authentication required. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Reference route not found. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_webhooks_strava_retrieve: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Verified Strava subscription challenge. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid subscription challenge. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid challenge. */
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  v1_game_webhooks_strava_create: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['StravaWebhookPayloadRequest']
+        'application/x-www-form-urlencoded': components['schemas']['StravaWebhookPayloadRequest']
+        'multipart/form-data': components['schemas']['StravaWebhookPayloadRequest']
+      }
+    }
+    responses: {
+      /** @description Webhook accepted. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Invalid Strava event. */
+      400: {
         headers: {
           [name: string]: unknown
         }
@@ -452,9 +3249,9 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['ReportSubmission']
-        'application/x-www-form-urlencoded': components['schemas']['ReportSubmission']
-        'multipart/form-data': components['schemas']['ReportSubmission']
+        'application/json': components['schemas']['ReportSubmissionRequest']
+        'application/x-www-form-urlencoded': components['schemas']['ReportSubmissionRequest']
+        'multipart/form-data': components['schemas']['ReportSubmissionRequest']
       }
     }
     responses: {
