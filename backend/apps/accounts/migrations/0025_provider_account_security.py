@@ -1,10 +1,32 @@
 from django.db import migrations, models
 
 
+def collapse_legacy_redemptions(apps, schema_editor):
+    Redemption = apps.get_model("accounts", "CompetitionInviteRedemption")
+    seen = set()
+    duplicate_ids = []
+    for redemption in Redemption.objects.order_by("competition_id", "code_digest", "pk"):
+        key = (redemption.competition_id, redemption.code_digest)
+        if key in seen:
+            duplicate_ids.append(redemption.pk)
+        else:
+            seen.add(key)
+    if duplicate_ids:
+        Redemption.objects.filter(pk__in=duplicate_ids).delete()
+
+
+def reverse_legacy_redemptions(apps, schema_editor):
+    # The removed rows are historical duplicates and cannot be reconstructed
+    # without retaining a second audit table; the unique index rollback is
+    # still safe and complete.
+    return None
+
+
 class Migration(migrations.Migration):
     dependencies = [("accounts", "0024_player_must_change_password_and_more")]
 
     operations = [
+        migrations.RunPython(collapse_legacy_redemptions, reverse_legacy_redemptions),
         migrations.AddConstraint(
             model_name="competitioninviteredemption",
             constraint=models.UniqueConstraint(
