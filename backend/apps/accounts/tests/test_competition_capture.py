@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -17,6 +18,7 @@ from apps.accounts.competition_services import (
     create_competition,
     grant_sharing_consent,
     join_competition,
+    sharing_cutoff_date,
     withdraw_sharing_consent,
 )
 from apps.accounts.models import CaptureCalculation, CapturePlayerArea, ImportedActivity, Player
@@ -145,33 +147,33 @@ def test_capture_obeys_competition_rollout_gate() -> None:
 
 
 @override_settings(**SETTINGS)
-def test_withdrawn_member_is_removed_from_historical_capture_disclosures() -> None:
+def test_recent_scope_hides_historical_capture_without_activity_date_provenance() -> None:
     owner = make_player(608)
     member = make_player(609)
     competition, _ = create_competition(owner, name="Retained capture history")
     join_competition(member, invite_code=competition.invite_code)
-    grant_sharing_consent(
-        owner,
-        competition,
-        scope="recent",
-        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
-        confirmed=True,
-    )
-    grant_sharing_consent(
-        member,
-        competition,
-        scope="full_history",
-        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
-        confirmed=True,
-    )
+    for player in (owner, member):
+        grant_sharing_consent(
+            player,
+            competition,
+            scope="full_history",
+            disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+            confirmed=True,
+        )
 
     competition.refresh_from_db()
+    cutoff_date = sharing_cutoff_date(datetime(2026, 9, 28, 12, tzinfo=UTC))
+    prague = ZoneInfo("Europe/Prague")
+    pre_cutoff_snapshot_at = datetime.combine(
+        cutoff_date - timedelta(days=1), time(23, 59), tzinfo=prague
+    ).astimezone(UTC)
+    post_cutoff_snapshot_at = datetime.combine(cutoff_date, time(12), tzinfo=prague).astimezone(UTC)
     old_calculation = CaptureCalculation.objects.create(
         competition=competition,
         generation=competition.capture_revision + 100,
         algorithm_version="test-old-capture",
         status=CaptureCalculation.Status.FRESH,
-        published_at=datetime(2025, 1, 15, tzinfo=UTC),
+        published_at=pre_cutoff_snapshot_at,
     )
     CapturePlayerArea.objects.create(
         calculation=old_calculation,
@@ -179,10 +181,34 @@ def test_withdrawn_member_is_removed_from_historical_capture_disclosures() -> No
         owner_key=f"owner:{owner.pk}:old",
         owned_area_m2="777.000",
     )
+    post_cutoff_old_scope_calculation = CaptureCalculation.objects.create(
+        competition=competition,
+        generation=competition.capture_revision + 101,
+        algorithm_version="test-post-cutoff-old-scope",
+        status=CaptureCalculation.Status.FRESH,
+        # This snapshot is after the exact cutoff date but was produced under
+        # the former full-history scope and carries no source-date provenance.
+        published_at=post_cutoff_snapshot_at,
+    )
+    CapturePlayerArea.objects.create(
+        calculation=post_cutoff_old_scope_calculation,
+        player=owner,
+        owner_key=f"owner:{owner.pk}:post-cutoff-old-scope",
+        owned_area_m2="888.000",
+    )
+
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    competition.refresh_from_db()
     calculation = CaptureCalculation.objects.get(
         competition=competition, generation=competition.capture_revision
     )
-    calculated_at = datetime(2026, 9, 15, tzinfo=UTC)
+    calculated_at = datetime(2026, 9, 29, 12, tzinfo=UTC)
     calculation.status = CaptureCalculation.Status.FRESH
     calculation.is_current = True
     calculation.published_at = calculated_at
@@ -209,9 +235,7 @@ def test_withdrawn_member_is_removed_from_historical_capture_disclosures() -> No
     )
 
     assert [row["player_id"] for row in payload["members"]] == [owner.pk]
-    assert payload["members"][0]["monthly_net_change_m2"] == [
-        {"month": "2026-09", "net_change_m2": 20.0}
-    ]
+    assert payload["members"][0]["monthly_net_change_m2"] == []
 
 
 @override_settings(**SETTINGS)

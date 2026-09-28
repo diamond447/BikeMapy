@@ -132,6 +132,8 @@ export function CaptureDashboard({
   const loadCaptureRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
   const requestSequence = useRef(0)
   const requestController = useRef<AbortController | null>(null)
+  const captureAccessBlocked = useRef(false)
+  const previousCompetitionId = useRef(competitionId)
   const lastRequestKey = useRef<string | null>(null)
   const suppressMoveRequestUntil = useRef(0)
   const renderSequence = useRef(0)
@@ -139,7 +141,14 @@ export function CaptureDashboard({
 
   const loadCapture = useCallback(
     async (force = false) => {
-      if (!competitionId || !mapLoaded.current || !map.current) return
+      if (
+        !competitionId ||
+        signedOut ||
+        captureAccessBlocked.current ||
+        !mapLoaded.current ||
+        !map.current
+      )
+        return
       const current = bounds.current
       const visibleIds = visibility.competitionId === competitionId ? visibility.members : null
       const requestKey = JSON.stringify([
@@ -181,7 +190,11 @@ export function CaptureDashboard({
           notifyGameMapReset('auth-loss')
           return
         }
-        if (result.response?.status === 404 || !result.data) throw new Error('capture')
+        if (result.response?.status === 404) {
+          notifyGameMapReset('competition-access-revoked')
+          return
+        }
+        if (!result.data) throw new Error('capture')
         if (result.data.competition_id !== competitionId) return
         setCaptureSourceLoaded(false)
         setCapture(result.data)
@@ -196,7 +209,7 @@ export function CaptureDashboard({
         if (sequence === requestSequence.current) setLoading(false)
       }
     },
-    [competitionId, copy.gameCaptureError, visibility],
+    [competitionId, copy.gameCaptureError, signedOut, visibility],
   )
 
   useEffect(() => {
@@ -205,6 +218,7 @@ export function CaptureDashboard({
 
   useEffect(() => {
     const unsubscribe = subscribeToGameDataRefresh(() => {
+      captureAccessBlocked.current = false
       if (mapLoaded.current) void loadCaptureRef.current(true)
     })
     return unsubscribe
@@ -212,6 +226,7 @@ export function CaptureDashboard({
 
   useEffect(() => {
     const unsubscribe = subscribeToGameMapReset(() => {
+      captureAccessBlocked.current = true
       requestSequence.current += 1
       requestController.current?.abort()
       requestController.current = null
@@ -243,6 +258,10 @@ export function CaptureDashboard({
     requestController.current?.abort()
     requestController.current = null
     lastRequestKey.current = null
+    if (previousCompetitionId.current !== competitionId) {
+      previousCompetitionId.current = competitionId
+      captureAccessBlocked.current = false
+    }
     const source = map.current?.getSource('capture-territory') as GeoJSONSource | undefined
     source?.setData({ type: 'FeatureCollection', features: [] })
     mapNode.current?.removeAttribute('data-capture-response-loaded')

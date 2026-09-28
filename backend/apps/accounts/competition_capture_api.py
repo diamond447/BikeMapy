@@ -29,8 +29,8 @@ from .competition_map_api import (
     _viewport_parts,
 )
 from .competition_services import (
+    SHARING_SCOPES,
     competition_member_label,
-    sharing_cutoff_date,
     sharing_is_active,
 )
 from .game_api import GameEndpoint, _private
@@ -179,10 +179,11 @@ def _monthly_area(
     totals: dict[int, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     previous: dict[int, Decimal] = {}
     prague = ZoneInfo("Europe/Prague")
-    scope_by_player = {
-        membership.player_id: membership.sharing_scope for membership in disclosed_memberships
+    full_history_ids = {
+        membership.player_id
+        for membership in disclosed_memberships
+        if membership.sharing_scope == CompetitionMembership.SharingScope.FULL_HISTORY
     }
-    recent_cutoff_month = sharing_cutoff_date().strftime("%Y-%m")
 
     for calculation in calculations:
         if calculation.published_at is None:
@@ -191,12 +192,10 @@ def _monthly_area(
         current = {
             area.player_id: area.owned_area_m2
             for area in calculation.player_areas.all()
-            if area.player_id is not None
-            and area.player_id in scope_by_player
-            and (
-                scope_by_player[area.player_id] == CompetitionMembership.SharingScope.FULL_HISTORY
-                or month >= recent_cutoff_month
-            )
+            # CapturePlayerArea stores only aggregate area, without activity-date
+            # provenance. Historical snapshots therefore cannot safely support
+            # recent-scope monthly disclosures across an exact moving cutoff.
+            if area.player_id is not None and area.player_id in full_history_ids
         }
         for player_id in set(previous) | set(current):
             totals[player_id][month] += current.get(player_id, Decimal("0")) - previous.get(
@@ -265,8 +264,10 @@ class CompetitionCaptureView(GameEndpoint):
 
         west, south, east, north, _zoom = _parse_viewport(request)
         memberships = list(
-            competition.memberships.filter(sharing_consent_at__isnull=False)
-            .exclude(sharing_scope=CompetitionMembership.SharingScope.NONE)
+            competition.memberships.filter(
+                sharing_consent_at__isnull=False,
+                sharing_scope__in=SHARING_SCOPES,
+            )
             .select_related("player")
             .order_by("joined_at", "pk")
         )
