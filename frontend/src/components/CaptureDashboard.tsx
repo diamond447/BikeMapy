@@ -9,7 +9,11 @@ import type { GeoJSONSource, MapSourceDataEvent } from 'maplibre-gl'
 
 import { apiClient, rememberCsrfToken } from '../api/client'
 import type { components } from '../api/generated/schema'
-import { subscribeToGameDataRefresh } from '../gameState'
+import {
+  notifyGameMapReset,
+  subscribeToGameDataRefresh,
+  subscribeToGameMapReset,
+} from '../gameState'
 import { MAP_PROVIDER } from '../mapProvider'
 import { setMapLibreWorker } from '../maplibreWorker'
 import type { Copy } from '../i18n/types'
@@ -127,6 +131,7 @@ export function CaptureDashboard({
   const mapLoaded = useRef(false)
   const loadCaptureRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
   const requestSequence = useRef(0)
+  const requestController = useRef<AbortController | null>(null)
   const lastRequestKey = useRef<string | null>(null)
   const suppressMoveRequestUntil = useRef(0)
   const renderSequence = useRef(0)
@@ -149,6 +154,9 @@ export function CaptureDashboard({
       if (!force && lastRequestKey.current === requestKey) return
       lastRequestKey.current = requestKey
       const sequence = ++requestSequence.current
+      requestController.current?.abort()
+      const controller = new AbortController()
+      requestController.current = controller
       setLoading(true)
       setError(null)
       try {
@@ -165,10 +173,14 @@ export function CaptureDashboard({
             },
           },
           credentials: 'include',
+          signal: controller.signal,
         })
         rememberCsrfToken(result.response)
         if (sequence !== requestSequence.current) return
-        if (result.response?.status === 401) return
+        if (result.response?.status === 401) {
+          notifyGameMapReset('auth-loss')
+          return
+        }
         if (result.response?.status === 404 || !result.data) throw new Error('capture')
         if (result.data.competition_id !== competitionId) return
         setCaptureSourceLoaded(false)
@@ -180,6 +192,7 @@ export function CaptureDashboard({
           setError(copy.gameCaptureError)
         }
       } finally {
+        if (requestController.current === controller) requestController.current = null
         if (sequence === requestSequence.current) setLoading(false)
       }
     },
@@ -197,8 +210,38 @@ export function CaptureDashboard({
     return unsubscribe
   }, [])
 
+  useEffect(() => {
+    const unsubscribe = subscribeToGameMapReset(() => {
+      requestSequence.current += 1
+      requestController.current?.abort()
+      requestController.current = null
+      lastRequestKey.current = null
+      setCapture(null)
+      setCaptureSourceLoaded(false)
+      setVisibility({ members: null })
+      setError(null)
+      setErrorCompetitionId(undefined)
+      setLoading(false)
+      const activeMap = map.current
+      const source = activeMap?.getSource('capture-territory') as GeoJSONSource | undefined
+      source?.setData({ type: 'FeatureCollection', features: [] })
+      if (activeMap?.listImages && activeMap.removeImage) {
+        activeMap
+          .listImages()
+          .filter((id) => id.startsWith('capture-hatch-'))
+          .forEach((id) => {
+            activeMap.removeImage(id)
+          })
+      }
+      mapNode.current?.removeAttribute('data-capture-response-loaded')
+    })
+    return unsubscribe
+  }, [])
+
   useLayoutEffect(() => {
     requestSequence.current += 1
+    requestController.current?.abort()
+    requestController.current = null
     lastRequestKey.current = null
     const source = map.current?.getSource('capture-territory') as GeoJSONSource | undefined
     source?.setData({ type: 'FeatureCollection', features: [] })
@@ -261,6 +304,8 @@ export function CaptureDashboard({
     })
     return () => {
       mapLoaded.current = false
+      requestController.current?.abort()
+      requestController.current = null
       instance.remove()
       map.current = null
     }

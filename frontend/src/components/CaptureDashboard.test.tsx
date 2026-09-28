@@ -77,6 +77,7 @@ vi.mock('../api/client', () => ({
 }))
 
 import { apiClient } from '../api/client'
+import { notifyGameMapReset } from '../gameState'
 import { CaptureDashboard, currentPragueMonth, latestMonthlyChange } from './CaptureDashboard'
 import { translations } from '../i18n/translations'
 
@@ -312,5 +313,56 @@ describe('capture territory presentation', () => {
     pending.get('competition-b')?.reject(new Error('offline'))
     expect(await screen.findByRole('alert')).toHaveTextContent(copy.gameCaptureError)
     expect(screen.queryByText('Rider one')).not.toBeInTheDocument()
+  })
+
+  it.each(['logout', 'auth-loss', 'account-deleted', 'strava-disconnect', 'competition-change'])(
+    'clears private capture state on %s and rejects a delayed response',
+    async (reason) => {
+      let resolveCapture: ((value: unknown) => void) | undefined
+      get.mockImplementation(() => new Promise((resolve) => (resolveCapture = resolve)))
+      render(
+        <CaptureDashboard
+          copy={copy}
+          competitions={[competition as never]}
+          competitionId={competition.id}
+          setCompetitionId={vi.fn()}
+          signedOut={false}
+        />,
+      )
+      await waitFor(() => expect(resolveCapture).toBeDefined())
+
+      notifyGameMapReset(reason)
+      expect(screen.queryByText('Rider one')).not.toBeInTheDocument()
+      expect(MockMap.last?.sources['capture-territory']?.setData).toHaveBeenLastCalledWith({
+        type: 'FeatureCollection',
+        features: [],
+      })
+
+      resolveCapture?.(apiResult(capture))
+      await waitFor(() => expect(screen.queryByText('Rider one')).not.toBeInTheDocument())
+      expect(MockMap.last?.sources['capture-territory']?.setData).toHaveBeenLastCalledWith({
+        type: 'FeatureCollection',
+        features: [],
+      })
+    },
+  )
+
+  it('treats a capture 401 as authentication loss and clears the dashboard', async () => {
+    get.mockResolvedValue({ response: new Response(null, { status: 401 }), data: undefined })
+    render(
+      <CaptureDashboard
+        copy={copy}
+        competitions={[competition as never]}
+        competitionId={competition.id}
+        setCompetitionId={vi.fn()}
+        signedOut={false}
+      />,
+    )
+
+    await waitFor(() => expect(screen.queryAllByText('Rider one')).toHaveLength(0))
+    expect(MockMap.last?.sources['capture-territory']?.setData).toHaveBeenLastCalledWith({
+      type: 'FeatureCollection',
+      features: [],
+    })
   })
 })
