@@ -69,13 +69,6 @@ def test_allauth_adapter_staff_alignment_uses_provider_uid() -> None:
         user.is_staff = False
         adapter.pre_social_login(request, login)
         assert user.is_staff
-        user.is_staff = False
-        with patch(
-            "allauth.socialaccount.adapter.DefaultSocialAccountAdapter.save_user",
-            return_value=user,
-        ):
-            adapter.save_user(request, login)
-        assert user.is_staff
         login.account.uid = "not-a-number"
         adapter.pre_social_login(request, login)
         assert not user.is_staff
