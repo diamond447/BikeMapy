@@ -28,6 +28,11 @@ from .competition_map_api import (
     _requested_member_ids,
     _viewport_parts,
 )
+from .competition_services import (
+    SHARING_SCOPES,
+    competition_member_label,
+    sharing_is_active,
+)
 from .game_api import GameEndpoint, _private
 from .models import (
     CaptureCalculation,
@@ -35,7 +40,7 @@ from .models import (
     Competition,
     CompetitionMembership,
 )
-from .services import game_is_available
+from .services import competition_is_available
 
 MAX_FACES = 1_200
 MAX_RESPONSE_BYTES = 4_000_000
@@ -135,8 +140,8 @@ def _member_payload(
 ) -> dict[str, Any]:
     return {
         "player_id": membership.player_id,
-        "display_name": membership.player.strava_display_name,
-        "nickname": membership.player.nickname or None,
+        "display_name": competition_member_label(membership),
+        "nickname": None,
         "color": membership.color,
         "is_owner": membership.player_id == competition.owner_id,
         "area_m2": area,
@@ -159,6 +164,7 @@ def _face_geometry_filter(queryset: Any, parts: list[tuple[float, float, float, 
 
 def _monthly_area(
     calculations: list[CaptureCalculation],
+    disclosed_memberships: list[CompetitionMembership],
 ) -> dict[int, list[dict[str, Any]]]:
     """Return signed area deltas bucketed by each snapshot's completion month.
 
@@ -173,6 +179,11 @@ def _monthly_area(
     totals: dict[int, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     previous: dict[int, Decimal] = {}
     prague = ZoneInfo("Europe/Prague")
+    full_history_ids = {
+        membership.player_id
+        for membership in disclosed_memberships
+        if membership.sharing_scope == CompetitionMembership.SharingScope.FULL_HISTORY
+    }
 
     for calculation in calculations:
         if calculation.published_at is None:
@@ -181,7 +192,10 @@ def _monthly_area(
         current = {
             area.player_id: area.owned_area_m2
             for area in calculation.player_areas.all()
-            if area.player_id is not None
+            # CapturePlayerArea stores only aggregate area, without activity-date
+            # provenance. Historical snapshots therefore cannot safely support
+            # recent-scope monthly disclosures across an exact moving cutoff.
+            if area.player_id is not None and area.player_id in full_history_ids
         }
         for player_id in set(previous) | set(current):
             totals[player_id][month] += current.get(player_id, Decimal("0")) - previous.get(
@@ -218,7 +232,7 @@ class CompetitionCaptureView(GameEndpoint):
         return _private(super().dispatch(request, *args, **kwargs))
 
     def get(self, request: Any, competition_id: UUID) -> Response:
-        if not game_is_available():
+        if not competition_is_available():
             return self.unavailable()
         player = self.player_or_401(request)
         if isinstance(player, Response):
@@ -242,8 +256,21 @@ class CompetitionCaptureView(GameEndpoint):
         if competition is None:
             return _private(Response({"detail": "Competition not found."}, status=404))
 
+        viewer_membership = CompetitionMembership.objects.get(
+            competition=competition, player=player
+        )
+        if not sharing_is_active(viewer_membership):
+            return _private(Response({"detail": "Competition not found."}, status=404))
+
         west, south, east, north, _zoom = _parse_viewport(request)
-        memberships = list(competition.memberships.all())
+        memberships = list(
+            competition.memberships.filter(
+                sharing_consent_at__isnull=False,
+                sharing_scope__in=SHARING_SCOPES,
+            )
+            .select_related("player")
+            .order_by("joined_at", "pk")
+        )
         selected_ids = _capture_member_ids(request, memberships)
         latest = CaptureCalculation.objects.filter(
             competition=competition, generation=competition.capture_revision
@@ -319,7 +346,7 @@ class CompetitionCaptureView(GameEndpoint):
             .order_by("published_at", "generation")
             .prefetch_related("player_areas")
         )
-        monthly = _monthly_area(monthly_calculations)
+        monthly = _monthly_area(monthly_calculations, memberships)
         leaderboard = [
             _member_payload(
                 membership,
@@ -346,8 +373,8 @@ class CompetitionCaptureView(GameEndpoint):
                 owner_payload.append(
                     {
                         "player_id": owner_id,
-                        "display_name": membership.player.strava_display_name,
-                        "nickname": membership.player.nickname or None,
+                        "display_name": competition_member_label(membership),
+                        "nickname": None,
                         "color": membership.color,
                         "shared_area_m2": owner.shared_area_m2,
                     }
