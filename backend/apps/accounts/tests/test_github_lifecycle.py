@@ -13,6 +13,7 @@ from django.db import IntegrityError
 from django.test import Client, override_settings
 from django.urls import reverse
 
+from apps.accounts.authorization import is_owner
 from apps.accounts.models import Competition, CompetitionInviteRedemption, Player
 
 pytestmark = pytest.mark.django_db
@@ -94,7 +95,11 @@ def test_actual_allauth_signup_creates_player_membership_and_redemption() -> Non
 
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)
 def test_first_allowlisted_owner_bootstraps_without_invite_and_reaches_admin() -> None:
+    previous_user = get_user_model().objects.create_user(username="previous-player")
+    previous_player = Player.objects.create(user=previous_user, nickname="Previous")
     request = _request(Client())
+    request.session["player_id"] = previous_player.pk
+    request.session["player_session_epoch"] = previous_player.session_epoch
     with override_settings(GITHUB_OWNER_IDS=frozenset({"8800183"})):
         response = _complete_login(request, _social_login("8800183", "github-owner"))
 
@@ -102,6 +107,8 @@ def test_first_allowlisted_owner_bootstraps_without_invite_and_reaches_admin() -
     assert user.is_staff
     assert SocialAccount.objects.filter(user=user, provider="github", uid="8800183").exists()
     assert not Player.objects.filter(user=user).exists()
+    assert "player_id" not in request.session
+    assert "player_session_epoch" not in request.session
     assert response["Location"] == "/admin/"
 
 
@@ -180,14 +187,17 @@ def test_github_link_url_is_resolved_against_backend_request_origin() -> None:
 
 
 @override_settings(
-    SOCIALACCOUNT_PROVIDERS={"github": {"APP": {"client_id": "client", "secret": "secret"}}}
+    GITHUB_OWNER_IDS=frozenset({"8800186"}),
+    SOCIALACCOUNT_PROVIDERS={"github": {"APP": {"client_id": "client", "secret": "secret"}}},
 )
-def test_actual_allauth_connect_requires_and_consumes_explicit_link_intent() -> None:
+def test_actual_allauth_owner_connect_promotes_admin_and_consumes_intent() -> None:
     user = get_user_model().objects.create_user(username="explicit-link-rider")
     player = Player.objects.create(user=user, nickname="Link rider")
     client = Client()
     request = _request(client)
     request.user = user
+    request.session["player_id"] = player.pk
+    request.session["player_session_epoch"] = player.session_epoch
     request.session["github_link_intent"] = "single-use-intent"
     request.session["github_link_player_id"] = str(player.pk)
     request.session["github_link_epoch"] = player.session_epoch
@@ -197,7 +207,12 @@ def test_actual_allauth_connect_requires_and_consumes_explicit_link_intent() -> 
     response = _complete_login(request, sociallogin)
 
     assert SocialAccount.objects.get(provider="github", uid="8800186").user_id == user.pk
-    assert response["Location"] == "http://localhost:5173/game"
+    user.refresh_from_db()
+    assert user.is_staff
+    assert is_owner(user, request)
+    assert response["Location"] == "/admin/"
+    assert request.session["player_id"] == player.pk
+    assert request.session["player_session_epoch"] == player.session_epoch
     assert "github_link_intent" not in request.session
     assert "github_link_player_id" not in request.session
     assert "github_link_epoch" not in request.session
@@ -216,3 +231,19 @@ def test_authenticated_player_github_login_without_link_intent_cannot_merge() ->
     assert response.status_code == 302
     assert response["Location"] == "http://localhost:5173/game?game_auth=link_required"
     assert not SocialAccount.objects.filter(provider="github", uid="8800187").exists()
+
+
+@override_settings(**_game_settings(), PLAYER_ACCOUNTS_ENABLED=True)
+def test_authenticated_player_can_reauthenticate_its_exact_linked_github_account() -> None:
+    user = get_user_model().objects.create_user(username="returning-linked-player")
+    player = Player.objects.create(user=user, nickname="Linked rider")
+    SocialAccount.objects.create(user=user, provider="github", uid="8800188")
+    request = _request(Client())
+    request.user = user
+
+    response = _complete_login(request, _social_login("8800188", "provider-profile"))
+
+    assert response.status_code == 302
+    assert response["Location"] == "http://localhost:5173/game"
+    assert request.session["player_id"] == player.pk
+    assert request.session["player_session_epoch"] == player.session_epoch

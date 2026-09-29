@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from allauth.account.adapter import DefaultAccountAdapter
 from allauth.core.exceptions import ImmediateHttpResponse
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
+from allauth.socialaccount.models import SocialAccount
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
@@ -38,7 +39,10 @@ class OwnerAccountAdapter(DefaultAccountAdapter):
         if player is not None:
             request.session["player_id"] = player.pk
             request.session["player_session_epoch"] = player.session_epoch
-            request.session.save()
+        else:
+            request.session.pop("player_id", None)
+            request.session.pop("player_session_epoch", None)
+        request.session.save()
 
     def _redirect_for_user(self, user: Any) -> str:
         from allauth.socialaccount.models import SocialAccount
@@ -87,9 +91,22 @@ class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
             getattr(request.user, "is_authenticated", False)
             and Player.objects.filter(user_id=getattr(request.user, "pk", None)).exists()
         ):
-            # A custom local session must explicitly opt into linking.  Do not
-            # let a normal social login silently replace or merge identities.
-            raise ImmediateHttpResponse(_game_redirect("link_required"))
+            existing_account = getattr(sociallogin, "account", None)
+            same_linked_identity = bool(
+                getattr(sociallogin, "is_existing", False)
+                and getattr(sociallogin.user, "pk", None) == request.user.pk
+                and getattr(existing_account, "provider", None) == "github"
+                and SocialAccount.objects.filter(
+                    user_id=request.user.pk,
+                    provider="github",
+                    uid=getattr(existing_account, "uid", None),
+                ).exists()
+            )
+            if not same_linked_identity:
+                # A local player can reauthenticate a GitHub account already
+                # linked to this exact user. Other identities still require an
+                # explicit, session-bound connect intent.
+                raise ImmediateHttpResponse(_game_redirect("link_required"))
         # Test doubles and older allauth versions do not expose ``is_existing``;
         # preserve their established owner-admin behavior while real new
         # social logins remain invite-gated.
@@ -129,7 +146,33 @@ class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
             "github_link_epoch",
         ):
             request.session.pop(key, None)
+        linked_to_current_user = SocialAccount.objects.filter(
+            user_id=request.user.pk,
+            provider="github",
+            uid=getattr(socialaccount, "uid", None),
+        ).exists()
+        if linked_to_current_user:
+            has_allowlisted_identity = any(
+                is_owner_github_id(uid)
+                for uid in SocialAccount.objects.filter(
+                    user_id=request.user.pk, provider="github"
+                ).values_list("uid", flat=True)
+            )
+            request.user.is_staff = has_allowlisted_identity
+            request.user.save(update_fields=["is_staff"])
+            if is_owner_github_id(getattr(socialaccount, "uid", None)):
+                from allauth.account.internal.flows.login import record_authentication
+
+                record_authentication(
+                    request,
+                    request.user,
+                    "socialaccount",
+                    provider="github",
+                    uid=socialaccount.uid,
+                )
         request.session.save()
+        if linked_to_current_user and has_allowlisted_identity:
+            return "/admin/"
         return str(getattr(settings, "GAME_FRONTEND_URL", "http://localhost:5173/game"))
 
     def save_user(self, request: Any, sociallogin: Any, form: Any = None) -> Any:
