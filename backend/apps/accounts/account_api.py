@@ -197,7 +197,7 @@ class GitHubOnboardingInviteView(AccountEndpoint):
             return _private(Response({"detail": "The invite code is not valid."}, status=400))
         request.session["account_invite_code"] = code
         request.session.save()
-        return _private(Response({"url": "/accounts/github/login/"}))
+        return _private(Response({"url": request.build_absolute_uri("/accounts/github/login/")}))
 
 
 class AccountLogoutView(AccountEndpoint):
@@ -300,7 +300,9 @@ class GitHubLinkView(AccountEndpoint):
             backend="allauth.account.auth_backends.AuthenticationBackend",
         )
         request.session.save()
-        return _private(Response({"url": "/accounts/github/login/?process=connect"}))
+        return _private(
+            Response({"url": request.build_absolute_uri("/accounts/github/login/?process=connect")})
+        )
 
 
 class UploadInput(serializers.Serializer[dict[str, Any]]):
