@@ -19,6 +19,7 @@ from django.utils import timezone
 
 from apps.accounts.competition_services import authorized_activity_queryset
 from apps.accounts.models import Competition, CompetitionMembership, ImportedActivity, Player
+from apps.accounts.services import competition_is_available
 
 from .models import (
     CompletionStatus,
@@ -30,6 +31,7 @@ from .models import (
     RouteCompletionMonthly,
     allow_completion_evidence_append,
     allow_completion_evidence_erasure,
+    has_publishable_reference_source,
 )
 
 DEFAULT_TOLERANCE_METERS = 50
@@ -40,6 +42,30 @@ DECIMAL_QUANTUM = Decimal("0.001")
 PUBLIC_COMPLETION_ERROR_CODE = "completion_unavailable"
 PUBLIC_COMPLETION_ERROR_MESSAGE = "Completion calculation is temporarily unavailable."
 logger = logging.getLogger(__name__)
+
+
+def completion_is_eligible(
+    version: ReferenceRouteVersion,
+    subject_type: str,
+    *,
+    player: Player | None = None,
+    competition: Competition | None = None,
+) -> bool:
+    """Authoritative source and feature gate for completion work and visibility."""
+
+    collection = version.route.collection
+    source_import = version.source_import
+    if (
+        not collection.active
+        or not collection.permission_granted
+        or not has_publishable_reference_source(collection, source_import)
+    ):
+        return False
+    if subject_type == CompletionSubject.PLAYER:
+        return player is not None
+    if subject_type == CompletionSubject.COMPETITION:
+        return competition is not None and competition.is_active and competition_is_available()
+    return False
 
 
 def _completion_subject_filter(completion: RouteCompletion) -> Q:
@@ -300,8 +326,14 @@ def _activity_date(activity: ImportedActivity) -> date:
 
 
 def _subject_activities(
-    subject_type: str, *, player: Player | None, competition: Competition | None
+    version: ReferenceRouteVersion,
+    subject_type: str,
+    *,
+    player: Player | None,
+    competition: Competition | None,
 ) -> list[ImportedActivity]:
+    if not completion_is_eligible(version, subject_type, player=player, competition=competition):
+        raise CompletionCalculationError("Completion source is no longer eligible.")
     limit = int(getattr(settings, "ROUTE_COMPLETION_MAX_ACTIVITIES", DEFAULT_MAX_ACTIVITIES))
     if limit <= 0:
         raise CompletionCalculationError("Completion activity limit is invalid.")
@@ -325,6 +357,149 @@ def _subject_activities(
             "Completion activity workload exceeds the configured limit."
         )
     return list(query.order_by("calendar_date", "started_at", "pk"))
+
+
+def _erase_completion_projection(completion: RouteCompletion) -> None:
+    """Apply the gate-withdrawal retention policy to one projection."""
+
+    job_query = Q(
+        route_version_id=completion.route_version_id,
+        subject_type=completion.subject_type,
+        player_id=completion.player_id,
+        competition_id=completion.competition_id,
+    )
+    for job in RouteCompletionJob.objects.select_for_update().filter(job_query):
+        _cancel_job(job)
+    with allow_completion_evidence_erasure():
+        RouteCompletionEvidence.objects.filter(completion=completion).delete()
+    RouteCompletionMonthly.objects.filter(
+        route_version_id=completion.route_version_id,
+        subject_type=completion.subject_type,
+    ).filter(_completion_subject_filter(completion)).delete()
+    _reset_completion_projection(completion)
+
+
+def invalidate_collection_completion_data(collection_id: int) -> None:
+    """Erase derived data synchronously when a collection gate changes."""
+
+    with transaction.atomic():
+        jobs = (
+            RouteCompletionJob.objects.select_for_update()
+            .filter(route_version__route__collection_id=collection_id)
+            .order_by("pk")
+        )
+        for job in jobs:
+            _cancel_job(job)
+        completions = list(
+            RouteCompletion.objects.select_for_update()
+            .filter(route_version__route__collection_id=collection_id)
+            .order_by("pk")
+        )
+        for completion in completions:
+            _erase_completion_projection(completion)
+
+
+def invalidate_competition_completion_data(competition_id: Any) -> None:
+    """Erase a competition projection when its active gate is withdrawn."""
+
+    with transaction.atomic():
+        jobs = (
+            RouteCompletionJob.objects.select_for_update()
+            .filter(competition_id=competition_id)
+            .order_by("pk")
+        )
+        for job in jobs:
+            _cancel_job(job)
+        completions = list(
+            RouteCompletion.objects.select_for_update()
+            .filter(competition_id=competition_id)
+            .order_by("pk")
+        )
+        for completion in completions:
+            _erase_completion_projection(completion)
+
+
+def invalidate_ineligible_completion_data(limit: int = 100) -> int:
+    """Reconcile projections after deployment feature-gate configuration changes."""
+
+    invalidated = 0
+    candidates = (
+        RouteCompletion.objects.select_related(
+            "route_version__route__collection",
+            "route_version__source_import",
+            "player",
+            "competition",
+        )
+        .exclude(status=CompletionStatus.PENDING)
+        .order_by("pk")
+        .iterator(chunk_size=100)
+    )
+    for completion in candidates:
+        if completion_is_eligible(
+            completion.route_version,
+            completion.subject_type,
+            player=completion.player,
+            competition=completion.competition,
+        ):
+            continue
+        with transaction.atomic():
+            jobs = RouteCompletionJob.objects.select_for_update().filter(
+                route_version_id=completion.route_version_id,
+                subject_type=completion.subject_type,
+                player_id=cast(Any, completion.player_id),
+                competition_id=cast(Any, completion.competition_id),
+            )
+            for job in jobs:
+                _cancel_job(job)
+            locked = RouteCompletion.objects.select_for_update().filter(pk=completion.pk).first()
+            if locked is None:
+                continue
+            _erase_completion_projection(locked)
+            invalidated += 1
+            if invalidated >= max(1, limit):
+                break
+    return invalidated
+
+
+def _cancel_job(job: RouteCompletionJob) -> None:
+    job.status = RouteCompletionJob.Status.CANCELLED
+    job.lease_token = ""
+    job.lease_until = None
+    job.dispatch_token = ""
+    job.dispatch_lease_until = None
+    job.completed_at = None
+    job.error = "completion_ineligible"
+    job.save(
+        update_fields=(
+            "status",
+            "lease_token",
+            "lease_until",
+            "dispatch_token",
+            "dispatch_lease_until",
+            "completed_at",
+            "error",
+        )
+    )
+
+
+def _invalidate_ineligible_job(job: RouteCompletionJob) -> None:
+    """Cancel stale work and remove its retained projection/evidence."""
+
+    _cancel_job(job)
+    completion = RouteCompletion.objects.filter(
+        route_version_id=job.route_version_id,
+        subject_type=job.subject_type,
+        player_id=cast(Any, job.player_id),
+        competition_id=cast(Any, job.competition_id),
+    ).first()
+    if completion is not None:
+        with allow_completion_evidence_erasure():
+            RouteCompletionEvidence.objects.filter(completion=completion).delete()
+        RouteCompletionMonthly.objects.filter(
+            route_version_id=completion.route_version_id,
+            subject_type=completion.subject_type,
+        ).filter(_completion_subject_filter(completion)).delete()
+        _reset_completion_projection(completion)
 
 
 def _coverage_for_activity(route: Any, activity: Any, tolerance: float) -> Any:
@@ -417,7 +592,7 @@ def calculate_completion(
     route = _metric(version.normalized_geometry)
     if route is None or route.empty or route.geom_type not in {"LineString", "MultiLineString"}:
         raise CompletionCalculationError("Reference route geometry is invalid.")
-    activities = _subject_activities(subject_type, player=player, competition=competition)
+    activities = _subject_activities(version, subject_type, player=player, competition=competition)
     total = float(route.length)
     union, evidence, monthly = _union_coverage(route, activities, tolerance)
     covered = min(total, max(0.0, float(union.length)))
@@ -433,6 +608,10 @@ def calculate_completion(
                 or job.lease_until <= timezone.now()
             ):
                 raise CompletionLeaseLost("Completion worker lease was replaced or expired.")
+            if not completion_is_eligible(
+                version, subject_type, player=player, competition=competition
+            ):
+                raise CompletionLeaseLost("Completion eligibility was withdrawn.")
             job.lease_until = timezone.now() + timedelta(
                 seconds=int(getattr(settings, "ROUTE_COMPLETION_LEASE_SECONDS", 600))
             )
@@ -516,7 +695,7 @@ def schedule_completion(
     player: Player | None = None,
     competition: Competition | None = None,
     reason: str = "activity-change",
-) -> RouteCompletionJob:
+) -> RouteCompletionJob | None:
     """Mark a projection pending and upsert one durable idempotent job."""
 
     if subject_type not in CompletionSubject.values:
@@ -533,6 +712,26 @@ def schedule_completion(
         subject_id = str(competition.pk)
     key = f"{version.pk}:{subject_type}:{subject_id}"
     with transaction.atomic():
+        if not completion_is_eligible(
+            version, subject_type, player=player, competition=competition
+        ):
+            stale_job = (
+                RouteCompletionJob.objects.select_for_update().filter(idempotency_key=key).first()
+            )
+            if stale_job is not None:
+                _invalidate_ineligible_job(stale_job)
+            else:
+                stale_projection = RouteCompletion.objects.filter(
+                    route_version=version,
+                    subject_type=subject_type,
+                    player=player if subject_type == CompletionSubject.PLAYER else None,
+                    competition=competition
+                    if subject_type == CompletionSubject.COMPETITION
+                    else None,
+                ).first()
+                if stale_projection is not None:
+                    _erase_completion_projection(stale_projection)
+            return None
         completion = _completion_record(
             version, subject_type, player=player, competition=competition
         )

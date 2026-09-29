@@ -1030,6 +1030,7 @@ class RouteCompletionJob(models.Model):
         RUNNING = "running", "Running"
         COMPLETE = "complete", "Complete"
         FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
 
     idempotency_key = models.CharField(max_length=255, unique=True)
     route_version = models.ForeignKey(

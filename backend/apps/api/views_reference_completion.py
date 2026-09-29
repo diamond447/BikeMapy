@@ -16,13 +16,13 @@ from apps.accounts.competition_services import sharing_is_active
 from apps.accounts.game_api import GameEndpoint, _private
 from apps.accounts.models import CompetitionMembership, StravaSyncState
 from apps.accounts.services import competition_is_available, game_is_available
+from apps.reference_routes.completion_services import completion_is_eligible
 from apps.reference_routes.models import (
     ReferencePublicationStatus,
     ReferenceRoute,
     ReferenceValidationStatus,
     RouteCompletion,
     RouteCompletionMonthly,
-    has_publishable_reference_source,
 )
 
 from .serializers_reference_routes import ReferenceAttributionSerializer, geometry_json
@@ -169,9 +169,7 @@ class ReferenceRouteCompletionView(GameEndpoint):
         if (
             route is None
             or route.current_version is None
-            or not has_publishable_reference_source(
-                route.collection, route.current_version.source_import
-            )
+            or not completion_is_eligible(route.current_version, "player", player=player)
         ):
             return _private(Response({"detail": "Reference route not found."}, status=404))
         competition_id = reference_competition_id(request, player)
@@ -261,9 +259,7 @@ class ReferenceRouteCompletionView(GameEndpoint):
         ).select_related("collection", "current_version", "current_version__source_import")
         for stage in stages_query.order_by("route_number", "pk"):
             version = stage.current_version
-            if version is None or not has_publishable_reference_source(
-                stage.collection, version.source_import
-            ):
+            if version is None or not completion_is_eligible(version, "player", player=player):
                 continue
             stages.append(
                 {

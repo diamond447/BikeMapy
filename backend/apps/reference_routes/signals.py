@@ -2,12 +2,64 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from django.db.models.signals import pre_delete
+from django.db.models.signals import post_save, pre_delete, pre_save
 from django.dispatch import receiver
 
-from apps.accounts.models import ImportedActivity
+from apps.accounts.models import Competition, ImportedActivity
+
+from .models import ReferenceCollection
+
+
+@receiver(pre_save, sender=ReferenceCollection)
+def remember_collection_completion_gates(
+    sender: type[ReferenceCollection], instance: ReferenceCollection, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    cast(Any, instance)._completion_gate_snapshot = (
+        ReferenceCollection.objects.filter(pk=instance.pk)
+        .values_list("active", "permission_granted", "source_kind")
+        .first()
+        if instance.pk
+        else None
+    )
+
+
+@receiver(post_save, sender=ReferenceCollection)
+def invalidate_collection_completions_on_gate_change(
+    sender: type[ReferenceCollection], instance: ReferenceCollection, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    old = getattr(instance, "_completion_gate_snapshot", None)
+    current = (instance.active, instance.permission_granted, instance.source_kind)
+    if old is not None and old != current:
+        from .completion_services import invalidate_collection_completion_data
+
+        invalidate_collection_completion_data(instance.pk)
+
+
+@receiver(pre_save, sender=Competition)
+def remember_competition_completion_gate(
+    sender: type[Competition], instance: Competition, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    cast(Any, instance)._completion_gate_was_active = (
+        Competition.objects.filter(pk=instance.pk).values_list("is_active", flat=True).first()
+        if instance.pk
+        else None
+    )
+
+
+@receiver(post_save, sender=Competition)
+def invalidate_competition_completions_on_deactivation(
+    sender: type[Competition], instance: Competition, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    if getattr(instance, "_completion_gate_was_active", None) is True and not instance.is_active:
+        from .completion_services import invalidate_competition_completion_data
+
+        invalidate_competition_completion_data(instance.pk)
 
 
 @receiver(pre_delete, sender=ImportedActivity)
