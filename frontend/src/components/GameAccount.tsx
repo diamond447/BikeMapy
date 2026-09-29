@@ -209,6 +209,11 @@ export function GameAccount({ copy, initialOpen = false }: { copy: Copy; initial
       }),
     )
     if (!result) return
+    if (result.response?.status !== 204) {
+      setStatus(result.response?.status === 404 ? 'unavailable' : 'error')
+      setMessage(errorDetail(result.error) ?? copy.gameSessionError)
+      return
+    }
     setPlayer(null)
     notifyGameMapReset('logout')
     setStatus('signed-out')

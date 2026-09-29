@@ -177,23 +177,16 @@ def set_password(player: Player, password: str, *, clear_temporary: bool = True)
         player.session_epoch = locked.session_epoch
 
 
-def request_password_reset(email: Any) -> None:
-    """Send a reset link without disclosing whether an address exists."""
+def request_password_reset(email: Any) -> tuple[str, str, str] | None:
+    """Build reset material for asynchronous delivery without exposing account state."""
 
     email_value = str(email or "").strip().lower()
     user = get_user_model().objects.filter(email__iexact=email_value, is_active=True).first()
     if user is None:
-        return
+        return None
     uid = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
-    base = str(getattr(settings, "GAME_FRONTEND_URL", "http://localhost:5173/game")).rstrip("/")
-    send_mail(
-        subject="Reset your BikeMapy password",
-        message=f"Reset your password at {base}/reset-password/{uid}/{token}/",
-        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@localhost"),
-        recipient_list=[user.email],
-        fail_silently=True,
-    )
+    return str(user.pk), uid, token
 
 
 def confirm_password_reset(*, uidb64: str, token: str, password: str) -> None:

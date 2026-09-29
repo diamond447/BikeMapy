@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from django.contrib.auth import login as auth_login
@@ -14,10 +15,11 @@ from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_sche
 from rest_framework import serializers
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
 
-from apps.api.throttling import PlayerSessionThrottle
+from apps.api.throttling import PlayerSessionThrottle, TrustedClientThrottleMixin
+from config.client_identity import rate_limit_identifier
 
 from .account_services import (
     AccountError,
@@ -28,6 +30,7 @@ from .account_services import (
     set_password,
     validate_invite_code,
 )
+from .account_tasks import send_password_reset_email_task
 from .activity_services import remove_activity
 from .game_api import _logout_player_session, _private
 from .models import ActivityUploadBatch, Player
@@ -38,9 +41,25 @@ from .upload_services import (
 )
 from .upload_tasks import process_activity_upload_batch_task
 
+logger = logging.getLogger(__name__)
 
-class AccountThrottle(AnonRateThrottle):
+
+class AccountThrottle(TrustedClientThrottleMixin, SimpleRateThrottle):
     scope = "player_accounts"
+
+    def get_cache_key(self, request: Any, view: Any) -> str | None:
+        del view
+        player_id = request.session.get("player_id")
+        epoch = request.session.get("player_session_epoch")
+        if player_id and epoch is not None:
+            ident = rate_limit_identifier(f"player-session:{player_id}:{epoch}")
+        else:
+            user = getattr(request, "user", None)
+            if user is not None and getattr(user, "is_authenticated", False):
+                ident = rate_limit_identifier(f"django-user:{user.pk}")
+            else:
+                ident = self.get_ident(request)
+        return str(self.cache_format % {"scope": self.scope, "ident": ident}) if ident else None
 
 
 class AccountInput(serializers.Serializer[dict[str, Any]]):
@@ -147,9 +166,14 @@ class AccountOnboardingView(AccountEndpoint):
             player, _ = create_invited_account(**data.validated_data)
         except AccountError:
             return _private(Response({"detail": "Unable to create this account."}, status=400))
-        except Exception:
+        except Exception as exc:
             # The service transaction has already rolled back the account and
             # redemption when delivery fails; keep transport details private.
+            logger.error(
+                "temporary password email delivery failed (error_type=%s)",
+                type(exc).__name__,
+                extra={"event": "account_email_delivery_failed", "error_type": type(exc).__name__},
+            )
             return _private(Response({"detail": "Unable to create this account."}, status=503))
         return _private(Response(_account_payload(player, authenticated=False), status=201))
 
@@ -244,8 +268,22 @@ class PasswordResetRequestView(AccountEndpoint):
     def post(self, request: Any) -> Response:
         data = ResetInput(data=request.data)
         if data.is_valid():
-            request_password_reset(data.validated_data["email"])
-        # Always return the same response and timing envelope.
+            reset = request_password_reset(data.validated_data["email"])
+            if reset is not None:
+                user_id, uid, token = reset
+                try:
+                    send_password_reset_email_task.apply_async(args=(user_id, uid, token))
+                except Exception as exc:
+                    # Do not let broker health or account existence alter the public result.
+                    logger.error(
+                        "password reset email enqueue failed (error_type=%s)",
+                        type(exc).__name__,
+                        extra={
+                            "event": "account_email_enqueue_failed",
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+        # Both paths return the same generic response; mail delivery runs in Celery.
         return _private(
             Response({"detail": "If the account exists, reset instructions were sent."})
         )

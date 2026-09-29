@@ -8,10 +8,21 @@ membership. The ordinary competition join invite remains reusable. Existing sign
 password reset, and explicitly authenticated GitHub linking do not require a
 new invite.
 
+Before enabling `PLAYER_ACCOUNTS_ENABLED` in production, configure
+`EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend`, `EMAIL_HOST`,
+`EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, exactly one of
+`EMAIL_USE_TLS` or `EMAIL_USE_SSL`, and a real `DEFAULT_FROM_EMAIL` sender
+address. Keep SMTP credentials in the deployment secret store or untracked
+production environment file. The backend fails startup when local accounts are
+enabled with missing or placeholder mail settings. Local Compose defaults to
+Django's console email backend for development.
+
 Local onboarding sends a generated temporary password by email. The password
 is stored only through Django's password hasher and the first authenticated
 session must change it before the game is available. Login and reset responses
 are intentionally enumeration-safe and account endpoints are rate-limited.
+Password-reset messages are queued for Celery delivery; transport failures are
+recorded in application logs without logging addresses or reset tokens.
 
 Players can upload FIT, GPX, and TCX files individually or in a ZIP archive.
 Uploads require an ownership/authorization attestation and are processed by a

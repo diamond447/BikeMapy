@@ -204,6 +204,58 @@ STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
 )
 GAME_FRONTEND_URL = os.getenv("GAME_FRONTEND_URL", "http://localhost:5173/game")
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend"
+    if DEPLOYMENT_MODE != "production"
+    else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = env_int("EMAIL_PORT", 587)
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", False)
+EMAIL_TIMEOUT = env_int("EMAIL_TIMEOUT", 10)
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@localhost")
+
+
+def validate_account_email_settings() -> None:
+    """Require deliverable email settings before enabling local accounts."""
+
+    if not PLAYER_ACCOUNTS_ENABLED:
+        return
+    sender = DEFAULT_FROM_EMAIL.strip()
+    missing = []
+    if not sender or "@" not in sender:
+        missing.append("DEFAULT_FROM_EMAIL")
+    if DEPLOYMENT_MODE == "production":
+        placeholder_markers = ("example", "invalid", "localhost", "placeholder", "replace-with")
+        from_address = sender.lower()
+        if any(marker in from_address for marker in placeholder_markers):
+            missing.append("DEFAULT_FROM_EMAIL (placeholder address)")
+        if EMAIL_BACKEND != "django.core.mail.backends.smtp.EmailBackend":
+            missing.append("EMAIL_BACKEND (SMTP required in production)")
+        if not EMAIL_HOST.strip() or any(
+            marker in EMAIL_HOST.lower() for marker in placeholder_markers
+        ):
+            missing.append("EMAIL_HOST")
+        if EMAIL_PORT < 1 or EMAIL_PORT > 65535:
+            missing.append("EMAIL_PORT")
+        if EMAIL_USE_TLS == EMAIL_USE_SSL:
+            missing.append("exactly one of EMAIL_USE_TLS or EMAIL_USE_SSL")
+        if any(
+            not value.strip() or any(marker in value.lower() for marker in placeholder_markers)
+            for value in (EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
+        ):
+            missing.append("EMAIL_HOST_USER and EMAIL_HOST_PASSWORD")
+    if missing:
+        raise ImproperlyConfigured(
+            "PLAYER_ACCOUNTS_ENABLED requires usable mail configuration: " + ", ".join(missing)
+        )
+
+
+validate_account_email_settings()
 
 
 def validate_game_frontend_url(value: str) -> None:

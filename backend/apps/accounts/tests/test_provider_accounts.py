@@ -501,12 +501,20 @@ def test_local_account_endpoints_cover_onboarding_login_password_and_reset() -> 
     assert client.post("/api/v1/game/auth/logout/", {}, format="json").status_code == 204
     assert client.post("/api/v1/game/account/github/link/", {}, format="json").status_code == 401
 
-    with patch("apps.accounts.account_services.send_mail") as send_mail:
+    with patch("apps.accounts.account_api.send_password_reset_email_task.apply_async") as enqueue:
         response = client.post(
             "/api/v1/game/auth/local/reset/", {"email": "rider@example.com"}, format="json"
         )
     assert response.status_code == 200
-    send_mail.assert_called_once()
+    known_body = response.content
+    enqueue.assert_called_once()
+    with patch("apps.accounts.account_api.send_password_reset_email_task.apply_async") as enqueue:
+        unknown = client.post(
+            "/api/v1/game/auth/local/reset/", {"email": "nobody@example.com"}, format="json"
+        )
+    assert unknown.status_code == response.status_code
+    assert unknown.content == known_body
+    enqueue.assert_not_called()
     assert (
         client.post(
             "/api/v1/game/auth/local/reset/not-a-user/not-a-token/",

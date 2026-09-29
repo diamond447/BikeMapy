@@ -107,6 +107,66 @@ describe('GameAccount', () => {
     expect(get).toHaveBeenCalledWith('/api/v1/game/auth/session/', expect.anything())
   })
 
+  it.each([403, 429, 500])(
+    'keeps logout failed and offers recovery after HTTP %s',
+    async (status) => {
+      vi.spyOn(apiClient, 'GET').mockResolvedValue({
+        data: { player },
+        error: undefined,
+        response: response(200),
+      } as never)
+      const post = vi.spyOn(apiClient, 'POST').mockResolvedValue({
+        data: undefined,
+        error: { detail: `Logout rejected (${status}).` },
+        response: response(status),
+      } as never)
+      const user = userEvent.setup()
+
+      render(<GameAccount copy={translations.en} initialOpen />)
+      await screen.findByLabelText(/bikemapy nickname/i)
+      await user.click(screen.getByRole('button', { name: /^log out$/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(`Logout rejected (${status}).`)
+      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
+      expect(screen.queryByText(/you are logged out/i)).not.toBeInTheDocument()
+      expect(post).toHaveBeenCalledWith('/api/v1/game/auth/logout/', expect.anything())
+    },
+  )
+
+  it('recovers the session and can retry logout after a rejected response', async () => {
+    const get = vi.spyOn(apiClient, 'GET').mockResolvedValue({
+      data: { player },
+      error: undefined,
+      response: response(200),
+    } as never)
+    const post = vi
+      .spyOn(apiClient, 'POST')
+      .mockResolvedValueOnce({
+        data: undefined,
+        error: { detail: 'Logout was rejected.' },
+        response: response(500),
+      } as never)
+      .mockResolvedValueOnce({
+        data: undefined,
+        error: undefined,
+        response: response(204),
+      } as never)
+    const user = userEvent.setup()
+
+    render(<GameAccount copy={translations.en} initialOpen />)
+    await screen.findByLabelText(/bikemapy nickname/i)
+    await user.click(screen.getByRole('button', { name: /^log out$/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Logout was rejected.')
+
+    await user.click(screen.getByRole('button', { name: /retry/i }))
+    await screen.findByLabelText(/bikemapy nickname/i)
+    await user.click(screen.getByRole('button', { name: /^log out$/i }))
+
+    expect(await screen.findByText(/you are logged out/i)).toBeInTheDocument()
+    expect(get).toHaveBeenCalledWith('/api/v1/game/auth/session/', expect.anything())
+    expect(post).toHaveBeenCalledTimes(2)
+  })
+
   it('does not render competition controls when the server gate is closed', async () => {
     vi.spyOn(apiClient, 'GET').mockResolvedValue({
       data: { player },
