@@ -187,7 +187,9 @@ describe('LocalAccountPanel', () => {
   it('requests a session-bound GitHub link intent before redirecting', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(response({ url: '/accounts/github/login/?process=connect' }))
+      .mockResolvedValue(
+        response({ url: 'http://localhost:8000/accounts/github/login/?process=connect' }),
+      )
     render(<LocalAccountPanel authenticated />)
     fireEvent.click(screen.getByRole('button', { name: 'Link GitHub' }))
     await waitFor(() =>

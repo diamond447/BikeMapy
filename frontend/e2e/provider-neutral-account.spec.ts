@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 
+const backendOrigin = process.env.VITE_API_URL ?? 'http://localhost:8000'
+
 const player = {
   player: {
     display_name: 'Rider',
@@ -47,10 +49,16 @@ async function installAccountFixtures(page: Page) {
     route.fulfill({ status: 200, json: { detail: 'Password reset.' } }),
   )
   await page.route('**/api/v1/game/auth/github/onboard/', (route) =>
-    route.fulfill({ status: 200, json: { ok: true } }),
+    route.fulfill({
+      status: 200,
+      json: { url: `${backendOrigin}/accounts/github/login/` },
+    }),
   )
   await page.route('**/api/v1/game/account/github/link/', (route) =>
-    route.fulfill({ status: 200, json: { url: '/accounts/github/login/?process=connect' } }),
+    route.fulfill({
+      status: 200,
+      json: { url: `${backendOrigin}/accounts/github/login/?process=connect` },
+    }),
   )
   await page.route('**/api/v1/game/account/uploads/', (route) =>
     route.fulfill({ status: 202, json: { batch_id: 'batch-1', status: 'queued' } }),
@@ -109,7 +117,7 @@ test('desktop completes invite, forced password, mixed upload, privacy delete, a
   await expect(page.getByRole('heading', { name: 'Import activities' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Link GitHub' }).click()
-  await expect(page).toHaveURL(/\/accounts\/github\/login/)
+  await expect(page).toHaveURL(`${backendOrigin}/accounts/github/login/?process=connect`)
   await page.goto('/game')
   await page.getByRole('button', { name: 'Player account' }).click()
   await expect(page.getByRole('heading', { name: 'Import activities' })).toBeVisible()
@@ -153,6 +161,6 @@ test.describe('mobile account recovery', () => {
     await expect(page.getByRole('status')).toContainText('Enter your competition invite code')
     await page.getByLabel('Competition invite code').fill('RIDE-123')
     await page.getByRole('button', { name: 'Use GitHub with an invite' }).click()
-    await expect(page).toHaveURL(/\/accounts\/github\/login/)
+    await expect(page).toHaveURL(`${backendOrigin}/accounts/github/login/`)
   })
 })
