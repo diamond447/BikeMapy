@@ -26,6 +26,10 @@ fi
 now="$(date +%s)"
 cutoff=$((now - RETENTION_SECONDS))
 failed=0
+if ! volume_list="$(docker volume ls --quiet --filter "name=$ROLLBACK_VOLUME_PREFIX")"; then
+  echo "WARNING: could not list private-upload rollback volumes; retry reconciliation on the next backup or restore" >&2
+  exit 1
+fi
 while IFS= read -r volume; do
   [[ -n "$volume" ]] || continue
   [[ "$volume" == "$ROLLBACK_VOLUME_PREFIX"* ]] || continue
@@ -50,6 +54,6 @@ while IFS= read -r volume; do
     echo "WARNING: could not remove expired private-upload rollback volume $volume; it will be retried" >&2
     failed=1
   fi
-done < <(docker volume ls --quiet --filter "name=$ROLLBACK_VOLUME_PREFIX")
+done <<< "$volume_list"
 
 exit "$failed"

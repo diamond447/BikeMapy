@@ -59,9 +59,10 @@ before_db_file_name="$(basename "$before_db_file")"
 rollback_db_ready=0
 rollback_gpx_ready=0
 rollback_activity_uploads_ready=0
+rollback_activity_upload_volume_owned=0
 preserve_activity_upload_rollback=0
 cleanup_activity_upload_rollback() {
-  if (( ! preserve_activity_upload_rollback )); then
+  if (( rollback_activity_upload_volume_owned && ! preserve_activity_upload_rollback )); then
     if ! docker volume rm "$ACTIVITY_UPLOAD_ROLLBACK_VOLUME" >/dev/null 2>&1; then
       echo "WARNING: private-upload rollback volume $ACTIVITY_UPLOAD_ROLLBACK_VOLUME remains and will be retried after expiration" >&2
     fi
@@ -127,6 +128,7 @@ docker volume create \
   --label com.bikemapy.restore-upload-rollback=true \
   --label "com.bikemapy.restore-upload-rollback.created-at=$(date +%s)" \
   "$ACTIVITY_UPLOAD_ROLLBACK_VOLUME" >/dev/null
+rollback_activity_upload_volume_owned=1
 docker run --rm \
   -v "${ACTIVITY_UPLOAD_VOLUME}:/source:ro" \
   -v "${ACTIVITY_UPLOAD_ROLLBACK_VOLUME}:/rollback" alpine \

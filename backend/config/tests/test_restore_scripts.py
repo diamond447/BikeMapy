@@ -33,8 +33,9 @@ def test_restore_failure_path_restores_database_and_gpx_pair() -> None:
     assert script.index("before_db_file=") < script.index('"/backup/db-${BACKUP_ID}.dump"')
 
 
-def test_restore_runtime_failure_restores_transient_upload_and_gpx_volumes(
-    tmp_path: Path,
+@pytest.mark.parametrize("preexisting_rollback_volume", [False, True])
+def test_restore_runtime_failure_preserves_data_and_only_removes_owned_rollback_volume(
+    tmp_path: Path, preexisting_rollback_volume: bool
 ) -> None:
     root = Path(__file__).parents[3]
     backup = tmp_path / "backup"
@@ -47,6 +48,12 @@ def test_restore_runtime_failure_restores_transient_upload_and_gpx_volumes(
     upload_volume.mkdir(parents=True)
     gpx_file.write_bytes(b"original durable GPX")
     upload_file.write_bytes(b"original transient upload")
+    rollback_path = tmp_path / "rollback-volume"
+    preexisting_sentinel = rollback_path / "do-not-delete.bin"
+    if preexisting_rollback_volume:
+        rollback_path.mkdir()
+        (rollback_path / ".created_at").write_text(str(int(time.time())))
+        preexisting_sentinel.write_bytes(b"crash recovery data")
 
     with tarfile.open(backup / "gpx-target.tar.gz", "w:gz") as archive:
         target = tmp_path / "target.gpx"
@@ -79,8 +86,15 @@ if args[:1] == ["volume"]:
     rollback_path = Path(os.environ["FAKE_ROLLBACK_PATH"])
     if args[1] == "create":
         rollback_path.mkdir(parents=True, exist_ok=True)
+        (rollback_path / ".created_at").write_text(str(int(__import__("time").time())))
         raise SystemExit(0)
     if args[1] == "inspect":
+        if not rollback_path.exists():
+            raise SystemExit(1)
+        if "--format" in args:
+            created_at = rollback_path / ".created_at"
+            if created_at.exists():
+                print(created_at.read_text())
         raise SystemExit(0 if rollback_path.exists() else 1)
     if args[1] == "rm":
         import shutil
@@ -149,7 +163,7 @@ raise SystemExit(0)
         "ACTIVITY_UPLOAD_ROLLBACK_VOLUME": "bikemapy-restore-upload-test-attempt",
         "FAKE_GPX_PATH": str(gpx_volume),
         "FAKE_UPLOAD_PATH": str(upload_volume),
-        "FAKE_ROLLBACK_PATH": str(tmp_path / "rollback-volume"),
+        "FAKE_ROLLBACK_PATH": str(rollback_path),
         "RESTORE_ATTEMPT_ID": "test-attempt",
     }
     result = subprocess.run(
@@ -161,9 +175,14 @@ raise SystemExit(0)
     )
 
     assert result.returncode != 0
-    assert "Restore failed" in result.stderr
     assert gpx_file.read_bytes() == b"original durable GPX"
     assert upload_file.read_bytes() == b"original transient upload"
+    if preexisting_rollback_volume:
+        assert "already exists; refusing to reuse it" in result.stderr
+        assert preexisting_sentinel.read_bytes() == b"crash recovery data"
+    else:
+        assert "Restore failed" in result.stderr
+        assert not rollback_path.exists()
 
 
 def test_abandoned_upload_rollback_volume_expires_with_retry_and_restore_lock(
@@ -248,6 +267,42 @@ else:
     assert retry.returncode == 0, retry_stderr
     assert stale_volume not in json.loads(state_path.read_text())["volumes"]
     assert "Expiring abandoned" in retry_stdout
+
+
+def test_rollback_volume_janitor_surfaces_volume_list_failure(tmp_path: Path) -> None:
+    root = Path(__file__).parents[3]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import sys
+
+if sys.argv[1:3] == ["volume", "ls"]:
+    print("simulated Docker daemon outage", file=sys.stderr)
+    raise SystemExit(23)
+raise SystemExit("unexpected docker invocation")
+"""
+    )
+    docker.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "BACKUP_DIR": str(tmp_path / "backup"),
+        "ACTIVITY_UPLOAD_ROLLBACK_LOCK_FILE": str(tmp_path / "rollback.lock"),
+    }
+
+    result = subprocess.run(
+        ["bash", str(root / "deploy/reconcile-restore-upload-rollbacks.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "simulated Docker daemon outage" in result.stderr
+    assert "could not list private-upload rollback volumes" in result.stderr
 
 
 def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
