@@ -9,7 +9,7 @@ from django.dispatch import receiver
 
 from apps.accounts.models import Competition, ImportedActivity
 
-from .models import ReferenceCollection
+from .models import ReferenceCollection, ReferenceRoute, ReferenceRouteVersion
 
 
 @receiver(pre_save, sender=ReferenceCollection)
@@ -60,6 +60,60 @@ def invalidate_competition_completions_on_deactivation(
         from .completion_services import invalidate_competition_completion_data
 
         invalidate_competition_completion_data(instance.pk)
+
+
+@receiver(pre_save, sender=ReferenceRoute)
+def remember_route_completion_gates(
+    sender: type[ReferenceRoute], instance: ReferenceRoute, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    cast(Any, instance)._completion_gate_snapshot = (
+        ReferenceRoute.objects.filter(pk=instance.pk)
+        .values_list("active", "publication_status", "current_version_id")
+        .first()
+        if instance.pk
+        else None
+    )
+
+
+@receiver(post_save, sender=ReferenceRoute)
+def invalidate_route_completions_on_gate_change(
+    sender: type[ReferenceRoute], instance: ReferenceRoute, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    old = getattr(instance, "_completion_gate_snapshot", None)
+    current = (instance.active, instance.publication_status, instance.current_version_id)
+    if old is not None and old != current:
+        from .completion_services import invalidate_route_completion_data
+
+        invalidate_route_completion_data(instance.pk)
+
+
+@receiver(pre_save, sender=ReferenceRouteVersion)
+def remember_version_completion_gates(
+    sender: type[ReferenceRouteVersion], instance: ReferenceRouteVersion, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    cast(Any, instance)._completion_gate_snapshot = (
+        ReferenceRouteVersion.objects.filter(pk=instance.pk)
+        .values_list("active", "validation_status")
+        .first()
+        if instance.pk
+        else None
+    )
+
+
+@receiver(post_save, sender=ReferenceRouteVersion)
+def invalidate_version_completions_on_gate_change(
+    sender: type[ReferenceRouteVersion], instance: ReferenceRouteVersion, **kwargs: Any
+) -> None:
+    del sender, kwargs
+    old = getattr(instance, "_completion_gate_snapshot", None)
+    current = (instance.active, instance.validation_status)
+    if old is not None and old != current:
+        from .completion_services import invalidate_version_completion_data
+
+        invalidate_version_completion_data(instance.pk)
 
 
 @receiver(pre_delete, sender=ImportedActivity)

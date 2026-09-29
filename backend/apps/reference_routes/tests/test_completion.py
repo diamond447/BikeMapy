@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -140,9 +140,12 @@ def _version() -> ReferenceRouteVersion:
             "source_url": "https://example.invalid/source",
         },
         validation_status="valid",
+        active=True,
     )
     route.current_version = version
-    route.save(update_fields=("current_version", "updated_at"))
+    route.active = True
+    route.publication_status = "approved"
+    route.save(update_fields=("current_version", "active", "publication_status", "updated_at"))
     return version
 
 
@@ -414,10 +417,35 @@ def test_inactive_collection_and_source_feature_gate_block_scheduling(settings: 
     collection.active = False
     collection.save(update_fields=("active", "updated_at"))
     assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
-
     collection.active = True
     collection.save(update_fields=("active", "updated_at"))
     settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = False
+    assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
+
+
+@pytest.mark.parametrize(
+    "gate",
+    ("route_inactive", "route_unapproved", "version_inactive", "not_current"),
+)
+def test_route_and_version_publication_gates_block_scheduling(gate: str) -> None:
+    version = _version()
+    player = _player(67)
+    route = version.route
+    if gate == "route_inactive":
+        route.active = False
+        route.save(update_fields=("active", "updated_at"))
+    elif gate == "route_unapproved":
+        route.publication_status = "pending"
+        route.save(update_fields=("publication_status", "updated_at"))
+    elif gate == "version_inactive":
+        version.active = False
+        version.save(update_fields=("active",))
+    else:
+        route.active = False
+        route.publication_status = "pending"
+        route.current_version = None
+        route.save(update_fields=("active", "publication_status", "current_version", "updated_at"))
+
     assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
 
 
@@ -440,6 +468,53 @@ def test_dispatch_claim_cancels_job_when_source_gate_changes(settings: Any) -> N
     assert _claim_completion_dispatch() is None
     job.refresh_from_db()
     assert job.status == RouteCompletionJob.Status.CANCELLED
+
+
+def test_eligible_reschedule_reopens_cancelled_job_and_resets_claim_state(
+    settings: Any,
+) -> None:
+    version = _version()
+    player = _player(66)
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = False
+    assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
+    job.refresh_from_db()
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+
+    job.next_attempt_at = timezone.now() + timedelta(hours=1)
+    job.error = "completion_ineligible"
+    job.lease_token = "stale-lease"
+    job.lease_until = timezone.now() + timedelta(minutes=1)
+    job.dispatch_token = "stale-dispatch"
+    job.dispatch_lease_until = timezone.now() + timedelta(minutes=1)
+    job.dispatched_at = timezone.now()
+    job.completed_at = timezone.now()
+    job.save(
+        update_fields=(
+            "next_attempt_at",
+            "error",
+            "lease_token",
+            "lease_until",
+            "dispatch_token",
+            "dispatch_lease_until",
+            "dispatched_at",
+            "completed_at",
+        )
+    )
+
+    settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = True
+    resumed = _schedule(version, CompletionSubject.PLAYER, player=player)
+    assert resumed.pk == job.pk
+    resumed.refresh_from_db()
+    assert resumed.status == RouteCompletionJob.Status.PENDING
+    assert resumed.error == ""
+    assert resumed.next_attempt_at <= timezone.now()
+    assert resumed.lease_token == ""
+    assert resumed.lease_until is None
+    assert resumed.dispatch_token == ""
+    assert resumed.dispatch_lease_until is None
+    assert resumed.dispatched_at is None
+    assert resumed.completed_at is None
 
 
 @requires_gis_runtime
@@ -472,6 +547,70 @@ def test_gate_withdrawal_during_calculation_fences_projection_commit(
     assert job.status == RouteCompletionJob.Status.CANCELLED
     assert completion.status == CompletionStatus.PENDING
     assert completion.covered_length_meters == Decimal("0")
+    assert not RouteCompletionEvidence.objects.filter(completion=completion).exists()
+
+
+@requires_gis_runtime
+def test_queryset_permission_change_before_commit_is_revalidated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = _version()
+    player = _player(68)
+    _activity(player, "queryset-gate-race", [[14, 50], [14.02, 50]], date(2026, 8, 2))
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    original_union = __import__(
+        "apps.reference_routes.completion_services", fromlist=["_union_coverage"]
+    )._union_coverage
+
+    def withdraw_without_signal(*args: object, **kwargs: object) -> object:
+        result = original_union(*args, **kwargs)
+        ReferenceCollection.objects.filter(pk=version.route.collection_id).update(
+            permission_granted=False
+        )
+        return result
+
+    monkeypatch.setattr(
+        "apps.reference_routes.completion_services._union_coverage", withdraw_without_signal
+    )
+    result = calculate_route_completion.apply(args=[job.pk]).get()
+
+    job.refresh_from_db()
+    completion = RouteCompletion.objects.get(route_version=version, player=player)
+    assert result["status"] == "cancelled"
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+    assert completion.status == CompletionStatus.PENDING
+    assert completion.covered_length_meters == Decimal("0")
+    assert not RouteCompletionEvidence.objects.filter(completion=completion).exists()
+
+
+@requires_gis_runtime
+def test_runtime_source_gate_change_before_commit_is_revalidated(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,
+) -> None:
+    version = _version()
+    player = _player(69)
+    _activity(player, "settings-gate-race", [[14, 50], [14.02, 50]], date(2026, 8, 3))
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    original_union = __import__(
+        "apps.reference_routes.completion_services", fromlist=["_union_coverage"]
+    )._union_coverage
+
+    def withdraw_runtime_gate(*args: object, **kwargs: object) -> object:
+        result = original_union(*args, **kwargs)
+        settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = False
+        return result
+
+    monkeypatch.setattr(
+        "apps.reference_routes.completion_services._union_coverage", withdraw_runtime_gate
+    )
+    result = calculate_route_completion.apply(args=[job.pk]).get()
+
+    job.refresh_from_db()
+    completion = RouteCompletion.objects.get(route_version=version, player=player)
+    assert result["status"] == "cancelled"
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+    assert completion.status == CompletionStatus.PENDING
     assert not RouteCompletionEvidence.objects.filter(completion=completion).exists()
 
 
@@ -594,6 +733,44 @@ def test_concurrent_completion_workers_have_one_effective_claim() -> None:
         results = list(executor.map(lambda _: run_worker(), range(2)))
     assert sorted(str(result["status"]) for result in results) == ["complete", "in_progress"]
     assert RouteCompletionEvidence.objects.filter(completion__route_version=version).count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locking")
+def test_permission_withdrawal_and_scheduler_follow_parent_job_projection_lock_order() -> None:
+    version = _version()
+    player = _player(70)
+    barrier = threading.Barrier(2)
+
+    def schedule() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=5)
+            schedule_completion(version, CompletionSubject.PLAYER, player=player)
+        finally:
+            close_old_connections()
+
+    def withdraw() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=5)
+            collection = ReferenceCollection.objects.get(pk=version.route.collection_id)
+            collection.permission_granted = False
+            collection.save(update_fields=("permission_granted", "updated_at"))
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        scheduled = executor.submit(schedule)
+        revoked = executor.submit(withdraw)
+        scheduled.result(timeout=15)
+        revoked.result(timeout=15)
+
+    assert not RouteCompletionJob.objects.filter(
+        route_version=version,
+        player=player,
+        status__in=(RouteCompletionJob.Status.PENDING, RouteCompletionJob.Status.RUNNING),
+    ).exists()
 
 
 @pytest.mark.django_db(transaction=True)

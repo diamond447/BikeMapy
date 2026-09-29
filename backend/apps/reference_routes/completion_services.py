@@ -24,7 +24,11 @@ from apps.accounts.services import competition_is_available
 from .models import (
     CompletionStatus,
     CompletionSubject,
+    ReferenceCollection,
+    ReferencePublicationStatus,
+    ReferenceRoute,
     ReferenceRouteVersion,
+    ReferenceValidationStatus,
     RouteCompletion,
     RouteCompletionEvidence,
     RouteCompletionJob,
@@ -45,18 +49,52 @@ logger = logging.getLogger(__name__)
 
 
 def completion_is_eligible(
-    version: ReferenceRouteVersion,
+    version: ReferenceRouteVersion | None,
     subject_type: str,
     *,
     player: Player | None = None,
     competition: Competition | None = None,
 ) -> bool:
-    """Authoritative source and feature gate for completion work and visibility."""
+    """Read current database state and apply the authoritative completion policy."""
 
-    collection = version.route.collection
+    current_version = (
+        ReferenceRouteVersion.objects.select_related("route__collection", "source_import")
+        .filter(pk=version.pk)
+        .first()
+        if version is not None
+        else None
+    )
+    current_player = Player.objects.filter(pk=player.pk).first() if player is not None else None
+    current_competition = (
+        Competition.objects.filter(pk=competition.pk).first() if competition is not None else None
+    )
+    return _completion_state_is_eligible(
+        current_version,
+        subject_type,
+        player=current_player,
+        competition=current_competition,
+    )
+
+
+def _completion_state_is_eligible(
+    version: ReferenceRouteVersion | None,
+    subject_type: str,
+    *,
+    player: Player | None = None,
+    competition: Competition | None = None,
+) -> bool:
+    if version is None:
+        return False
+    route = version.route
+    collection = route.collection
     source_import = version.source_import
     if (
-        not collection.active
+        not route.active
+        or route.publication_status != ReferencePublicationStatus.APPROVED
+        or route.current_version_id != version.pk
+        or not version.active
+        or version.validation_status != ReferenceValidationStatus.VALID
+        or not collection.active
         or not collection.permission_granted
         or not has_publishable_reference_source(collection, source_import)
     ):
@@ -66,6 +104,38 @@ def completion_is_eligible(
     if subject_type == CompletionSubject.COMPETITION:
         return competition is not None and competition.is_active and competition_is_available()
     return False
+
+
+def _lock_completion_context(
+    version_id: Any,
+    *,
+    player_id: Any = None,
+    competition_id: Any = None,
+) -> tuple[ReferenceRouteVersion | None, Player | None, Competition | None]:
+    """Lock competition, collection, route, version, then job and projection rows."""
+
+    competition = (
+        Competition.objects.select_for_update().filter(pk=competition_id).first()
+        if competition_id is not None
+        else None
+    )
+    version_ref = ReferenceRouteVersion.objects.filter(pk=version_id).values("route_id").first()
+    if version_ref is None:
+        return None, None, None
+    route_ref = (
+        ReferenceRoute.objects.filter(pk=version_ref["route_id"]).values("collection_id").first()
+    )
+    if route_ref is None:
+        return None, None, None
+    collection = ReferenceCollection.objects.select_for_update().get(pk=route_ref["collection_id"])
+    route = ReferenceRoute.objects.select_for_update().get(pk=version_ref["route_id"])
+    if route.collection_id != route_ref["collection_id"]:
+        return None, None, None
+    version = ReferenceRouteVersion.objects.select_for_update().get(pk=version_id)
+    route.collection = collection
+    version.route = route
+    player = Player.objects.filter(pk=player_id).first() if player_id is not None else None
+    return version, player, competition
 
 
 def _completion_subject_filter(completion: RouteCompletion) -> Q:
@@ -332,31 +402,42 @@ def _subject_activities(
     player: Player | None,
     competition: Competition | None,
 ) -> list[ImportedActivity]:
-    if not completion_is_eligible(version, subject_type, player=player, competition=competition):
-        raise CompletionCalculationError("Completion source is no longer eligible.")
-    limit = int(getattr(settings, "ROUTE_COMPLETION_MAX_ACTIVITIES", DEFAULT_MAX_ACTIVITIES))
-    if limit <= 0:
-        raise CompletionCalculationError("Completion activity limit is invalid.")
-    if subject_type == CompletionSubject.PLAYER:
-        if player is None:
-            raise CompletionCalculationError("Player completion subject is missing.")
-        query = ImportedActivity.objects.filter(
-            player_id=player.pk, removed_at__isnull=True
-        ).exclude(geometry__isnull=True)
-    else:
-        if competition is None:
-            raise CompletionCalculationError("Competition completion subject is missing.")
-        memberships = list(
-            competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
-                sharing_scope=CompetitionMembership.SharingScope.NONE
+    with transaction.atomic():
+        locked_version, locked_player, locked_competition = _lock_completion_context(
+            version.pk,
+            player_id=player.pk if player is not None else None,
+            competition_id=competition.pk if competition is not None else None,
+        )
+        if not _completion_state_is_eligible(
+            locked_version,
+            subject_type,
+            player=locked_player,
+            competition=locked_competition,
+        ):
+            raise CompletionCalculationError("Completion source is no longer eligible.")
+        limit = int(getattr(settings, "ROUTE_COMPLETION_MAX_ACTIVITIES", DEFAULT_MAX_ACTIVITIES))
+        if limit <= 0:
+            raise CompletionCalculationError("Completion activity limit is invalid.")
+        if subject_type == CompletionSubject.PLAYER:
+            if locked_player is None:
+                raise CompletionCalculationError("Player completion subject is missing.")
+            query = ImportedActivity.objects.filter(
+                player_id=locked_player.pk, removed_at__isnull=True
+            ).exclude(geometry__isnull=True)
+        else:
+            if locked_competition is None:
+                raise CompletionCalculationError("Competition completion subject is missing.")
+            memberships = list(
+                locked_competition.memberships.filter(sharing_consent_at__isnull=False).exclude(
+                    sharing_scope=CompetitionMembership.SharingScope.NONE
+                )
             )
-        )
-        query = authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
-    if query.count() > limit:
-        raise CompletionCalculationError(
-            "Completion activity workload exceeds the configured limit."
-        )
-    return list(query.order_by("calendar_date", "started_at", "pk"))
+            query = authorized_activity_queryset(ImportedActivity.objects.all(), memberships)
+        if query.count() > limit:
+            raise CompletionCalculationError(
+                "Completion activity workload exceeds the configured limit."
+            )
+        return list(query.order_by("calendar_date", "started_at", "pk"))
 
 
 def _erase_completion_projection(completion: RouteCompletion) -> None:
@@ -370,6 +451,7 @@ def _erase_completion_projection(completion: RouteCompletion) -> None:
     )
     for job in RouteCompletionJob.objects.select_for_update().filter(job_query):
         _cancel_job(job)
+    completion = RouteCompletion.objects.select_for_update().get(pk=completion.pk)
     with allow_completion_evidence_erasure():
         RouteCompletionEvidence.objects.filter(completion=completion).delete()
     RouteCompletionMonthly.objects.filter(
@@ -391,10 +473,44 @@ def invalidate_collection_completion_data(collection_id: int) -> None:
         for job in jobs:
             _cancel_job(job)
         completions = list(
-            RouteCompletion.objects.select_for_update()
-            .filter(route_version__route__collection_id=collection_id)
+            RouteCompletion.objects.filter(
+                route_version__route__collection_id=collection_id
+            ).order_by("pk")
+        )
+        for completion in completions:
+            _erase_completion_projection(completion)
+
+
+def invalidate_route_completion_data(route_id: Any) -> None:
+    """Cancel and erase projections when route publication/current-version gates change."""
+
+    with transaction.atomic():
+        jobs = (
+            RouteCompletionJob.objects.select_for_update()
+            .filter(route_version__route_id=route_id)
             .order_by("pk")
         )
+        for job in jobs:
+            _cancel_job(job)
+        completions = RouteCompletion.objects.filter(route_version__route_id=route_id).order_by(
+            "pk"
+        )
+        for completion in completions:
+            _erase_completion_projection(completion)
+
+
+def invalidate_version_completion_data(version_id: Any) -> None:
+    """Cancel and erase projections when version publication gates change."""
+
+    with transaction.atomic():
+        jobs = (
+            RouteCompletionJob.objects.select_for_update()
+            .filter(route_version_id=version_id)
+            .order_by("pk")
+        )
+        for job in jobs:
+            _cancel_job(job)
+        completions = RouteCompletion.objects.filter(route_version_id=version_id).order_by("pk")
         for completion in completions:
             _erase_completion_projection(completion)
 
@@ -411,9 +527,7 @@ def invalidate_competition_completion_data(competition_id: Any) -> None:
         for job in jobs:
             _cancel_job(job)
         completions = list(
-            RouteCompletion.objects.select_for_update()
-            .filter(competition_id=competition_id)
-            .order_by("pk")
+            RouteCompletion.objects.filter(competition_id=competition_id).order_by("pk")
         )
         for completion in completions:
             _erase_completion_projection(completion)
@@ -435,14 +549,19 @@ def invalidate_ineligible_completion_data(limit: int = 100) -> int:
         .iterator(chunk_size=100)
     )
     for completion in candidates:
-        if completion_is_eligible(
-            completion.route_version,
-            completion.subject_type,
-            player=completion.player,
-            competition=completion.competition,
-        ):
-            continue
         with transaction.atomic():
+            version, player, competition = _lock_completion_context(
+                completion.route_version_id,
+                player_id=completion.player_id,
+                competition_id=completion.competition_id,
+            )
+            if _completion_state_is_eligible(
+                version,
+                completion.subject_type,
+                player=player,
+                competition=competition,
+            ):
+                continue
             jobs = RouteCompletionJob.objects.select_for_update().filter(
                 route_version_id=completion.route_version_id,
                 subject_type=completion.subject_type,
@@ -451,10 +570,10 @@ def invalidate_ineligible_completion_data(limit: int = 100) -> int:
             )
             for job in jobs:
                 _cancel_job(job)
-            locked = RouteCompletion.objects.select_for_update().filter(pk=completion.pk).first()
-            if locked is None:
+            projection = RouteCompletion.objects.filter(pk=completion.pk).first()
+            if projection is None:
                 continue
-            _erase_completion_projection(locked)
+            _erase_completion_projection(projection)
             invalidated += 1
             if invalidated >= max(1, limit):
                 break
@@ -486,12 +605,16 @@ def _invalidate_ineligible_job(job: RouteCompletionJob) -> None:
     """Cancel stale work and remove its retained projection/evidence."""
 
     _cancel_job(job)
-    completion = RouteCompletion.objects.filter(
-        route_version_id=job.route_version_id,
-        subject_type=job.subject_type,
-        player_id=cast(Any, job.player_id),
-        competition_id=cast(Any, job.competition_id),
-    ).first()
+    completion = (
+        RouteCompletion.objects.select_for_update()
+        .filter(
+            route_version_id=job.route_version_id,
+            subject_type=job.subject_type,
+            player_id=cast(Any, job.player_id),
+            competition_id=cast(Any, job.competition_id),
+        )
+        .first()
+    )
     if completion is not None:
         with allow_completion_evidence_erasure():
             RouteCompletionEvidence.objects.filter(completion=completion).delete()
@@ -598,6 +721,19 @@ def calculate_completion(
     covered = min(total, max(0.0, float(union.length)))
     percent = 0.0 if total <= 0 else min(100.0, covered / total * 100)
     with transaction.atomic():
+        locked_version, locked_player, locked_competition = _lock_completion_context(
+            version.pk,
+            player_id=player.pk if player is not None else None,
+            competition_id=competition.pk if competition is not None else None,
+        )
+        if not _completion_state_is_eligible(
+            locked_version,
+            subject_type,
+            player=locked_player,
+            competition=locked_competition,
+        ):
+            raise CompletionLeaseLost("Completion eligibility was withdrawn.")
+        assert locked_version is not None
         job = None
         if job_id is not None:
             job = RouteCompletionJob.objects.select_for_update().get(pk=job_id)
@@ -608,14 +744,13 @@ def calculate_completion(
                 or job.lease_until <= timezone.now()
             ):
                 raise CompletionLeaseLost("Completion worker lease was replaced or expired.")
-            if not completion_is_eligible(
-                version, subject_type, player=player, competition=competition
-            ):
-                raise CompletionLeaseLost("Completion eligibility was withdrawn.")
             job.lease_until = timezone.now() + timedelta(
                 seconds=int(getattr(settings, "ROUTE_COMPLETION_LEASE_SECONDS", 600))
             )
             job.save(update_fields=("lease_until",))
+        version = locked_version
+        player = locked_player
+        competition = locked_competition
         completion = _completion_record(
             version, subject_type, player=player, competition=competition
         )
@@ -712,17 +847,26 @@ def schedule_completion(
         subject_id = str(competition.pk)
     key = f"{version.pk}:{subject_type}:{subject_id}"
     with transaction.atomic():
-        if not completion_is_eligible(
-            version, subject_type, player=player, competition=competition
-        ):
-            stale_job = (
-                RouteCompletionJob.objects.select_for_update().filter(idempotency_key=key).first()
-            )
+        current_version, current_player, current_competition = _lock_completion_context(
+            version.pk,
+            player_id=player.pk if player is not None else None,
+            competition_id=competition.pk if competition is not None else None,
+        )
+        eligible = _completion_state_is_eligible(
+            current_version,
+            subject_type,
+            player=current_player,
+            competition=current_competition,
+        )
+        stale_job = (
+            RouteCompletionJob.objects.select_for_update().filter(idempotency_key=key).first()
+        )
+        if not eligible:
             if stale_job is not None:
                 _invalidate_ineligible_job(stale_job)
             else:
                 stale_projection = RouteCompletion.objects.filter(
-                    route_version=version,
+                    route_version_id=version.pk,
                     subject_type=subject_type,
                     player=player if subject_type == CompletionSubject.PLAYER else None,
                     competition=competition
@@ -732,28 +876,33 @@ def schedule_completion(
                 if stale_projection is not None:
                     _erase_completion_projection(stale_projection)
             return None
+
+        assert current_version is not None
+        if stale_job is None:
+            stale_job = RouteCompletionJob.objects.create(
+                idempotency_key=key,
+                route_version=current_version,
+                subject_type=subject_type,
+                player=current_player if subject_type == CompletionSubject.PLAYER else None,
+                competition=(
+                    current_competition if subject_type == CompletionSubject.COMPETITION else None
+                ),
+                reason=reason[:255],
+            )
+        elif stale_job.reason != reason[:255]:
+            stale_job.reason = reason[:255]
+            stale_job.save(update_fields=("reason",))
         completion = _completion_record(
-            version, subject_type, player=player, competition=competition
+            current_version,
+            subject_type,
+            player=current_player,
+            competition=current_competition,
         )
         completion.status = CompletionStatus.PENDING
         completion.requested_at = timezone.now()
         completion.error = ""
         completion.save(update_fields=("status", "requested_at", "error", "updated_at"))
-        job, created = RouteCompletionJob.objects.get_or_create(
-            idempotency_key=key,
-            defaults={
-                "route_version": version,
-                "subject_type": subject_type,
-                "player": player if subject_type == CompletionSubject.PLAYER else None,
-                "competition": competition
-                if subject_type == CompletionSubject.COMPETITION
-                else None,
-                "reason": reason[:255],
-            },
-        )
-        if not created and job.reason != reason[:255]:
-            job.reason = reason[:255]
-            job.save(update_fields=("reason",))
+        job = stale_job
         if job.status == RouteCompletionJob.Status.RUNNING:
             # A new activity or membership revision supersedes work already
             # in flight.  Fencing the worker makes its eventual write
@@ -766,6 +915,8 @@ def schedule_completion(
             job.completed_at = None
             job.dispatch_token = ""
             job.dispatch_lease_until = None
+            job.dispatched_at = None
+            job.error = ""
             job.save(
                 update_fields=(
                     "status",
@@ -775,23 +926,35 @@ def schedule_completion(
                     "completed_at",
                     "dispatch_token",
                     "dispatch_lease_until",
+                    "dispatched_at",
+                    "error",
                 )
             )
-        elif job.status in {RouteCompletionJob.Status.COMPLETE, RouteCompletionJob.Status.FAILED}:
+        elif job.status in {
+            RouteCompletionJob.Status.COMPLETE,
+            RouteCompletionJob.Status.FAILED,
+            RouteCompletionJob.Status.CANCELLED,
+        }:
             job.status = RouteCompletionJob.Status.PENDING
             job.error = ""
             job.next_attempt_at = timezone.now()
             job.completed_at = None
+            job.lease_token = ""
+            job.lease_until = None
             job.dispatch_token = ""
             job.dispatch_lease_until = None
+            job.dispatched_at = None
             job.save(
                 update_fields=(
                     "status",
                     "error",
                     "next_attempt_at",
                     "completed_at",
+                    "lease_token",
+                    "lease_until",
                     "dispatch_token",
                     "dispatch_lease_until",
+                    "dispatched_at",
                 )
             )
     return job
@@ -802,15 +965,15 @@ def schedule_version_completions(version: ReferenceRouteVersion, *, reason: str)
     for player_id in Player.objects.filter(lifecycle=Player.Lifecycle.CONNECTED).values_list(
         "pk", flat=True
     ):
-        schedule_completion(
+        job = schedule_completion(
             version, CompletionSubject.PLAYER, player=Player(pk=player_id), reason=reason
         )
-        count += 1
+        count += job is not None
     for competition in Competition.objects.filter(is_active=True).order_by("pk"):
-        schedule_completion(
+        job = schedule_completion(
             version, CompletionSubject.COMPETITION, competition=competition, reason=reason
         )
-        count += 1
+        count += job is not None
     return count
 
 
@@ -829,19 +992,19 @@ def active_versions() -> list[ReferenceRouteVersion]:
 def schedule_player_completions(player: Player, *, reason: str) -> int:
     count = 0
     for version in active_versions():
-        schedule_completion(version, CompletionSubject.PLAYER, player=player, reason=reason)
-        count += 1
+        job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason=reason)
+        count += job is not None
     return count
 
 
 def schedule_competition_completions(competition: Competition, *, reason: str) -> int:
     count = 0
     for version in active_versions():
-        schedule_completion(
+        job = schedule_completion(
             version,
             CompletionSubject.COMPETITION,
             competition=competition,
             reason=reason,
         )
-        count += 1
+        count += job is not None
     return count

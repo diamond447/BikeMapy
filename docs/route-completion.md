@@ -40,16 +40,22 @@ request transaction. Worker and dispatcher leases are fenced through the
 projection commit; a superseded worker cannot write stale evidence.
 
 One eligibility policy governs scheduling, dispatch claims, source activity
-reads, projection commits, and API visibility. It requires an active collection,
-current collection permission, a source that passes its publication gate, and,
-for competition subjects, an active competition with the competition game gate
-enabled. Withdrawing a collection or competition gate cancels queued and
+reads, projection commits, and API visibility. It requires an active, approved
+route; its current active, valid version; an active collection with current
+permission; a source that passes its publication gate; and, for competition
+subjects, an active competition with the competition game gate enabled.
+Withdrawing a publication, collection, or competition gate cancels queued and
 running jobs, clears the current projection and monthly rows, and erases its
 activity evidence. The audit trail for completion evidence is therefore
 retained only while the corresponding source and feature permission remains
 active; re-enabling a gate requires a fresh calculation. Gate changes made by
 deployment configuration are checked again at dispatch, source read, commit,
 and API access.
+
+Database lock order is competition when applicable, collection, route,
+version, job, then projection. Scheduling, worker claims, activity reads,
+commits, and gate cleanup follow this order so a gate update cannot deadlock
+against a worker publishing a projection.
 
 The benchmark fixture contains twelve dense, noisy tracks over an eleven-point
 reference route. It runs fifteen samples and reports median and p95 latency.

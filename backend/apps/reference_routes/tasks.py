@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from typing import Any, cast
 from uuid import uuid4
 
 from celery import shared_task  # type: ignore[import-untyped]
@@ -18,9 +17,10 @@ from apps.accounts.models import Competition, Player
 from .completion_services import (
     PUBLIC_COMPLETION_ERROR_CODE,
     CompletionCalculationError,
+    _completion_state_is_eligible,
     _invalidate_ineligible_job,
+    _lock_completion_context,
     calculate_completion,
-    completion_is_eligible,
     invalidate_ineligible_completion_data,
 )
 from .models import (
@@ -60,19 +60,19 @@ def calculate_route_completion(job_id: int) -> dict[str, object]:
     token = uuid4().hex
     route_version_id = subject_type = player_id = competition_id = None
     with transaction.atomic():
-        try:
-            job = (
-                RouteCompletionJob.objects.select_for_update()
-                .select_related(
-                    "route_version__route__collection",
-                    "route_version__source_import",
-                    "player",
-                    "competition",
-                )
-                .get(pk=job_id)
-            )
-        except RouteCompletionJob.DoesNotExist:
+        job_reference = (
+            RouteCompletionJob.objects.filter(pk=job_id)
+            .values("route_version_id", "player_id", "competition_id")
+            .first()
+        )
+        if job_reference is None:
             return {"status": "missing", "job_id": job_id}
+        current_version, current_player, current_competition = _lock_completion_context(
+            job_reference["route_version_id"],
+            player_id=job_reference["player_id"],
+            competition_id=job_reference["competition_id"],
+        )
+        job = RouteCompletionJob.objects.select_for_update().get(pk=job_id)
         if job.status == RouteCompletionJob.Status.COMPLETE:
             return {"status": "complete", "job_id": job_id}
         if job.status == RouteCompletionJob.Status.CANCELLED:
@@ -85,11 +85,11 @@ def calculate_route_completion(job_id: int) -> dict[str, object]:
             return {"status": "in_progress", "job_id": job_id}
         if job.next_attempt_at > now:
             return {"status": "retry_scheduled", "job_id": job_id}
-        if not completion_is_eligible(
-            job.route_version,
+        if not _completion_state_is_eligible(
+            current_version,
             job.subject_type,
-            player=job.player,
-            competition=job.competition,
+            player=current_player,
+            competition=current_competition,
         ):
             _invalidate_ineligible_job(job)
             return {"status": "cancelled", "job_id": job_id}
@@ -139,22 +139,24 @@ def calculate_route_completion(job_id: int) -> dict[str, object]:
             },
         )
         with transaction.atomic():
-            try:
-                locked = RouteCompletionJob.objects.select_for_update().get(pk=job_id)
-            except RouteCompletionJob.DoesNotExist:
+            reference = (
+                RouteCompletionJob.objects.filter(pk=job_id)
+                .values("route_version_id", "player_id", "competition_id")
+                .first()
+            )
+            if reference is None:
                 return {"status": "missing", "job_id": job_id}
+            current_version, player, competition = _lock_completion_context(
+                reference["route_version_id"],
+                player_id=reference["player_id"],
+                competition_id=reference["competition_id"],
+            )
+            locked = RouteCompletionJob.objects.select_for_update().get(pk=job_id)
             if locked.lease_token != token:
                 return {"status": "in_progress", "job_id": job_id}
             if isinstance(exc, CompletionCalculationError):
-                version = ReferenceRouteVersion.objects.select_related(
-                    "route__collection", "source_import"
-                ).get(pk=locked.route_version_id)
-                player = Player.objects.filter(pk=cast(Any, locked.player_id)).first()
-                competition = Competition.objects.filter(
-                    pk=cast(Any, locked.competition_id)
-                ).first()
-                if not completion_is_eligible(
-                    version, locked.subject_type, player=player, competition=competition
+                if not _completion_state_is_eligible(
+                    current_version, locked.subject_type, player=player, competition=competition
                 ):
                     _invalidate_ineligible_job(locked)
                     return {"status": "cancelled", "job_id": job_id}
@@ -200,14 +202,31 @@ def _claim_completion_dispatch() -> tuple[int, str] | None:
     now = timezone.now()
     with transaction.atomic():
         while True:
+            candidate = (
+                RouteCompletionJob.objects.filter(
+                    Q(status=RouteCompletionJob.Status.PENDING)
+                    | Q(status=RouteCompletionJob.Status.FAILED),
+                    next_attempt_at__lte=now,
+                )
+                .filter(
+                    Q(dispatch_token="")
+                    | Q(dispatch_lease_until__isnull=True)
+                    | Q(dispatch_lease_until__lte=now)
+                )
+                .order_by("created_at", "pk")
+                .values("pk", "route_version_id", "player_id", "competition_id")
+                .first()
+            )
+            if candidate is None:
+                return None
+            current_version, current_player, current_competition = _lock_completion_context(
+                candidate["route_version_id"],
+                player_id=candidate["player_id"],
+                competition_id=candidate["competition_id"],
+            )
             job = (
                 RouteCompletionJob.objects.select_for_update(skip_locked=True)
-                .select_related(
-                    "route_version__route__collection",
-                    "route_version__source_import",
-                    "player",
-                    "competition",
-                )
+                .filter(pk=candidate["pk"])
                 .filter(
                     Q(status=RouteCompletionJob.Status.PENDING)
                     | Q(status=RouteCompletionJob.Status.FAILED),
@@ -223,11 +242,11 @@ def _claim_completion_dispatch() -> tuple[int, str] | None:
             )
             if job is None:
                 return None
-            if not completion_is_eligible(
-                job.route_version,
+            if not _completion_state_is_eligible(
+                current_version,
                 job.subject_type,
-                player=job.player,
-                competition=job.competition,
+                player=current_player,
+                competition=current_competition,
             ):
                 _invalidate_ineligible_job(job)
                 continue
