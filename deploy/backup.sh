@@ -10,6 +10,7 @@ POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
 mkdir -p "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
+bash "$(dirname "$0")/reconcile-restore-upload-rollbacks.sh"
 failure_marker="$BACKUP_DIR/backup-failed-${BACKUP_ID}"
 services_stopped=0
 # Capture the exact image reference before stopping writers. The environment

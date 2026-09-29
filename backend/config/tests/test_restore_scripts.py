@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -6,6 +7,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -73,9 +75,21 @@ import sys
 from pathlib import Path
 
 args = sys.argv[1:]
-if args[:2] == ["volume", "create"]:
-    Path(os.environ["FAKE_ROLLBACK_PATH"]).mkdir(parents=True, exist_ok=True)
-    raise SystemExit(0)
+if args[:1] == ["volume"]:
+    rollback_path = Path(os.environ["FAKE_ROLLBACK_PATH"])
+    if args[1] == "create":
+        rollback_path.mkdir(parents=True, exist_ok=True)
+        raise SystemExit(0)
+    if args[1] == "inspect":
+        raise SystemExit(0 if rollback_path.exists() else 1)
+    if args[1] == "rm":
+        import shutil
+        shutil.rmtree(rollback_path, ignore_errors=True)
+        raise SystemExit(0)
+    if args[1] == "ls":
+        if rollback_path.exists():
+            print(os.environ["ACTIVITY_UPLOAD_ROLLBACK_VOLUME"])
+        raise SystemExit(0)
 if args[0] != "run":
     raise SystemExit("unexpected docker invocation: " + repr(args))
 mounts = {}
@@ -129,9 +143,10 @@ raise SystemExit(0)
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "BACKUP_DIR": str(backup),
         "COMPOSE": str(compose),
+        "ACTIVITY_UPLOAD_ROLLBACK_LOCK_FILE": str(tmp_path / "restore-upload.lock"),
         "GPX_VOLUME": "test-gpx",
         "ACTIVITY_UPLOAD_VOLUME": "test-uploads",
-        "ACTIVITY_UPLOAD_ROLLBACK_VOLUME": "test-upload-rollback",
+        "ACTIVITY_UPLOAD_ROLLBACK_VOLUME": "bikemapy-restore-upload-test-attempt",
         "FAKE_GPX_PATH": str(gpx_volume),
         "FAKE_UPLOAD_PATH": str(upload_volume),
         "FAKE_ROLLBACK_PATH": str(tmp_path / "rollback-volume"),
@@ -149,6 +164,90 @@ raise SystemExit(0)
     assert "Restore failed" in result.stderr
     assert gpx_file.read_bytes() == b"original durable GPX"
     assert upload_file.read_bytes() == b"original transient upload"
+
+
+def test_abandoned_upload_rollback_volume_expires_with_retry_and_restore_lock(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).parents[3]
+    state_path = tmp_path / "docker-volumes.json"
+    stale_volume = "bikemapy-restore-upload-crashed-attempt"
+    state_path.write_text(
+        json.dumps(
+            {
+                "volumes": {stale_volume: {"created_at": int(time.time()) - 7200}},
+                "rm_failures": 1,
+            }
+        )
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+state_path = Path(os.environ["FAKE_DOCKER_STATE"])
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+if args[1] == "ls":
+    print("\\n".join(state["volumes"]))
+elif args[1] == "inspect":
+    metadata = state["volumes"].get(args[-1])
+    if metadata is None:
+        raise SystemExit(1)
+    print(metadata["created_at"])
+elif args[1] == "rm":
+    if state["rm_failures"]:
+        state["rm_failures"] -= 1
+        state_path.write_text(json.dumps(state))
+        print("simulated busy volume", file=sys.stderr)
+        raise SystemExit(1)
+    state["volumes"].pop(args[-1], None)
+    state_path.write_text(json.dumps(state))
+else:
+    raise SystemExit("unexpected docker invocation: " + repr(args))
+"""
+    )
+    docker.chmod(0o755)
+    backup_dir = tmp_path / "backup"
+    lock_path = tmp_path / "restore-upload.lock"
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "BACKUP_DIR": str(backup_dir),
+        "FAKE_DOCKER_STATE": str(state_path),
+        "ACTIVITY_UPLOAD_ROLLBACK_TTL_SECONDS": "3600",
+        "ACTIVITY_UPLOAD_ROLLBACK_LOCK_FILE": str(lock_path),
+    }
+    helper = root / "deploy/reconcile-restore-upload-rollbacks.sh"
+    first = subprocess.run(
+        ["bash", str(helper)], check=False, capture_output=True, text=True, env=environment
+    )
+    assert first.returncode == 1
+    assert "could not remove expired" in first.stderr
+    assert stale_volume in json.loads(state_path.read_text())["volumes"]
+
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        retry = subprocess.Popen(
+            ["bash", str(helper)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        time.sleep(0.2)
+        assert retry.poll() is None
+        assert stale_volume in json.loads(state_path.read_text())["volumes"]
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+    retry_stdout, retry_stderr = retry.communicate(timeout=5)
+    assert retry.returncode == 0, retry_stderr
+    assert stale_volume not in json.loads(state_path.read_text())["volumes"]
+    assert "Expiring abandoned" in retry_stdout
 
 
 def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:

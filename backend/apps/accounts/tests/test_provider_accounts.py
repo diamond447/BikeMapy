@@ -435,6 +435,39 @@ def test_expired_processing_upload_finalizes_parent_batch(tmp_path: Path) -> Non
     assert not stored_path.exists()
 
 
+@pytest.mark.parametrize("content_path", [None, ""])
+@pytest.mark.parametrize("status", [ActivityUpload.Status.QUEUED, ActivityUpload.Status.PROCESSING])
+def test_expired_upload_without_a_storage_path_is_failed_without_empty_deletion(
+    content_path: str | None, status: str
+) -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    batch = ActivityUploadBatch.objects.create(player=player, total_files=1, attested=True)
+    upload = ActivityUpload.objects.create(
+        batch=batch,
+        original_name="legacy.gpx",
+        content_sha256="d" * 64,
+        size_bytes=7,
+        status=status,
+        content=b"legacy inline",
+        content_path=content_path,
+    )
+    ActivityUpload.objects.filter(pk=upload.pk).update(
+        created_at=timezone.now() - timedelta(days=2)
+    )
+
+    cleanup_expired_activity_uploads_task()
+
+    upload.refresh_from_db()
+    assert upload.status == ActivityUpload.Status.FAILED
+    assert upload.error_code == "retention_expired"
+    assert upload.content is None
+    assert not upload.content_path
+    assert not ActivityUploadDeletion.objects.filter(storage_key="").exists()
+
+
 def test_transport_accepts_supported_payload_above_one_megabyte(tmp_path: Path) -> None:
     competition = _competition()
     player, _ = create_invited_account(
@@ -620,7 +653,9 @@ def test_account_deletion_skips_processed_rows_with_null_storage_paths() -> None
     assert not ActivityUploadDeletion.objects.exists()
 
 
-def test_migration_clears_legacy_inline_upload_payloads(tmp_path: Path) -> None:
+def test_migration_moves_legacy_inline_upload_payloads_to_private_storage(
+    tmp_path: Path,
+) -> None:
     from importlib import import_module
 
     from django.apps import apps
@@ -641,12 +676,44 @@ def test_migration_clears_legacy_inline_upload_payloads(tmp_path: Path) -> None:
         content=b"inline!",
         content_path=None,
     )
-    with override_settings(
-        MEDIA_ROOT=tmp_path / "durable", ACTIVITY_UPLOAD_ROOT=tmp_path / "private"
-    ):
+    private_root = tmp_path / "private"
+    with override_settings(MEDIA_ROOT=tmp_path / "durable", ACTIVITY_UPLOAD_ROOT=private_root):
         migration.migrate_legacy_activity_uploads(apps, None)
     upload.refresh_from_db()
     assert upload.content is None
+    assert upload.status == ActivityUpload.Status.QUEUED
+    storage_key = upload.content_path.name
+    assert storage_key is not None
+    assert (private_root / storage_key).read_bytes() == b"inline!"
+
+
+@pytest.mark.parametrize("content_path", [None, ""])
+def test_migration_fails_unfinished_uploads_without_any_payload(
+    content_path: str | None,
+) -> None:
+    from importlib import import_module
+
+    from django.apps import apps
+
+    migration = import_module("apps.accounts.migrations.0029_activity_upload_deletion_and_storage")
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    batch = ActivityUploadBatch.objects.create(player=player, total_files=1, attested=True)
+    upload = ActivityUpload.objects.create(
+        batch=batch,
+        original_name="missing.gpx",
+        content_sha256="e" * 64,
+        size_bytes=0,
+        status=ActivityUpload.Status.QUEUED,
+        content=None,
+        content_path=content_path,
+    )
+
+    migration.migrate_legacy_activity_uploads(apps, None)
+
+    upload.refresh_from_db()
     assert upload.status == ActivityUpload.Status.FAILED
     assert upload.error_code == "missing_payload"
 

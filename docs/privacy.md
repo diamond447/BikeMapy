@@ -174,6 +174,11 @@ deletions retain a retry record and are visible to the owner operator. A
 15-minute orphan reconciliation pass queues unreferenced objects after a
 one-hour grace period. Restore discards all transient upload references and
 clears the transient volume, so a snapshot cannot resurrect raw payloads.
+During a restore only, a labeled rollback volume temporarily snapshots the
+current upload volume so a failed restore can recover it. Successful snapshots
+are removed immediately; abandoned snapshots are expired after 24 hours by
+normal backup/restore reconciliation. Cleanup failures are warned and retried,
+and a restore lock prevents cleanup from deleting a live snapshot.
 Normalized private activities and the minimal storage-key deletion metadata
 remain separate from raw payload retention. Deletion queue rows contain only
 opaque storage keys, retry state, and timestamps and are not tied to a player;

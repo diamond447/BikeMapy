@@ -36,13 +36,17 @@ and retry with backoff. A 15-minute reconciler queues unreferenced objects only
 after a one-hour age grace period. Successful deletion queue records are purged
 after 30 days; failed records remain until storage deletion succeeds.
 
-The upload volume is deliberately omitted from database/GPX backups. GPX
-archives also exclude the legacy `media/private/activity_uploads/` directory,
-and the archive validator rejects it if it appears. Restore clears transient
-upload references and the dedicated volume; unfinished batches restored from a
-snapshot are marked failed because raw payloads are not part of recovery
-points. Normalized private activities and deletion queue metadata remain in
-the database backup under their existing account and audit retention rules.
+The upload volume is deliberately omitted from durable database/GPX backups.
+GPX archives exclude the legacy `media/private/activity_uploads/` directory;
+the validator still accepts older archives that contain it, but restore
+extraction skips those raw files. Restore clears transient upload references
+and the dedicated volume; unfinished batches restored from a snapshot are
+marked failed because raw payloads are not part of recovery points. A labeled
+temporary rollback volume preserves the current upload volume only while a
+restore is in progress; successful snapshots are removed immediately and
+abandoned snapshots expire after 24 hours. Normalized private activities and
+deletion queue metadata remain in the database backup under their existing
+account and audit retention rules.
 
 The legacy Strava integration remains isolated and optional. Direct uploads do
 not create or require Strava credentials.

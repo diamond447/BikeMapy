@@ -1,6 +1,9 @@
 import django.utils.timezone
 from django.utils import timezone
+import hashlib
+
 from django.conf import settings
+from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 from django.db import migrations, models
 from django.db.models import Q
@@ -43,15 +46,32 @@ def migrate_legacy_activity_uploads(apps, schema_editor):
                 upload.content_path = saved_key
                 upload.save(update_fields=("content_path",))
         old_storage.delete(key)
-    Upload.objects.filter(
+    # Pre-file uploads stored bytes inline in PostgreSQL. Preserve normal
+    # queued work by moving those bytes into the new transient store before
+    # the legacy database column is cleared.
+    for upload in Upload.objects.filter(
         status__in=("queued", "processing"),
         content__isnull=False,
-    ).filter(Q(content_path__isnull=True) | Q(content_path="")).update(
-        content=None,
-        status="failed",
-        error_code="missing_payload",
-        error_detail="The inline upload payload was removed during storage migration.",
-        processed_at=timezone.now(),
+    ).filter(Q(content_path__isnull=True) | Q(content_path="")).iterator():
+        payload = bytes(upload.content)
+        if payload:
+            digest = hashlib.sha256(payload).hexdigest()
+            key = f"private/activity_uploads/legacy/{upload.pk}-{digest}.bin"
+            saved_key = key
+            if not new_storage.exists(key):
+                saved_key = new_storage.save(key, ContentFile(payload))
+            Upload.objects.filter(pk=upload.pk).update(content_path=saved_key, content=None)
+
+    (
+        Upload.objects.filter(status__in=("queued", "processing"))
+        .filter(Q(content_path__isnull=True) | Q(content_path=""))
+        .update(
+            content=None,
+            status="failed",
+            error_code="missing_payload",
+            error_detail="The upload payload was unavailable during storage migration.",
+            processed_at=timezone.now(),
+        )
     )
     Upload.objects.exclude(content=None).update(content=None)
 

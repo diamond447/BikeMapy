@@ -257,6 +257,17 @@ operator, timestamps, command output, and endpoint responses as recovery
 evidence. Do not delete the pre-restore volume or backup until verification is
 complete.
 
+Before a restore clears the transient upload volume, it makes a temporary
+rollback snapshot so a failed restore can put the pre-restore private uploads
+back. Successful snapshots are removed on exit. Labeled volumes left by a
+crashed host or failed removal expire after 24 hours; backup and restore
+operations reconcile them and report failed cleanup for retry. Restore holds a
+shared host lock (`/var/lock/bikemapy-restore-upload-rollback.lock` by
+default) for the full transaction, so concurrent cleanup
+cannot expire an active snapshot. Do not manually remove a labeled rollback
+volume while a restore is running. Inspect outstanding snapshots with
+`docker volume ls --filter label=com.bikemapy.restore-upload-rollback=true`.
+
 Run a non-production drill every Sunday using
 `deploy/restore-drill.sh BACKUP_ID` and the supplied
 `deploy/restore-drill.cron.example`. It uses a disposable PostGIS container

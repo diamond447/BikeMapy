@@ -42,8 +42,7 @@ def cleanup_expired_activity_uploads_task() -> dict[str, int]:
     stale = ActivityUpload.objects.filter(
         created_at__lt=cutoff,
         status__in=(ActivityUpload.Status.QUEUED, ActivityUpload.Status.PROCESSING),
-        content_path__isnull=False,
-    ).exclude(content_path="")
+    )
     batch_ids = list(stale.values_list("batch_id", flat=True).distinct())
     expired = list(stale)
     cleared = 0
