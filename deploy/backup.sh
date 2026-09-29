@@ -10,6 +10,7 @@ POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
 mkdir -p "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
+bash "$(dirname "$0")/reconcile-restore-upload-rollbacks.sh"
 failure_marker="$BACKUP_DIR/backup-failed-${BACKUP_ID}"
 services_stopped=0
 # Capture the exact image reference before stopping writers. The environment
@@ -52,7 +53,8 @@ $COMPOSE exec -T db pg_dump --username="$POSTGRES_USER" --format=custom \
 # The archive root is the volume root (/app/storage in production). Keep
 # media/ in the archive so Django storage keys resolve after extraction.
 docker run --rm -v "${GPX_VOLUME}:/data:ro" -v "$BACKUP_DIR:/backup" alpine \
-  tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part" -C /data .
+  tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part" \
+  --exclude=./media/private/activity_uploads -C /data .
 test -s "$BACKUP_DIR/db-${BACKUP_ID}.dump.part"
 test -s "$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz.part"
 mv -f "$BACKUP_DIR/db-${BACKUP_ID}.dump.part" "$db_file"

@@ -51,12 +51,21 @@ function detail(data: unknown, fallback: string) {
     : fallback
 }
 
-function trustedRelativeUrl(value: unknown): string | null {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return null
+function trustedBackendOAuthUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
   try {
-    const url = new URL(value, window.location.origin)
-    if (url.origin !== window.location.origin) return null
-    return `${url.pathname}${url.search}${url.hash}`
+    const url = new URL(value)
+    if (
+      url.origin !== new URL(apiBaseUrl).origin ||
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/accounts/github/login/' ||
+      url.hash ||
+      (url.search && url.search !== '?process=connect')
+    )
+      return null
+    return url.toString()
   } catch {
     return null
   }
@@ -216,7 +225,11 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
         body: JSON.stringify({ invite_code: inviteCode }),
       })
       if (!result.response.ok) setMessage(detail(result.data, 'The invite code is not valid.'))
-      else window.location.assign('/accounts/github/login/')
+      else if (result.data && typeof result.data === 'object' && 'url' in result.data) {
+        const url = trustedBackendOAuthUrl(result.data.url)
+        if (url) window.location.assign(url)
+        else setMessage('GitHub sign-in is unavailable.')
+      } else setMessage('GitHub sign-in is unavailable.')
     } catch {
       setMessage('The account service is temporarily unavailable.')
     } finally {
@@ -230,7 +243,7 @@ export function LocalAccountPanel({ authenticated = false, onAuthenticated, onSi
       const result = await request('/api/v1/game/account/github/link/', { method: 'POST' })
       if (!result.response.ok) setMessage(detail(result.data, 'GitHub linking is unavailable.'))
       else if (result.data && typeof result.data === 'object' && 'url' in result.data) {
-        const url = trustedRelativeUrl(result.data.url)
+        const url = trustedBackendOAuthUrl(result.data.url)
         if (url) window.location.assign(url)
         else setMessage('GitHub linking is unavailable.')
       } else setMessage('GitHub linking is unavailable.')

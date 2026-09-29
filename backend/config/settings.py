@@ -161,6 +161,7 @@ AUTHENTICATION_BACKENDS = [
 ]
 LOGIN_REDIRECT_URL = "/admin/"
 SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
+ACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerAccountAdapter"
 SOCIALACCOUNT_STORE_TOKENS = False
 SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 ACCOUNT_EMAIL_VERIFICATION = "none"
@@ -374,7 +375,12 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 ROOT_STORAGE = BASE_DIR / "storage"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", str(ROOT_STORAGE / "media")))
+ACTIVITY_UPLOAD_ROOT = Path(
+    os.getenv("DJANGO_ACTIVITY_UPLOAD_ROOT", str(ROOT_STORAGE / "private-uploads"))
+)
 MEDIA_URL = "/media/"
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2_621_440
+DATA_UPLOAD_MAX_MEMORY_SIZE = 90 * 1024 * 1024
 if not DEBUG:
     STORAGES = {
         "default": {
@@ -560,6 +566,14 @@ CELERY_BEAT_SCHEDULE = {
     "cleanup-expired-activity-uploads": {
         "task": "bikemapy.accounts.cleanup_expired_activity_uploads",
         "schedule": 3600,
+    },
+    "retry-activity-upload-deletions": {
+        "task": "bikemapy.accounts.retry_activity_upload_deletions",
+        "schedule": 900,
+    },
+    "reconcile-orphan-activity-uploads": {
+        "task": "bikemapy.accounts.reconcile_orphan_activity_uploads",
+        "schedule": 900,
     },
     "dispatch-game-recomputations": {
         "task": "bikemapy.accounts.dispatch_competition_recomputations",
