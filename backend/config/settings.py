@@ -1,5 +1,6 @@
 """Django settings for local development and the production baseline."""
 
+import ipaddress
 import os
 from pathlib import Path
 from typing import Any
@@ -160,6 +161,7 @@ AUTHENTICATION_BACKENDS = [
 ]
 LOGIN_REDIRECT_URL = "/admin/"
 SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
+ACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerAccountAdapter"
 SOCIALACCOUNT_STORE_TOKENS = False
 SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 ACCOUNT_EMAIL_VERIFICATION = "none"
@@ -204,10 +206,63 @@ STRAVA_OAUTH_REDIRECT_URI = os.getenv(
     "http://localhost:8000/api/v1/game/auth/strava/callback/",
 )
 GAME_FRONTEND_URL = os.getenv("GAME_FRONTEND_URL", "http://localhost:5173/game")
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend"
+    if DEPLOYMENT_MODE != "production"
+    else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = env_int("EMAIL_PORT", 587)
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", False)
+EMAIL_TIMEOUT = env_int("EMAIL_TIMEOUT", 10)
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@localhost")
+
+
+def validate_account_email_settings() -> None:
+    """Require deliverable email settings before enabling local accounts."""
+
+    if not PLAYER_ACCOUNTS_ENABLED:
+        return
+    sender = DEFAULT_FROM_EMAIL.strip()
+    missing = []
+    if not sender or "@" not in sender:
+        missing.append("DEFAULT_FROM_EMAIL")
+    if DEPLOYMENT_MODE == "production":
+        placeholder_markers = ("example", "invalid", "localhost", "placeholder", "replace-with")
+        from_address = sender.lower()
+        if any(marker in from_address for marker in placeholder_markers):
+            missing.append("DEFAULT_FROM_EMAIL (placeholder address)")
+        if EMAIL_BACKEND != "django.core.mail.backends.smtp.EmailBackend":
+            missing.append("EMAIL_BACKEND (SMTP required in production)")
+        if not EMAIL_HOST.strip() or any(
+            marker in EMAIL_HOST.lower() for marker in placeholder_markers
+        ):
+            missing.append("EMAIL_HOST")
+        if EMAIL_PORT < 1 or EMAIL_PORT > 65535:
+            missing.append("EMAIL_PORT")
+        if EMAIL_USE_TLS == EMAIL_USE_SSL:
+            missing.append("exactly one of EMAIL_USE_TLS or EMAIL_USE_SSL")
+        if any(
+            not value.strip() or any(marker in value.lower() for marker in placeholder_markers)
+            for value in (EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
+        ):
+            missing.append("EMAIL_HOST_USER and EMAIL_HOST_PASSWORD")
+    if missing:
+        raise ImproperlyConfigured(
+            "PLAYER_ACCOUNTS_ENABLED requires usable mail configuration: " + ", ".join(missing)
+        )
+
+
+validate_account_email_settings()
 
 
 def validate_game_frontend_url(value: str) -> None:
     parsed = urlsplit(value)
+    hostname = (parsed.hostname or "").lower()
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
@@ -220,8 +275,32 @@ def validate_game_frontend_url(value: str) -> None:
         raise ImproperlyConfigured(
             "GAME_FRONTEND_URL must be an absolute /game URL without credentials or fragments"
         )
-    if GAME_ENABLED and DEPLOYMENT_MODE == "production" and parsed.scheme != "https":
+    secure_frontend_required = DEPLOYMENT_MODE == "production" and (
+        GAME_ENABLED or PLAYER_ACCOUNTS_ENABLED
+    )
+    if secure_frontend_required and parsed.scheme != "https":
         raise ImproperlyConfigured("GAME_FRONTEND_URL must use HTTPS in production")
+    if secure_frontend_required and PLAYER_ACCOUNTS_ENABLED:
+        try:
+            loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            loopback = False
+        local_hosts = {"localhost", "host.docker.internal"}
+        placeholder_hosts = (
+            hostname.endswith((".invalid", ".example", ".test"))
+            or hostname in {"example.com", "example.org", "example.net"}
+            or hostname.endswith((".example.com", ".example.org", ".example.net"))
+        )
+        if hostname in local_hosts or hostname.endswith(".localhost") or loopback:
+            raise ImproperlyConfigured(
+                "GAME_FRONTEND_URL must use a non-local HTTPS host when "
+                "PLAYER_ACCOUNTS_ENABLED=true"
+            )
+        if placeholder_hosts:
+            raise ImproperlyConfigured(
+                "GAME_FRONTEND_URL must not use a placeholder host when "
+                "PLAYER_ACCOUNTS_ENABLED=true"
+            )
 
 
 validate_game_frontend_url(GAME_FRONTEND_URL)
@@ -296,7 +375,12 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 ROOT_STORAGE = BASE_DIR / "storage"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", str(ROOT_STORAGE / "media")))
+ACTIVITY_UPLOAD_ROOT = Path(
+    os.getenv("DJANGO_ACTIVITY_UPLOAD_ROOT", str(ROOT_STORAGE / "private-uploads"))
+)
 MEDIA_URL = "/media/"
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2_621_440
+DATA_UPLOAD_MAX_MEMORY_SIZE = 90 * 1024 * 1024
 if not DEBUG:
     STORAGES = {
         "default": {
@@ -482,6 +566,14 @@ CELERY_BEAT_SCHEDULE = {
     "cleanup-expired-activity-uploads": {
         "task": "bikemapy.accounts.cleanup_expired_activity_uploads",
         "schedule": 3600,
+    },
+    "retry-activity-upload-deletions": {
+        "task": "bikemapy.accounts.retry_activity_upload_deletions",
+        "schedule": 900,
+    },
+    "reconcile-orphan-activity-uploads": {
+        "task": "bikemapy.accounts.reconcile_orphan_activity_uploads",
+        "schedule": 900,
     },
     "dispatch-game-recomputations": {
         "task": "bikemapy.accounts.dispatch_competition_recomputations",

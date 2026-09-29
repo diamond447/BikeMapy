@@ -14,6 +14,7 @@ from django.utils import timezone
 from apps.catalogue.fields import RouteGeometryField, RoutePolygonField
 
 from .fields import EncryptedSecretField
+from .upload_storage import activity_upload_storage
 
 OAUTH_STATE_TTL = timedelta(minutes=10)
 
@@ -309,7 +310,13 @@ class ActivityUpload(models.Model):
     batch = models.ForeignKey(ActivityUploadBatch, on_delete=models.CASCADE, related_name="files")
     original_name = models.CharField(max_length=240)
     content_sha256 = models.CharField(max_length=64)
-    content_path = models.FileField(upload_to="private/activity_uploads/", null=True, blank=True)
+    content_path = models.FileField(
+        max_length=500,
+        upload_to="private/activity_uploads/",
+        storage=activity_upload_storage,
+        null=True,
+        blank=True,
+    )
     # Legacy database payloads are read only for migration compatibility and
     # are never populated by new uploads.
     content = models.BinaryField(null=True, blank=True)
@@ -339,6 +346,30 @@ class ActivityUpload(models.Model):
 
     def __str__(self) -> str:
         return f"Upload {self.original_name}"
+
+
+class ActivityUploadDeletion(models.Model):
+    """Durable retry record for deleting one transient storage object."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        FAILED = "failed", "Failed"
+        DELETED = "deleted", "Deleted"
+
+    storage_key = models.CharField(max_length=500, unique=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    last_error = models.CharField(max_length=240, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=("status", "next_attempt_at"))]
+        ordering = ("created_at", "pk")
+
+    def __str__(self) -> str:
+        return f"Upload deletion {self.storage_key} ({self.status})"
 
 
 class StravaSyncState(models.Model):

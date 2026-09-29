@@ -28,6 +28,7 @@ MAX_ARCHIVE_FILES = 100
 MAX_GEOMETRY_POINTS = 100_000
 MAX_ACTIVITY_COUNT = 100
 MAX_BATCH_EXPANDED_BYTES = 200 * 1024 * 1024
+MAX_UPLOAD_REQUEST_BYTES = 90 * 1024 * 1024
 UPLOAD_SPOOL_MEMORY = 1024 * 1024
 SUPPORTED_SUFFIXES = frozenset({".fit", ".gpx", ".tcx"})
 _FIT_CRC_TABLE = (
@@ -574,7 +575,13 @@ def create_batch(
         raise UploadError("The batch contains too many files.", code="too_many_files")
     planned: list[tuple[str, UploadPayload, zipfile.ZipInfo | None]] = []
     expanded_bytes = 0
+    request_bytes = 0
     for filename, payload in files:
+        request_bytes += _payload_size(payload)
+        if request_bytes > MAX_UPLOAD_REQUEST_BYTES:
+            raise UploadError(
+                "The upload request exceeds the size limit.", code="request_too_large"
+            )
         if filename.lower().endswith(".zip"):
             archive_size = _payload_size(payload)
             if archive_size > MAX_ARCHIVE_BYTES:
@@ -646,9 +653,11 @@ def create_batch(
                         source.close()
         return batch
     except Exception:
+        from .models import ActivityUploadDeletion
+
         for upload in staged:
             if upload.content_path:
-                upload.content_path.delete(save=False)
+                ActivityUploadDeletion.objects.get_or_create(storage_key=upload.content_path.name)
         raise
 
 
@@ -661,8 +670,10 @@ def _open_upload_payload(upload: ActivityUpload) -> BinaryIO:
 
 
 def _clear_upload_payload(upload: ActivityUpload) -> None:
+    from .models import ActivityUploadDeletion
+
     if upload.content_path:
-        upload.content_path.delete(save=False)
+        ActivityUploadDeletion.objects.get_or_create(storage_key=upload.content_path.name)
     upload.content = None
     upload.content_path = None
 
@@ -704,6 +715,13 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
                 geometry = None
             provider_id = f"upload:{fingerprint}"
             with transaction.atomic():
+                from .models import Player
+
+                # Account deletion takes the same player lock. If deletion
+                # commits first, this worker cannot recreate normalized rows.
+                locked_player = Player.objects.select_for_update().get(pk=batch.player_id)
+                if locked_player.lifecycle != Player.Lifecycle.CONNECTED:
+                    raise UploadError("The account is no longer active.", code="account_inactive")
                 existing = ImportedActivity.objects.filter(
                     player=batch.player, provider_activity_id=provider_id
                 ).first()
@@ -753,6 +771,8 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
                     )
                 )
         except UploadError as exc:
+            if not ActivityUpload.objects.filter(pk=upload.pk).exists():
+                continue
             upload.status = (
                 ActivityUpload.Status.UNSUPPORTED
                 if exc.code == "unsupported_type"
@@ -772,6 +792,8 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
                 )
             )
         except Exception:
+            if not ActivityUpload.objects.filter(pk=upload.pk).exists():
+                continue
             upload.status = ActivityUpload.Status.FAILED
             upload.error_code, upload.error_detail = (
                 "processing_failed",
@@ -814,6 +836,8 @@ def process_batch(batch_id: Any) -> ActivityUploadBatch:
                 for status in terminal_now
             ),
         )
+    if not ActivityUploadBatch.objects.filter(pk=batch.pk).exists():
+        raise ActivityUploadBatch.DoesNotExist
     counts = batch.files.values_list("status", flat=True)
     statuses = list(counts)
     terminal = [

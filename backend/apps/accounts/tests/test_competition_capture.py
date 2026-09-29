@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -17,6 +18,8 @@ from apps.accounts.competition_services import (
     create_competition,
     grant_sharing_consent,
     join_competition,
+    sharing_cutoff_date,
+    withdraw_sharing_consent,
 )
 from apps.accounts.models import CaptureCalculation, CapturePlayerArea, ImportedActivity, Player
 from apps.accounts.tasks import recompute_competition_results_task
@@ -29,6 +32,7 @@ SETTINGS = {
     "STRAVA_OAUTH_CLIENT_SECRET": "client-secret",
     "STRAVA_TOKEN_ENCRYPTION_KEY": "test-key",
     "STRAVA_IDENTITY_GUARD_KEY": "test-identity-key",
+    "COMPETITION_GAME_ENABLED": True,
 }
 
 
@@ -38,6 +42,7 @@ def make_player(athlete_id: int) -> Player:
         user=user,
         strava_athlete_id=athlete_id,
         strava_display_name=f"Rider {athlete_id}",
+        nickname=f"Secret alias {athlete_id}",
     )
 
 
@@ -70,8 +75,21 @@ def line_geometry(coordinates: list[tuple[float, float]]) -> object:
 def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
     owner = make_player(601)
     outsider = make_player(602)
+    pending = make_player(610)
     competition, _ = create_competition(owner, name="Private capture")
+    join_competition(pending, invite_code=competition.invite_code)
     url = reverse("game-competition-capture", args=[competition.pk])
+
+    response = session_client(owner).get(url, viewport())
+    assert response.status_code == 404
+    assert response["Cache-Control"] == "private, no-store"
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="full_history",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
 
     response = session_client(outsider).get(url, viewport())
     missing = session_client(owner).get(
@@ -88,10 +106,14 @@ def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
     assert payload["faces"] == []
     assert payload["truncated"] is False
     assert payload["returned_face_count"] == 0
+    assert [member["player_id"] for member in payload["members"]] == [owner.pk]
+    assert payload["members"][0]["display_name"] != owner.strava_display_name
+    assert payload["members"][0]["nickname"] is None
     assert float(payload["members"][0]["area_m2"]) == 0
     assert "connection_rule" in payload["help"]
     assert payload["limits"]["max_faces"] > 0
 
+    competition.refresh_from_db()
     calculation = CaptureCalculation.objects.get(
         competition=competition, generation=competition.capture_revision
     )
@@ -103,10 +125,131 @@ def test_capture_is_private_bounded_and_exposes_pending_help() -> None:
     assert failed["has_published_snapshot"] is False
 
 
+@override_settings(**(SETTINGS | {"COMPETITION_GAME_ENABLED": False}))
+def test_capture_obeys_competition_rollout_gate() -> None:
+    owner = make_player(606)
+    competition, _ = create_competition(owner, name="Gated capture")
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="full_history",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+
+    response = session_client(owner).get(
+        reverse("game-competition-capture", args=[competition.pk]), viewport()
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "The private game is unavailable."}
+    assert response["Cache-Control"] == "private, no-store"
+
+
+@override_settings(**SETTINGS)
+def test_recent_scope_hides_historical_capture_without_activity_date_provenance() -> None:
+    owner = make_player(608)
+    member = make_player(609)
+    competition, _ = create_competition(owner, name="Retained capture history")
+    join_competition(member, invite_code=competition.invite_code)
+    for player in (owner, member):
+        grant_sharing_consent(
+            player,
+            competition,
+            scope="full_history",
+            disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+            confirmed=True,
+        )
+
+    competition.refresh_from_db()
+    cutoff_date = sharing_cutoff_date(datetime(2026, 9, 28, 12, tzinfo=UTC))
+    prague = ZoneInfo("Europe/Prague")
+    pre_cutoff_snapshot_at = datetime.combine(
+        cutoff_date - timedelta(days=1), time(23, 59), tzinfo=prague
+    ).astimezone(UTC)
+    post_cutoff_snapshot_at = datetime.combine(cutoff_date, time(12), tzinfo=prague).astimezone(UTC)
+    old_calculation = CaptureCalculation.objects.create(
+        competition=competition,
+        generation=competition.capture_revision + 100,
+        algorithm_version="test-old-capture",
+        status=CaptureCalculation.Status.FRESH,
+        published_at=pre_cutoff_snapshot_at,
+    )
+    CapturePlayerArea.objects.create(
+        calculation=old_calculation,
+        player=owner,
+        owner_key=f"owner:{owner.pk}:old",
+        owned_area_m2="777.000",
+    )
+    post_cutoff_old_scope_calculation = CaptureCalculation.objects.create(
+        competition=competition,
+        generation=competition.capture_revision + 101,
+        algorithm_version="test-post-cutoff-old-scope",
+        status=CaptureCalculation.Status.FRESH,
+        # This snapshot is after the exact cutoff date but was produced under
+        # the former full-history scope and carries no source-date provenance.
+        published_at=post_cutoff_snapshot_at,
+    )
+    CapturePlayerArea.objects.create(
+        calculation=post_cutoff_old_scope_calculation,
+        player=owner,
+        owner_key=f"owner:{owner.pk}:post-cutoff-old-scope",
+        owned_area_m2="888.000",
+    )
+
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="recent",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    competition.refresh_from_db()
+    calculation = CaptureCalculation.objects.get(
+        competition=competition, generation=competition.capture_revision
+    )
+    calculated_at = datetime(2026, 9, 29, 12, tzinfo=UTC)
+    calculation.status = CaptureCalculation.Status.FRESH
+    calculation.is_current = True
+    calculation.published_at = calculated_at
+    calculation.completed_at = calculated_at
+    calculation.save(update_fields=("status", "is_current", "published_at", "completed_at"))
+    CapturePlayerArea.objects.create(
+        calculation=calculation,
+        player=owner,
+        owner_key=f"owner:{owner.pk}",
+        owned_area_m2="20.000",
+    )
+    CapturePlayerArea.objects.create(
+        calculation=calculation,
+        player=member,
+        owner_key=f"owner:{member.pk}",
+        owned_area_m2="999.000",
+    )
+
+    withdraw_sharing_consent(member, competition)
+    payload = (
+        session_client(owner)
+        .get(reverse("game-competition-capture", args=[competition.pk]), viewport())
+        .json()
+    )
+
+    assert [row["player_id"] for row in payload["members"]] == [owner.pk]
+    assert payload["members"][0]["monthly_net_change_m2"] == []
+
+
 @override_settings(**SETTINGS)
 def test_capture_pending_after_invalidation_does_not_advertise_an_old_snapshot() -> None:
     owner = make_player(605)
     competition, _ = create_competition(owner, name="Invalidated capture")
+    grant_sharing_consent(
+        owner,
+        competition,
+        scope="full_history",
+        disclosure_version=CURRENT_SHARING_DISCLOSURE_VERSION,
+        confirmed=True,
+    )
+    competition.refresh_from_db()
     current = CaptureCalculation.objects.get(
         competition=competition, generation=competition.capture_revision
     )
@@ -144,8 +287,10 @@ def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks(
 ) -> None:
     owner = make_player(603)
     member = make_player(604)
+    pending = make_player(607)
     competition, _ = create_competition(owner, name="Capture ranking", color="#123456")
     join_competition(member, invite_code=competition.invite_code, color="#654321")
+    join_competition(pending, invite_code=competition.invite_code, color="#E76F51")
     for player in (owner, member):
         grant_sharing_consent(
             player,
@@ -191,6 +336,9 @@ def test_capture_monthly_delta_is_signed_and_visibility_keeps_ranks(
     url = reverse("game-competition-capture", args=[competition.pk])
     initial = session_client(owner).get(url, viewport()).json()
     owner_initial = next(item for item in initial["members"] if item["player_id"] == owner.pk)
+    assert {item["player_id"] for item in initial["members"]} == {owner.pk, member.pk}
+    assert all(item["nickname"] is None for item in initial["members"])
+    assert all(item["display_name"].startswith("Rider ") for item in initial["members"])
     assert any(float(item["net_change_m2"]) > 0 for item in owner_initial["monthly_net_change_m2"])
     assert {item["month"] for item in owner_initial["monthly_net_change_m2"]} == {"2025-01"}
     assert initial["truncated"] is False
