@@ -1,5 +1,6 @@
 """Django settings for local development and the production baseline."""
 
+import ipaddress
 import os
 from pathlib import Path
 from typing import Any
@@ -260,6 +261,7 @@ validate_account_email_settings()
 
 def validate_game_frontend_url(value: str) -> None:
     parsed = urlsplit(value)
+    hostname = (parsed.hostname or "").lower()
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
@@ -272,8 +274,32 @@ def validate_game_frontend_url(value: str) -> None:
         raise ImproperlyConfigured(
             "GAME_FRONTEND_URL must be an absolute /game URL without credentials or fragments"
         )
-    if GAME_ENABLED and DEPLOYMENT_MODE == "production" and parsed.scheme != "https":
+    secure_frontend_required = DEPLOYMENT_MODE == "production" and (
+        GAME_ENABLED or PLAYER_ACCOUNTS_ENABLED
+    )
+    if secure_frontend_required and parsed.scheme != "https":
         raise ImproperlyConfigured("GAME_FRONTEND_URL must use HTTPS in production")
+    if secure_frontend_required and PLAYER_ACCOUNTS_ENABLED:
+        try:
+            loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            loopback = False
+        local_hosts = {"localhost", "host.docker.internal"}
+        placeholder_hosts = (
+            hostname.endswith((".invalid", ".example", ".test"))
+            or hostname in {"example.com", "example.org", "example.net"}
+            or hostname.endswith((".example.com", ".example.org", ".example.net"))
+        )
+        if hostname in local_hosts or hostname.endswith(".localhost") or loopback:
+            raise ImproperlyConfigured(
+                "GAME_FRONTEND_URL must use a non-local HTTPS host when "
+                "PLAYER_ACCOUNTS_ENABLED=true"
+            )
+        if placeholder_hosts:
+            raise ImproperlyConfigured(
+                "GAME_FRONTEND_URL must not use a placeholder host when "
+                "PLAYER_ACCOUNTS_ENABLED=true"
+            )
 
 
 validate_game_frontend_url(GAME_FRONTEND_URL)

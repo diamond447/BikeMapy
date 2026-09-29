@@ -508,13 +508,19 @@ def test_local_account_endpoints_cover_onboarding_login_password_and_reset() -> 
     assert response.status_code == 200
     known_body = response.content
     enqueue.assert_called_once()
+    known_args = enqueue.call_args.kwargs["args"]
+    assert len(known_args) == 1
+    assert "rider@example.com" not in str(known_args)
     with patch("apps.accounts.account_api.send_password_reset_email_task.apply_async") as enqueue:
         unknown = client.post(
             "/api/v1/game/auth/local/reset/", {"email": "nobody@example.com"}, format="json"
         )
     assert unknown.status_code == response.status_code
     assert unknown.content == known_body
-    enqueue.assert_not_called()
+    enqueue.assert_called_once()
+    unknown_args = enqueue.call_args.kwargs["args"]
+    assert len(unknown_args) == len(known_args)
+    assert "nobody@example.com" not in str(unknown_args)
     assert (
         client.post(
             "/api/v1/game/auth/local/reset/not-a-user/not-a-token/",

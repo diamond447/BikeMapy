@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import secrets
 from typing import Any
 
+from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.tokens import default_token_generator
@@ -14,8 +16,8 @@ from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
-from django.utils.encoding import force_bytes, force_str
-from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
 
 from .competition_services import CompetitionError, join_competition
 from .models import Competition, CompetitionInviteRedemption, Player
@@ -177,16 +179,27 @@ def set_password(player: Player, password: str, *, clear_temporary: bool = True)
         player.session_epoch = locked.session_epoch
 
 
-def request_password_reset(email: Any) -> tuple[str, str, str] | None:
-    """Build reset material for asynchronous delivery without exposing account state."""
+def _reset_email_cipher() -> Fernet:
+    key_material = hashlib.sha256(
+        b"bikemapy-account-reset-email-v1\0" + str(settings.SECRET_KEY).encode()
+    ).digest()
+    return Fernet(base64.urlsafe_b64encode(key_material))
 
-    email_value = str(email or "").strip().lower()
-    user = get_user_model().objects.filter(email__iexact=email_value, is_active=True).first()
-    if user is None:
-        return None
-    uid = urlsafe_base64_encode(force_bytes(user.pk))
-    token = default_token_generator.make_token(user)
-    return str(user.pk), uid, token
+
+def protect_reset_email(email: Any) -> str:
+    """Encrypt a reset address before placing it in a Celery message."""
+
+    normalized = str(email or "").strip().lower()
+    return _reset_email_cipher().encrypt(normalized.encode()).decode()
+
+
+def unprotect_reset_email(payload: str) -> str:
+    """Decrypt a reset address inside the trusted Celery worker."""
+
+    try:
+        return _reset_email_cipher().decrypt(payload.encode()).decode()
+    except (InvalidToken, UnicodeDecodeError):
+        return ""
 
 
 def confirm_password_reset(*, uidb64: str, token: str, password: str) -> None:

@@ -26,7 +26,7 @@ from .account_services import (
     authenticate_player,
     confirm_password_reset,
     create_invited_account,
-    request_password_reset,
+    protect_reset_email,
     set_password,
     validate_invite_code,
 )
@@ -268,21 +268,19 @@ class PasswordResetRequestView(AccountEndpoint):
     def post(self, request: Any) -> Response:
         data = ResetInput(data=request.data)
         if data.is_valid():
-            reset = request_password_reset(data.validated_data["email"])
-            if reset is not None:
-                user_id, uid, token = reset
-                try:
-                    send_password_reset_email_task.apply_async(args=(user_id, uid, token))
-                except Exception as exc:
-                    # Do not let broker health or account existence alter the public result.
-                    logger.error(
-                        "password reset email enqueue failed (error_type=%s)",
-                        type(exc).__name__,
-                        extra={
-                            "event": "account_email_enqueue_failed",
-                            "error_type": type(exc).__name__,
-                        },
-                    )
+            encrypted_email = protect_reset_email(data.validated_data["email"])
+            try:
+                send_password_reset_email_task.apply_async(args=(encrypted_email,))
+            except Exception as exc:
+                # Every valid address follows the same broker path and public response.
+                logger.error(
+                    "password reset email enqueue failed (error_type=%s)",
+                    type(exc).__name__,
+                    extra={
+                        "event": "account_email_enqueue_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
         # Both paths return the same generic response; mail delivery runs in Celery.
         return _private(
             Response({"detail": "If the account exists, reset instructions were sent."})
