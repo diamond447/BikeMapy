@@ -1,10 +1,13 @@
+import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -30,6 +33,278 @@ def test_restore_failure_path_restores_database_and_gpx_pair() -> None:
     assert script.index("before_db_file=") < script.index('"/backup/db-${BACKUP_ID}.dump"')
 
 
+@pytest.mark.parametrize("preexisting_rollback_volume", [False, True])
+def test_restore_runtime_failure_preserves_data_and_only_removes_owned_rollback_volume(
+    tmp_path: Path, preexisting_rollback_volume: bool
+) -> None:
+    root = Path(__file__).parents[3]
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    gpx_volume = tmp_path / "gpx-volume"
+    upload_volume = tmp_path / "upload-volume"
+    gpx_file = gpx_volume / "media/gpx/routes/route.gpx"
+    upload_file = upload_volume / "upload.bin"
+    gpx_file.parent.mkdir(parents=True)
+    upload_volume.mkdir(parents=True)
+    gpx_file.write_bytes(b"original durable GPX")
+    upload_file.write_bytes(b"original transient upload")
+    rollback_path = tmp_path / "rollback-volume"
+    preexisting_sentinel = rollback_path / "do-not-delete.bin"
+    if preexisting_rollback_volume:
+        rollback_path.mkdir()
+        (rollback_path / ".created_at").write_text(str(int(time.time())))
+        preexisting_sentinel.write_bytes(b"crash recovery data")
+
+    with tarfile.open(backup / "gpx-target.tar.gz", "w:gz") as archive:
+        target = tmp_path / "target.gpx"
+        target.write_bytes(b"restored durable GPX")
+        archive.add(target, arcname="media/gpx/routes/route.gpx")
+    db_dump = backup / "db-target.dump"
+    db_dump.write_bytes(b"target database")
+    manifest = backup / "manifest-target.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "database_sha256": _sha256(db_dump),
+                "gpx_sha256": _sha256(backup / "gpx-target.tar.gz"),
+            }
+        )
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args[:1] == ["volume"]:
+    rollback_path = Path(os.environ["FAKE_ROLLBACK_PATH"])
+    if args[1] == "create":
+        rollback_path.mkdir(parents=True, exist_ok=True)
+        (rollback_path / ".created_at").write_text(str(int(__import__("time").time())))
+        raise SystemExit(0)
+    if args[1] == "inspect":
+        if not rollback_path.exists():
+            raise SystemExit(1)
+        if "--format" in args:
+            created_at = rollback_path / ".created_at"
+            if created_at.exists():
+                print(created_at.read_text())
+        raise SystemExit(0 if rollback_path.exists() else 1)
+    if args[1] == "rm":
+        import shutil
+        shutil.rmtree(rollback_path, ignore_errors=True)
+        raise SystemExit(0)
+    if args[1] == "ls":
+        if rollback_path.exists():
+            print(os.environ["ACTIVITY_UPLOAD_ROLLBACK_VOLUME"])
+        raise SystemExit(0)
+if args[0] != "run":
+    raise SystemExit("unexpected docker invocation: " + repr(args))
+mounts = {}
+index = 1
+while index < len(args):
+    if args[index] == "--rm":
+        index += 1
+    elif args[index] == "-v":
+        volume, mount = args[index + 1].split(":", 1)
+        mount_path = mount.removesuffix(":ro")
+        key = {
+            os.environ["GPX_VOLUME"]: "FAKE_GPX_PATH",
+            os.environ["ACTIVITY_UPLOAD_VOLUME"]: "FAKE_UPLOAD_PATH",
+            os.environ["ACTIVITY_UPLOAD_ROLLBACK_VOLUME"]: "FAKE_ROLLBACK_PATH",
+        }.get(volume)
+        mounts[mount_path] = os.environ[key] if key else volume
+        index += 2
+    else:
+        break
+image = args[index]
+command = args[index + 1:]
+for mount_path, host_path in sorted(mounts.items(), key=lambda item: -len(item[0])):
+    command = [part.replace(mount_path, host_path) for part in command]
+if not command:
+    raise SystemExit("missing container command for " + image)
+raise SystemExit(subprocess.run(command, check=False).returncode)
+"""
+    )
+    docker.chmod(0o755)
+
+    compose = bin_dir / "fake-compose"
+    compose.write_text(
+        """#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args[0] == "exec" and "pg_dump" in args:
+    target = next(part.split("=", 1)[1] for part in args if part.startswith("--file="))
+    Path(os.environ["BACKUP_DIR"], Path(target).name).write_bytes(b"pre-restore database")
+elif args[0] == "up":
+    raise SystemExit(17)
+raise SystemExit(0)
+"""
+    )
+    compose.chmod(0o755)
+
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "BACKUP_DIR": str(backup),
+        "COMPOSE": str(compose),
+        "ACTIVITY_UPLOAD_ROLLBACK_LOCK_FILE": str(tmp_path / "restore-upload.lock"),
+        "GPX_VOLUME": "test-gpx",
+        "ACTIVITY_UPLOAD_VOLUME": "test-uploads",
+        "ACTIVITY_UPLOAD_ROLLBACK_VOLUME": "bikemapy-restore-upload-test-attempt",
+        "FAKE_GPX_PATH": str(gpx_volume),
+        "FAKE_UPLOAD_PATH": str(upload_volume),
+        "FAKE_ROLLBACK_PATH": str(rollback_path),
+        "RESTORE_ATTEMPT_ID": "test-attempt",
+    }
+    result = subprocess.run(
+        ["bash", str(root / "deploy/restore.sh"), "target"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert gpx_file.read_bytes() == b"original durable GPX"
+    assert upload_file.read_bytes() == b"original transient upload"
+    if preexisting_rollback_volume:
+        assert "already exists; refusing to reuse it" in result.stderr
+        assert preexisting_sentinel.read_bytes() == b"crash recovery data"
+    else:
+        assert "Restore failed" in result.stderr
+        assert not rollback_path.exists()
+
+
+def test_abandoned_upload_rollback_volume_expires_with_retry_and_restore_lock(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).parents[3]
+    state_path = tmp_path / "docker-volumes.json"
+    stale_volume = "bikemapy-restore-upload-crashed-attempt"
+    state_path.write_text(
+        json.dumps(
+            {
+                "volumes": {stale_volume: {"created_at": int(time.time()) - 7200}},
+                "rm_failures": 1,
+            }
+        )
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+state_path = Path(os.environ["FAKE_DOCKER_STATE"])
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+if args[1] == "ls":
+    print("\\n".join(state["volumes"]))
+elif args[1] == "inspect":
+    metadata = state["volumes"].get(args[-1])
+    if metadata is None:
+        raise SystemExit(1)
+    print(metadata["created_at"])
+elif args[1] == "rm":
+    if state["rm_failures"]:
+        state["rm_failures"] -= 1
+        state_path.write_text(json.dumps(state))
+        print("simulated busy volume", file=sys.stderr)
+        raise SystemExit(1)
+    state["volumes"].pop(args[-1], None)
+    state_path.write_text(json.dumps(state))
+else:
+    raise SystemExit("unexpected docker invocation: " + repr(args))
+"""
+    )
+    docker.chmod(0o755)
+    backup_dir = tmp_path / "backup"
+    lock_path = tmp_path / "restore-upload.lock"
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "BACKUP_DIR": str(backup_dir),
+        "FAKE_DOCKER_STATE": str(state_path),
+        "ACTIVITY_UPLOAD_ROLLBACK_TTL_SECONDS": "3600",
+        "ACTIVITY_UPLOAD_ROLLBACK_LOCK_FILE": str(lock_path),
+    }
+    helper = root / "deploy/reconcile-restore-upload-rollbacks.sh"
+    first = subprocess.run(
+        ["bash", str(helper)], check=False, capture_output=True, text=True, env=environment
+    )
+    assert first.returncode == 1
+    assert "could not remove expired" in first.stderr
+    assert stale_volume in json.loads(state_path.read_text())["volumes"]
+
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        retry = subprocess.Popen(
+            ["bash", str(helper)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        time.sleep(0.2)
+        assert retry.poll() is None
+        assert stale_volume in json.loads(state_path.read_text())["volumes"]
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+    retry_stdout, retry_stderr = retry.communicate(timeout=5)
+    assert retry.returncode == 0, retry_stderr
+    assert stale_volume not in json.loads(state_path.read_text())["volumes"]
+    assert "Expiring abandoned" in retry_stdout
+
+
+def test_rollback_volume_janitor_surfaces_volume_list_failure(tmp_path: Path) -> None:
+    root = Path(__file__).parents[3]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        """#!/usr/bin/env python3
+import sys
+
+if sys.argv[1:3] == ["volume", "ls"]:
+    print("simulated Docker daemon outage", file=sys.stderr)
+    raise SystemExit(23)
+raise SystemExit("unexpected docker invocation")
+"""
+    )
+    docker.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "BACKUP_DIR": str(tmp_path / "backup"),
+        "ACTIVITY_UPLOAD_ROLLBACK_LOCK_FILE": str(tmp_path / "rollback.lock"),
+    }
+
+    result = subprocess.run(
+        ["bash", str(root / "deploy/reconcile-restore-upload-rollbacks.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "simulated Docker daemon outage" in result.stderr
+    assert "could not list private-upload rollback volumes" in result.stderr
+
+
 def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     root = Path(__file__).parents[3]
     backup = (root / "deploy" / "backup.sh").read_text()
@@ -40,8 +315,9 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     archive_validator = (root / "scripts" / "validate_gpx_archive.py").read_text()
     workflow = (root / ".github" / "workflows" / "restore-drill.yml").read_text()
 
-    assert 'tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part" -C /data .' in backup
-    assert 'tar xzf "/backup/gpx-\'"$BACKUP_ID"\'.tar.gz" -C /data' in restore
+    assert 'tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part"' in backup
+    assert "-C /data ." in backup
+    assert 'tar xzf "/backup/gpx-\'"$BACKUP_ID"\'.tar.gz"' in restore
     assert "media/" in backup
     assert "media/" in restore
     assert "validate-gpx-archive.sh" in drill
@@ -52,6 +328,25 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     assert "write-backup-manifest.sh" in workflow
     assert "database_sha256" in manifest
     assert "gpx_sha256" in manifest
+    assert "--exclude=./media/private/activity_uploads" in backup
+    assert "discard_restored_activity_uploads" in restore
+    assert "ACTIVITY_UPLOAD_VOLUME" in restore
+
+
+def test_upload_proxy_and_compose_keep_transport_and_storage_boundaries_explicit() -> None:
+    root = Path(__file__).parents[3]
+    nginx = (root / "deploy" / "nginx.conf").read_text()
+    compose = (root / "deploy" / "compose.production.yml").read_text()
+    assert "client_max_body_size 95m;" in nginx
+    assert "client_body_timeout 60s;" in nginx
+    assert "activity_upload_data:/app/private-uploads" in compose
+    assert "DJANGO_ACTIVITY_UPLOAD_ROOT: /app/private-uploads" in compose
+    # The durable backup volume is GPX-only and the edge proxy never mounts
+    # transient raw activity payloads.
+    proxy = compose.split("\n  proxy:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+    assert "activity_upload_data" not in proxy
+    database = compose.split("\n  db:\n", 1)[1].split("\n  redis:\n", 1)[0]
+    assert "activity_upload_data" not in database
 
 
 def test_restore_drill_uses_full_schema_disposable_volume_and_application_checks() -> None:
@@ -114,6 +409,78 @@ def test_restore_gpx_validator_accepts_fixture_and_rejects_semantically_invalid_
     assert "valid" in valid_result.stdout
     assert invalid_result.returncode == 1
     assert "no direct route points" in invalid_result.stderr
+
+
+def test_old_gpx_archive_validates_but_restore_skips_legacy_transient_upload(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).parents[3]
+    validator = root / "scripts" / "validate_gpx_archive.py"
+    archive_path = tmp_path / "legacy-private-upload.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        payload = b"synthetic private upload"
+        member = tarfile.TarInfo("./media/private/activity_uploads/upload.bin")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+        durable_payload = b"durable route"
+        route_member = tarfile.TarInfo("./media/gpx/routes/route.gpx")
+        route_member.size = len(durable_payload)
+        archive.addfile(route_member, io.BytesIO(durable_payload))
+    result = subprocess.run(
+        [sys.executable, str(validator), str(archive_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    restored_root = tmp_path / "restored"
+    restored_root.mkdir()
+    extraction = subprocess.run(
+        [
+            "tar",
+            "xzf",
+            str(archive_path),
+            "--exclude=./media/private/activity_uploads",
+            "-C",
+            str(restored_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert extraction.returncode == 0, extraction.stderr
+    assert (restored_root / "media/gpx/routes/route.gpx").read_bytes() == durable_payload
+    assert not (restored_root / "media/private/activity_uploads/upload.bin").exists()
+
+
+def test_backup_tar_exclusion_keeps_raw_uploads_out_of_created_archive(tmp_path: Path) -> None:
+    storage_root = tmp_path / "storage"
+    durable = storage_root / "media/gpx/routes/route.gpx"
+    transient = storage_root / "media/private/activity_uploads/raw.bin"
+    durable.parent.mkdir(parents=True)
+    transient.parent.mkdir(parents=True)
+    durable.write_bytes(b"durable route")
+    transient.write_bytes(b"transient raw activity")
+    archive_path = tmp_path / "gpx.tar.gz"
+    result = subprocess.run(
+        [
+            "tar",
+            "czf",
+            str(archive_path),
+            "--exclude=./media/private/activity_uploads",
+            "-C",
+            str(storage_root),
+            ".",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = archive.getnames()
+    assert any(name.endswith("media/gpx/routes/route.gpx") for name in names)
+    assert not any("activity_uploads" in name for name in names)
 
 
 def test_restore_gpx_references_validates_all_rows(tmp_path: Path) -> None:

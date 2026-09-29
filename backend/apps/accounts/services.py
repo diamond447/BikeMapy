@@ -598,6 +598,16 @@ def _delete_player_once(
             state_filter |= Q(player__isnull=True, session_key=session_key)
         OAuthState.objects.filter(state_filter).delete()
         PlayerDeletionTombstone.objects.create(expires_at=timezone.now() + timedelta(days=90))
+        from .models import ActivityUpload, ActivityUploadDeletion
+
+        upload_storage_keys = (
+            ActivityUpload.objects.filter(batch__player=player)
+            .filter(content_path__isnull=False)
+            .exclude(content_path="")
+            .values_list("content_path", flat=True)
+        )
+        for storage_key in upload_storage_keys:
+            ActivityUploadDeletion.objects.get_or_create(storage_key=storage_key)
         player.lifecycle = Player.Lifecycle.DELETED
         player.invalidate_sessions()
         player.user.delete()

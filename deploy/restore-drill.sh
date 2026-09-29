@@ -14,6 +14,7 @@ CONTAINER="bikemapy-restore-drill-db-$$"
 APP_CONTAINER="bikemapy-restore-drill-app-$$"
 NETWORK="bikemapy-restore-drill-network-$$"
 GPX_VOLUME="bikemapy-restore-drill-gpx-$$"
+ACTIVITY_UPLOAD_VOLUME="bikemapy-restore-drill-uploads-$$"
 db_file="$BACKUP_DIR/db-${BACKUP_ID}.dump"
 gpx_file="$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz"
 manifest="$BACKUP_DIR/manifest-${BACKUP_ID}.json"
@@ -27,11 +28,12 @@ bash "$(dirname "$0")/validate-gpx-archive.sh" "$gpx_file"
 cleanup() {
   docker rm -f "$APP_CONTAINER" "$CONTAINER" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
-  docker volume rm "$GPX_VOLUME" >/dev/null 2>&1 || true
+  docker volume rm "$GPX_VOLUME" "$ACTIVITY_UPLOAD_VOLUME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 docker network create "$NETWORK" >/dev/null
 docker volume create "$GPX_VOLUME" >/dev/null
+docker volume create "$ACTIVITY_UPLOAD_VOLUME" >/dev/null
 docker run -d --name "$CONTAINER" --network "$NETWORK" --network-alias db \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" "$PG_IMAGE" >/dev/null
@@ -63,12 +65,41 @@ migration_count="${migration_count//[[:space:]]/}"
 test "$migration_count" -gt 0
 
 # Restore the archive into a new volume, matching the production
-# /app/storage/media root. The archive validator has already rejected paths
-# outside media/ and traversal entries.
+# /app/storage/media root. Older approved archives may contain legacy raw
+# upload files; exclude them during extraction so they are never resurrected.
 archive_name="$(basename "$gpx_file")"
 docker run --rm -v "$GPX_VOLUME:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
-  sh -c 'set -eu; find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar xzf "/backup/$1" -C /data' \
+  sh -c 'set -eu; find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar xzf "/backup/$1" --exclude=./media/private/activity_uploads -C /data' \
   sh "$archive_name"
+
+# Apply migrations before invoking upload cleanup because an older database
+# backup does not yet have the durable deletion queue table. Migration 0029
+# clears legacy inline payloads and routes any old queued bytes into transient
+# storage; the following command then discards all restored raw upload data.
+docker run --rm --network "$NETWORK" \
+  -v "$GPX_VOLUME:/app/storage" -v "$ACTIVITY_UPLOAD_VOLUME:/app/private-uploads" \
+  -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
+  -e DJANGO_DEBUG=true -e DJANGO_MEDIA_ROOT=/app/storage/media \
+  -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads "$APP_IMAGE" \
+  uv run --locked --no-dev python backend/manage.py migrate --noinput
+docker run --rm --network "$NETWORK" \
+  -v "$GPX_VOLUME:/app/storage" -v "$ACTIVITY_UPLOAD_VOLUME:/app/private-uploads" \
+  -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
+  -e DJANGO_DEBUG=true -e DJANGO_MEDIA_ROOT=/app/storage/media \
+  -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads "$APP_IMAGE" \
+  uv run --locked --no-dev python backend/manage.py discard_restored_activity_uploads
+docker run --rm -v "$ACTIVITY_UPLOAD_VOLUME:/data" alpine \
+  sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +'
+docker run --rm --network "$NETWORK" \
+  -v "$GPX_VOLUME:/app/storage" -v "$ACTIVITY_UPLOAD_VOLUME:/app/private-uploads" \
+  -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
+  -e DJANGO_DEBUG=true -e DJANGO_MEDIA_ROOT=/app/storage/media \
+  -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads "$APP_IMAGE" \
+  uv run --locked --no-dev python backend/manage.py shell -c \
+  'from django.db.models import Q; from apps.accounts.models import ActivityUpload; assert not ActivityUpload.objects.filter(Q(content__isnull=False) | (Q(content_path__isnull=False) & ~Q(content_path="")) | Q(status__in=("queued", "processing"))).exists()'
 
 # Read every live storage reference and validate it against the restored
 # volume. A missing, corrupt, checksum-mismatched, or semantically invalid
@@ -101,7 +132,9 @@ docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
   -e DJANGO_DEBUG=true -e GPX_REDISTRIBUTION_APPROVED=true \
-  -e DJANGO_MEDIA_ROOT=/app/storage/media -v "$GPX_VOLUME:/app/storage" "$APP_IMAGE" \
+  -e DJANGO_MEDIA_ROOT=/app/storage/media \
+  -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads \
+  -v "$GPX_VOLUME:/app/storage" -v "$ACTIVITY_UPLOAD_VOLUME:/app/private-uploads" "$APP_IMAGE" \
   uv run --locked --no-dev python backend/manage.py runserver 0.0.0.0:8000 --noreload >/dev/null
 application_ready=0
 for _ in {1..30}; do
