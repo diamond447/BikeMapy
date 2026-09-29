@@ -16,13 +16,12 @@ from apps.accounts.competition_services import sharing_is_active
 from apps.accounts.game_api import GameEndpoint, _private
 from apps.accounts.models import CompetitionMembership, StravaSyncState
 from apps.accounts.services import competition_is_available, game_is_available
+from apps.reference_routes.completion_services import completion_is_eligible
 from apps.reference_routes.models import (
-    ReferencePublicationStatus,
+    CompletionSubject,
     ReferenceRoute,
-    ReferenceValidationStatus,
     RouteCompletion,
     RouteCompletionMonthly,
-    has_publishable_reference_source,
 )
 
 from .serializers_reference_routes import ReferenceAttributionSerializer, geometry_json
@@ -155,25 +154,16 @@ class ReferenceRouteCompletionView(GameEndpoint):
         route = (
             ReferenceRoute.objects.filter(
                 pk=route_id,
-                active=True,
-                publication_status=ReferencePublicationStatus.APPROVED,
-                current_version__isnull=False,
-                current_version__active=True,
-                current_version__validation_status=ReferenceValidationStatus.VALID,
-                collection__active=True,
-                collection__permission_granted=True,
             )
             .select_related("collection", "current_version", "current_version__source_import")
             .first()
         )
-        if (
-            route is None
-            or route.current_version is None
-            or not has_publishable_reference_source(
-                route.collection, route.current_version.source_import
-            )
+        if route is None or not completion_is_eligible(
+            route.current_version, CompletionSubject.PLAYER, player=player
         ):
             return _private(Response({"detail": "Reference route not found."}, status=404))
+        version = route.current_version
+        assert version is not None
         competition_id = reference_competition_id(request, player)
         membership = (
             CompetitionMembership.objects.select_related("competition")
@@ -190,7 +180,9 @@ class ReferenceRouteCompletionView(GameEndpoint):
         if competition is None:
             return _private(Response({"detail": "Reference route not found."}, status=404))
         competition_allowed = bool(
-            competition_is_available() and membership is not None and sharing_is_active(membership)
+            completion_is_eligible(version, CompletionSubject.COMPETITION, competition=competition)
+            and membership is not None
+            and sharing_is_active(membership)
         )
         visible_competition = competition if competition_allowed else None
         competition_access = (
@@ -226,12 +218,10 @@ class ReferenceRouteCompletionView(GameEndpoint):
             "",
         )
         competition_partial = competition_sync_status in PARTIAL_SYNC_STATUSES
-        player_result = RouteCompletion.objects.filter(
-            route_version=route.current_version, player=player
-        ).first()
+        player_result = RouteCompletion.objects.filter(route_version=version, player=player).first()
         competition_result = (
             RouteCompletion.objects.filter(
-                route_version=route.current_version, competition=visible_competition
+                route_version=version, competition=visible_competition
             ).first()
             if visible_competition is not None
             else None
@@ -239,44 +229,36 @@ class ReferenceRouteCompletionView(GameEndpoint):
         attribution = dict(ReferenceAttributionSerializer(route.collection).data)
         if not attribution.get("attribution_text"):
             attribution["attribution_text"] = (
-                route.current_version.attribution_metadata.get("attribution_text")
-                or route.current_version.attribution
+                version.attribution_metadata.get("attribution_text") or version.attribution
             )
         route_payload = {
             "title": route.title,
             "route_number": route.route_number,
             "source_kind": route.collection.source_kind,
-            "geometry": geometry_json(route.current_version.normalized_geometry),
+            "geometry": geometry_json(version.normalized_geometry),
             "attribution": attribution,
         }
         stages = []
-        stages_query = route.stages.filter(
-            active=True,
-            publication_status=ReferencePublicationStatus.APPROVED,
-            current_version__isnull=False,
-            current_version__active=True,
-            current_version__validation_status=ReferenceValidationStatus.VALID,
-            collection__active=True,
-            collection__permission_granted=True,
-        ).select_related("collection", "current_version", "current_version__source_import")
+        stages_query = route.stages.select_related(
+            "collection", "current_version", "current_version__source_import"
+        )
         for stage in stages_query.order_by("route_number", "pk"):
-            version = stage.current_version
-            if version is None or not has_publishable_reference_source(
-                stage.collection, version.source_import
-            ):
+            stage_version = stage.current_version
+            if not completion_is_eligible(stage_version, CompletionSubject.PLAYER, player=player):
                 continue
+            assert stage_version is not None
             stages.append(
                 {
                     "route_id": stage.pk,
-                    "version": version.version_number,
+                    "version": stage_version.version_number,
                     "title": stage.title,
                     "route_number": stage.route_number,
-                    "geometry": geometry_json(version.normalized_geometry),
+                    "geometry": geometry_json(stage_version.normalized_geometry),
                     "player": _projection(
                         RouteCompletion.objects.filter(
-                            route_version=version, player=player
+                            route_version=stage_version, player=player
                         ).first(),
-                        version=version,
+                        version=stage_version,
                         player=player,
                         competition=visible_competition,
                         partial=player_partial,
@@ -284,11 +266,11 @@ class ReferenceRouteCompletionView(GameEndpoint):
                     ),
                     "competition": _projection(
                         RouteCompletion.objects.filter(
-                            route_version=version, competition=visible_competition
+                            route_version=stage_version, competition=visible_competition
                         ).first()
                         if visible_competition is not None
                         else None,
-                        version=version,
+                        version=stage_version,
                         player=player,
                         competition=visible_competition,
                         partial=competition_partial,
@@ -300,11 +282,11 @@ class ReferenceRouteCompletionView(GameEndpoint):
             Response(
                 {
                     "route_id": route.pk,
-                    "version": route.current_version.version_number,
+                    "version": version.version_number,
                     **route_payload,
                     "player": _projection(
                         player_result,
-                        version=route.current_version,
+                        version=version,
                         player=player,
                         competition=visible_competition,
                         partial=player_partial,
@@ -312,7 +294,7 @@ class ReferenceRouteCompletionView(GameEndpoint):
                     ),
                     "competition": _projection(
                         competition_result,
-                        version=route.current_version,
+                        version=version,
                         player=player,
                         competition=visible_competition,
                         partial=competition_partial,

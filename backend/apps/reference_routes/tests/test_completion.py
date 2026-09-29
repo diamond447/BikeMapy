@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -53,6 +53,17 @@ from apps.reference_routes.tasks import (
 )
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def enable_completion_test_gates(settings: Any) -> None:
+    settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = True
+    settings.COMPETITION_GAME_ENABLED = True
+    settings.GAME_ENABLED = True
+    settings.STRAVA_OAUTH_CLIENT_ID = "test-client"
+    settings.STRAVA_OAUTH_CLIENT_SECRET = "test-secret"
+    settings.STRAVA_TOKEN_ENCRYPTION_KEY = "test-encryption-key"
+    settings.STRAVA_IDENTITY_GUARD_KEY = "test-identity-guard-key"
 
 
 def _gis_runtime_available() -> bool:
@@ -129,10 +140,19 @@ def _version() -> ReferenceRouteVersion:
             "source_url": "https://example.invalid/source",
         },
         validation_status="valid",
+        active=True,
     )
     route.current_version = version
-    route.save(update_fields=("current_version", "updated_at"))
+    route.active = True
+    route.publication_status = "approved"
+    route.save(update_fields=("current_version", "active", "publication_status", "updated_at"))
     return version
+
+
+def _schedule(*args: Any, **kwargs: Any) -> RouteCompletionJob:
+    job = schedule_completion(*args, **kwargs)
+    assert job is not None
+    return job
 
 
 def _activity(
@@ -336,7 +356,7 @@ def test_completion_job_is_idempotent_and_exposes_fresh_state() -> None:
     version = _version()
     player = _player(4)
     _activity(player, "queued", [[14, 50], [14.02, 50]], date(2026, 3, 1))
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="test")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="test")
     assert job.status == RouteCompletionJob.Status.PENDING
     assert calculate_route_completion.apply(args=[job.pk]).get()["status"] == "complete"
     assert calculate_route_completion.apply(args=[job.pk]).get()["status"] == "complete"
@@ -345,13 +365,13 @@ def test_completion_job_is_idempotent_and_exposes_fresh_state() -> None:
 def test_new_activity_fences_a_running_completion_job() -> None:
     version = _version()
     player = _player(6)
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="initial")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="initial")
     job.status = RouteCompletionJob.Status.RUNNING
     job.lease_token = "old-worker"
     job.lease_until = timezone.now()
     job.save(update_fields=("status", "lease_token", "lease_until"))
 
-    replacement = schedule_completion(
+    replacement = _schedule(
         version, CompletionSubject.PLAYER, player=player, reason="activity-change"
     )
 
@@ -361,10 +381,243 @@ def test_new_activity_fences_a_running_completion_job() -> None:
     assert replacement.lease_until is None
 
 
+def test_collection_permission_withdrawal_blocks_scheduling_and_erases_projection() -> None:
+    version = _version()
+    player = _player(61)
+    existing = _schedule(version, CompletionSubject.PLAYER, player=player)
+    existing.status = RouteCompletionJob.Status.RUNNING
+    existing.lease_token = "in-flight"
+    existing.lease_until = timezone.now()
+    existing.save(update_fields=("status", "lease_token", "lease_until"))
+    projection = RouteCompletion.objects.get(route_version=version, player=player)
+    projection.status = CompletionStatus.FRESH
+    projection.covered_length_meters = Decimal("12.000")
+    projection.completion_percent = Decimal("12.000")
+    projection.save(update_fields=("status", "covered_length_meters", "completion_percent"))
+
+    collection = version.route.collection
+    collection.permission_granted = False
+    collection.save(update_fields=("permission_granted", "updated_at"))
+    assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
+
+    existing.refresh_from_db()
+    projection.refresh_from_db()
+    assert existing.status == RouteCompletionJob.Status.CANCELLED
+    assert existing.lease_token == ""
+    assert projection.status == CompletionStatus.PENDING
+    assert projection.covered_length_meters == Decimal("0")
+    assert projection.completion_percent == Decimal("0")
+    assert projection.calculated_at is None
+
+
+def test_inactive_collection_and_source_feature_gate_block_scheduling(settings: Any) -> None:
+    version = _version()
+    player = _player(62)
+    collection = version.route.collection
+    collection.active = False
+    collection.save(update_fields=("active", "updated_at"))
+    assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
+    collection.active = True
+    collection.save(update_fields=("active", "updated_at"))
+    settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = False
+    assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
+
+
+@pytest.mark.parametrize(
+    "gate",
+    ("route_inactive", "route_unapproved", "version_inactive", "not_current"),
+)
+def test_route_and_version_publication_gates_block_scheduling(gate: str) -> None:
+    version = _version()
+    player = _player(67)
+    route = version.route
+    if gate == "route_inactive":
+        route.active = False
+        route.save(update_fields=("active", "updated_at"))
+    elif gate == "route_unapproved":
+        route.publication_status = "pending"
+        route.save(update_fields=("publication_status", "updated_at"))
+    elif gate == "version_inactive":
+        version.active = False
+        version.save(update_fields=("active",))
+    else:
+        route.active = False
+        route.publication_status = "pending"
+        route.current_version = None
+        route.save(update_fields=("active", "publication_status", "current_version", "updated_at"))
+
+    assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
+
+
+def test_competition_game_gate_blocks_competition_scheduling(settings: Any) -> None:
+    version = _version()
+    owner = _player(63)
+    competition, _ = create_competition(owner, name="Gate competition")
+    settings.COMPETITION_GAME_ENABLED = False
+    assert (
+        schedule_completion(version, CompletionSubject.COMPETITION, competition=competition) is None
+    )
+
+
+def test_dispatch_claim_cancels_job_when_source_gate_changes(settings: Any) -> None:
+    version = _version()
+    player = _player(65)
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = False
+
+    assert _claim_completion_dispatch() is None
+    job.refresh_from_db()
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+
+
+def test_eligible_reschedule_reopens_cancelled_job_and_resets_claim_state(
+    settings: Any,
+) -> None:
+    version = _version()
+    player = _player(66)
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = False
+    assert schedule_completion(version, CompletionSubject.PLAYER, player=player) is None
+    job.refresh_from_db()
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+
+    job.next_attempt_at = timezone.now() + timedelta(hours=1)
+    job.error = "completion_ineligible"
+    job.lease_token = "stale-lease"
+    job.lease_until = timezone.now() + timedelta(minutes=1)
+    job.dispatch_token = "stale-dispatch"
+    job.dispatch_lease_until = timezone.now() + timedelta(minutes=1)
+    job.dispatched_at = timezone.now()
+    job.completed_at = timezone.now()
+    job.save(
+        update_fields=(
+            "next_attempt_at",
+            "error",
+            "lease_token",
+            "lease_until",
+            "dispatch_token",
+            "dispatch_lease_until",
+            "dispatched_at",
+            "completed_at",
+        )
+    )
+
+    settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = True
+    resumed = _schedule(version, CompletionSubject.PLAYER, player=player)
+    assert resumed.pk == job.pk
+    resumed.refresh_from_db()
+    assert resumed.status == RouteCompletionJob.Status.PENDING
+    assert resumed.error == ""
+    assert resumed.next_attempt_at <= timezone.now()
+    assert resumed.lease_token == ""
+    assert resumed.lease_until is None
+    assert resumed.dispatch_token == ""
+    assert resumed.dispatch_lease_until is None
+    assert resumed.dispatched_at is None
+    assert resumed.completed_at is None
+
+
+@requires_gis_runtime
+def test_gate_withdrawal_during_calculation_fences_projection_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = _version()
+    player = _player(64)
+    _activity(player, "gate-race", [[14, 50], [14.02, 50]], date(2026, 8, 1))
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    original_union = __import__(
+        "apps.reference_routes.completion_services", fromlist=["_union_coverage"]
+    )._union_coverage
+
+    def withdraw_after_read(*args: object, **kwargs: object) -> object:
+        result = original_union(*args, **kwargs)
+        collection = version.route.collection
+        collection.permission_granted = False
+        collection.save(update_fields=("permission_granted", "updated_at"))
+        return result
+
+    monkeypatch.setattr(
+        "apps.reference_routes.completion_services._union_coverage", withdraw_after_read
+    )
+    result = calculate_route_completion.apply(args=[job.pk]).get()
+
+    assert result["status"] in {"in_progress", "cancelled"}
+    job.refresh_from_db()
+    completion = RouteCompletion.objects.get(route_version=version, player=player)
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+    assert completion.status == CompletionStatus.PENDING
+    assert completion.covered_length_meters == Decimal("0")
+    assert not RouteCompletionEvidence.objects.filter(completion=completion).exists()
+
+
+@requires_gis_runtime
+def test_queryset_permission_change_before_commit_is_revalidated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = _version()
+    player = _player(68)
+    _activity(player, "queryset-gate-race", [[14, 50], [14.02, 50]], date(2026, 8, 2))
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    original_union = __import__(
+        "apps.reference_routes.completion_services", fromlist=["_union_coverage"]
+    )._union_coverage
+
+    def withdraw_without_signal(*args: object, **kwargs: object) -> object:
+        result = original_union(*args, **kwargs)
+        ReferenceCollection.objects.filter(pk=version.route.collection_id).update(
+            permission_granted=False
+        )
+        return result
+
+    monkeypatch.setattr(
+        "apps.reference_routes.completion_services._union_coverage", withdraw_without_signal
+    )
+    result = calculate_route_completion.apply(args=[job.pk]).get()
+
+    job.refresh_from_db()
+    completion = RouteCompletion.objects.get(route_version=version, player=player)
+    assert result["status"] == "cancelled"
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+    assert completion.status == CompletionStatus.PENDING
+    assert completion.covered_length_meters == Decimal("0")
+    assert not RouteCompletionEvidence.objects.filter(completion=completion).exists()
+
+
+@requires_gis_runtime
+def test_runtime_source_gate_change_before_commit_is_revalidated(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,
+) -> None:
+    version = _version()
+    player = _player(69)
+    _activity(player, "settings-gate-race", [[14, 50], [14.02, 50]], date(2026, 8, 3))
+    job = _schedule(version, CompletionSubject.PLAYER, player=player)
+    original_union = __import__(
+        "apps.reference_routes.completion_services", fromlist=["_union_coverage"]
+    )._union_coverage
+
+    def withdraw_runtime_gate(*args: object, **kwargs: object) -> object:
+        result = original_union(*args, **kwargs)
+        settings.REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = False
+        return result
+
+    monkeypatch.setattr(
+        "apps.reference_routes.completion_services._union_coverage", withdraw_runtime_gate
+    )
+    result = calculate_route_completion.apply(args=[job.pk]).get()
+
+    job.refresh_from_db()
+    completion = RouteCompletion.objects.get(route_version=version, player=player)
+    assert result["status"] == "cancelled"
+    assert job.status == RouteCompletionJob.Status.CANCELLED
+    assert completion.status == CompletionStatus.PENDING
+    assert not RouteCompletionEvidence.objects.filter(completion=completion).exists()
+
+
 def test_dispatcher_requeues_expired_worker_leases(monkeypatch: pytest.MonkeyPatch) -> None:
     version = _version()
     player = _player(7)
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="initial")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="initial")
     job.status = RouteCompletionJob.Status.RUNNING
     job.lease_token = "expired-worker"
     job.lease_until = timezone.now()
@@ -372,7 +625,7 @@ def test_dispatcher_requeues_expired_worker_leases(monkeypatch: pytest.MonkeyPat
     published: list[int] = []
     monkeypatch.setattr(calculate_route_completion, "delay", published.append)
 
-    assert dispatch_completion_jobs(limit=1) == {"dispatched": 1}
+    assert dispatch_completion_jobs(limit=1) == {"dispatched": 1, "invalidated": 0}
     assert published == [job.pk]
     job.refresh_from_db()
     assert job.status == RouteCompletionJob.Status.FAILED
@@ -382,10 +635,10 @@ def test_dispatcher_requeues_expired_worker_leases(monkeypatch: pytest.MonkeyPat
 def test_worker_commit_is_fenced_when_subject_is_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
     version = _version()
     player = _player(9)
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="initial")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="initial")
 
     def replaced(*args: object, **kwargs: object) -> object:
-        schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="replacement")
+        _schedule(version, CompletionSubject.PLAYER, player=player, reason="replacement")
         raise CompletionLeaseLost("superseded")
 
     monkeypatch.setattr("apps.reference_routes.tasks.calculate_completion", replaced)
@@ -403,7 +656,7 @@ def test_completion_worker_redacts_unexpected_errors(
 ) -> None:
     version = _version()
     player = _player(18)
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="failure")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="failure")
 
     def fail(*args: object, **kwargs: object) -> object:
         raise RuntimeError("provider token must never be persisted or exposed")
@@ -426,7 +679,7 @@ def test_dispatch_claim_is_single_use_and_releases_on_publish_failure(
 ) -> None:
     version = _version()
     player = _player(10)
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="dispatch")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="dispatch")
     claim = _claim_completion_dispatch()
     assert claim is not None
     assert _claim_completion_dispatch() is None
@@ -447,7 +700,7 @@ def test_successful_dispatch_lease_blocks_an_immediate_second_publish(
 ) -> None:
     version = _version()
     player = _player(12)
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="dispatch")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="dispatch")
     claim = _claim_completion_dispatch()
     assert claim is not None
     published: list[int] = []
@@ -467,7 +720,7 @@ def test_concurrent_completion_workers_have_one_effective_claim() -> None:
     version = _version()
     player = _player(11)
     _activity(player, "concurrent", [[14, 50], [14.02, 50]], date(2026, 6, 1))
-    job = schedule_completion(version, CompletionSubject.PLAYER, player=player, reason="race")
+    job = _schedule(version, CompletionSubject.PLAYER, player=player, reason="race")
 
     def run_worker() -> dict[str, object]:
         close_old_connections()
@@ -483,6 +736,44 @@ def test_concurrent_completion_workers_have_one_effective_claim() -> None:
 
 
 @pytest.mark.django_db(transaction=True)
+@pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostgreSQL row locking")
+def test_permission_withdrawal_and_scheduler_follow_parent_job_projection_lock_order() -> None:
+    version = _version()
+    player = _player(70)
+    barrier = threading.Barrier(2)
+
+    def schedule() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=5)
+            schedule_completion(version, CompletionSubject.PLAYER, player=player)
+        finally:
+            close_old_connections()
+
+    def withdraw() -> None:
+        close_old_connections()
+        try:
+            barrier.wait(timeout=5)
+            collection = ReferenceCollection.objects.get(pk=version.route.collection_id)
+            collection.permission_granted = False
+            collection.save(update_fields=("permission_granted", "updated_at"))
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        scheduled = executor.submit(schedule)
+        revoked = executor.submit(withdraw)
+        scheduled.result(timeout=15)
+        revoked.result(timeout=15)
+
+    assert not RouteCompletionJob.objects.filter(
+        route_version=version,
+        player=player,
+        status__in=(RouteCompletionJob.Status.PENDING, RouteCompletionJob.Status.RUNNING),
+    ).exists()
+
+
+@pytest.mark.django_db(transaction=True)
 @pytest.mark.skipif(connection.vendor != "postgresql", reason="requires PostGIS row locking")
 def test_activity_erasure_fences_worker_after_activity_read(
     monkeypatch: pytest.MonkeyPatch,
@@ -493,10 +784,8 @@ def test_activity_erasure_fences_worker_after_activity_read(
     competition, _ = create_competition(owner, name="Erasure race")
     CompetitionMembership.objects.create(competition=competition, player=member, color="#123456")
     activity = _activity(owner, "race-delete", [[14, 50], [14.02, 50]], date(2026, 7, 1))
-    player_job = schedule_completion(
-        version, CompletionSubject.PLAYER, player=owner, reason="race-player"
-    )
-    competition_job = schedule_completion(
+    player_job = _schedule(version, CompletionSubject.PLAYER, player=owner, reason="race-player")
+    competition_job = _schedule(
         version, CompletionSubject.COMPETITION, competition=competition, reason="race-competition"
     )
 
@@ -613,6 +902,11 @@ def test_private_completion_api_exposes_fresh_and_pending_projections() -> None:
     failed_competition.save(update_fields=("status", "error", "updated_at"))
     redacted = client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/")
     assert redacted.json()["competition"]["error"] == "completion_unavailable"
+
+    with override_settings(REFERENCE_ROUTE_VIA_CZECHIA_ENABLED=False):
+        assert (
+            client.get(f"/api/v1/game/reference-routes/{route.pk}/completion/").status_code == 404
+        )
 
     with override_settings(GAME_ENABLED=False):
         assert (
