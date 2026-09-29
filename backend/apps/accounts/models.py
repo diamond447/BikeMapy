@@ -311,6 +311,7 @@ class ActivityUpload(models.Model):
     original_name = models.CharField(max_length=240)
     content_sha256 = models.CharField(max_length=64)
     content_path = models.FileField(
+        max_length=500,
         upload_to="private/activity_uploads/",
         storage=activity_upload_storage,
         null=True,

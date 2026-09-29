@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import struct
@@ -684,7 +685,26 @@ def test_migration_moves_legacy_inline_upload_payloads_to_private_storage(
     assert upload.status == ActivityUpload.Status.QUEUED
     storage_key = upload.content_path.name
     assert storage_key is not None
+    expected_key = migration._legacy_inline_upload_key(
+        upload.pk, hashlib.sha256(b"inline!").hexdigest()
+    )
+    assert storage_key == expected_key
+    max_length = ActivityUpload._meta.get_field("content_path").max_length
+    assert max_length is not None
+    assert len(storage_key) <= max_length
     assert (private_root / storage_key).read_bytes() == b"inline!"
+
+
+def test_worst_case_legacy_inline_upload_key_fits_file_field_limit() -> None:
+    from importlib import import_module
+
+    migration = import_module("apps.accounts.migrations.0029_activity_upload_deletion_and_storage")
+    max_big_auto_field_id = (1 << 63) - 1
+    worst_case_key = migration._legacy_inline_upload_key(max_big_auto_field_id, "f" * 64)
+    max_length = ActivityUpload._meta.get_field("content_path").max_length
+
+    assert max_length is not None
+    assert len(worst_case_key) <= max_length
 
 
 @pytest.mark.parametrize("content_path", [None, ""])

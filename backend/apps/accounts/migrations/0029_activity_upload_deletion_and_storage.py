@@ -11,6 +11,12 @@ from django.db.models import Q
 from apps.accounts.upload_storage import ActivityUploadStorage
 
 
+def _legacy_inline_upload_key(upload_id: int, digest: str) -> str:
+    """Return the bounded relative key used for migrated inline upload bytes."""
+
+    return f"private/activity_uploads/legacy/{upload_id}-{digest}.bin"
+
+
 def migrate_legacy_activity_uploads(apps, schema_editor):
     """Move pre-0029 transient objects out of durable GPX media storage."""
 
@@ -56,7 +62,7 @@ def migrate_legacy_activity_uploads(apps, schema_editor):
         payload = bytes(upload.content)
         if payload:
             digest = hashlib.sha256(payload).hexdigest()
-            key = f"private/activity_uploads/legacy/{upload.pk}-{digest}.bin"
+            key = _legacy_inline_upload_key(upload.pk, digest)
             saved_key = key
             if not new_storage.exists(key):
                 saved_key = new_storage.save(key, ContentFile(payload))
@@ -85,6 +91,7 @@ class Migration(migrations.Migration):
             name="content_path",
             field=models.FileField(
                 blank=True,
+                max_length=500,
                 null=True,
                 storage=ActivityUploadStorage(),
                 upload_to="private/activity_uploads/",
