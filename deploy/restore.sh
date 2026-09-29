@@ -8,6 +8,7 @@ test -d "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 COMPOSE="${COMPOSE:-docker compose --env-file deploy/.env.production -f deploy/compose.production.yml}"
 GPX_VOLUME="${GPX_VOLUME:-bikemapy_gpx_data}"
+ACTIVITY_UPLOAD_VOLUME="${ACTIVITY_UPLOAD_VOLUME:-bikemapy_activity_upload_data}"
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
 RESTORE_ATTEMPT_ID="${RESTORE_ATTEMPT_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
@@ -65,12 +66,18 @@ test -s "$BACKUP_DIR/$before_db_file_name.part"
 mv -f "$BACKUP_DIR/$before_db_file_name.part" "$before_db_file"
 rollback_db_ready=1
 docker run --rm -v "${GPX_VOLUME}:/data:ro" -v "$BACKUP_DIR:/backup" alpine \
-  tar czf "/backup/$before_file_name.part" -C /data .
+  tar czf "/backup/$before_file_name.part" \
+  --exclude=./media/private/activity_uploads -C /data .
 test -s "$BACKUP_DIR/$before_file_name.part"
 mv -f "$BACKUP_DIR/$before_file_name.part" "$before_file"
 rollback_gpx_ready=1
 $COMPOSE exec -T db pg_restore --username="$POSTGRES_USER" --clean --if-exists \
   --no-owner --dbname="$POSTGRES_DB" "/backup/db-${BACKUP_ID}.dump"
+echo "Discarding transient activity uploads from restored database and storage"
+$COMPOSE run --rm --no-deps backend uv run --locked --no-dev \
+  python backend/manage.py discard_restored_activity_uploads
+docker run --rm -v "${ACTIVITY_UPLOAD_VOLUME}:/data" alpine \
+  sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +'
 docker run --rm -v "${GPX_VOLUME}:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
   sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf "/backup/gpx-'"$BACKUP_ID"'.tar.gz" -C /data'
 test -s "$before_file"

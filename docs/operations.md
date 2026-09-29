@@ -145,6 +145,15 @@ dispatch the same Celery task with a smaller `limit`; repeat until its logged
 `remaining` value is zero. Never delete the cache row solely to remove body
 content, because its validators are useful crawler state.
 
+Activity upload retention runs hourly. Deletion queue retries and orphan
+reconciliation run every 15 minutes. Review **Activity upload deletions** in
+owner administration for rows in `failed`; the attempt count, last error type,
+and next retry time remain visible there. Successful queue rows are purged
+after 30 days. The queue stores opaque storage keys rather than player
+identifiers. Orphan cleanup ignores objects younger than one hour to allow a
+storage write and its database transaction to finish. The
+`activity_upload_data` volume is intentionally omitted from backup artifacts.
+
 ## Daily snapshots
 
 Create a restricted backup directory owned by the deployment operator and run
@@ -171,6 +180,10 @@ restore drill additionally needs the PostGIS image.
 
 The production Compose database mounts this directory at `/backup`. Keep the
 directory outside Git and never place `.env.production` or credentials in it.
+The separate `activity_upload_data` volume is not mounted into the backup
+container. Restore marks in-progress uploads failed, removes transient payload
+references, and clears that volume before writers start. This also discards
+uploads submitted after the selected backup was created.
 
 Archives created by older copies of the deployment runbook may contain a
 top-level `data/` directory. They are not compatible with the canonical

@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -40,7 +41,8 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     archive_validator = (root / "scripts" / "validate_gpx_archive.py").read_text()
     workflow = (root / ".github" / "workflows" / "restore-drill.yml").read_text()
 
-    assert 'tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part" -C /data .' in backup
+    assert 'tar czf "/backup/gpx-${BACKUP_ID}.tar.gz.part"' in backup
+    assert "-C /data ." in backup
     assert 'tar xzf "/backup/gpx-\'"$BACKUP_ID"\'.tar.gz" -C /data' in restore
     assert "media/" in backup
     assert "media/" in restore
@@ -52,6 +54,27 @@ def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:
     assert "write-backup-manifest.sh" in workflow
     assert "database_sha256" in manifest
     assert "gpx_sha256" in manifest
+    assert "--exclude=./media/private/activity_uploads" in backup
+    assert "media/private/activity_uploads" in archive_validator
+    assert "transient activity upload data" in archive_validator
+    assert "discard_restored_activity_uploads" in restore
+    assert "ACTIVITY_UPLOAD_VOLUME" in restore
+
+
+def test_upload_proxy_and_compose_keep_transport_and_storage_boundaries_explicit() -> None:
+    root = Path(__file__).parents[3]
+    nginx = (root / "deploy" / "nginx.conf").read_text()
+    compose = (root / "deploy" / "compose.production.yml").read_text()
+    assert "client_max_body_size 90m;" in nginx
+    assert "client_body_timeout 60s;" in nginx
+    assert "activity_upload_data:/app/private-uploads" in compose
+    assert "DJANGO_ACTIVITY_UPLOAD_ROOT: /app/private-uploads" in compose
+    # The durable backup volume is GPX-only and the edge proxy never mounts
+    # transient raw activity payloads.
+    proxy = compose.split("\n  proxy:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+    assert "activity_upload_data" not in proxy
+    database = compose.split("\n  db:\n", 1)[1].split("\n  redis:\n", 1)[0]
+    assert "activity_upload_data" not in database
 
 
 def test_restore_drill_uses_full_schema_disposable_volume_and_application_checks() -> None:
@@ -114,6 +137,55 @@ def test_restore_gpx_validator_accepts_fixture_and_rejects_semantically_invalid_
     assert "valid" in valid_result.stdout
     assert invalid_result.returncode == 1
     assert "no direct route points" in invalid_result.stderr
+
+
+def test_gpx_archive_validator_rejects_legacy_transient_upload_payload(tmp_path: Path) -> None:
+    root = Path(__file__).parents[3]
+    validator = root / "scripts" / "validate_gpx_archive.py"
+    archive_path = tmp_path / "legacy-private-upload.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        payload = b"synthetic private upload"
+        member = tarfile.TarInfo("media/private/activity_uploads/upload.bin")
+        member.size = len(payload)
+        archive.addfile(member, io.BytesIO(payload))
+    result = subprocess.run(
+        [sys.executable, str(validator), str(archive_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "transient activity upload data" in result.stderr
+
+
+def test_backup_tar_exclusion_keeps_raw_uploads_out_of_created_archive(tmp_path: Path) -> None:
+    storage_root = tmp_path / "storage"
+    durable = storage_root / "media/gpx/routes/route.gpx"
+    transient = storage_root / "media/private/activity_uploads/raw.bin"
+    durable.parent.mkdir(parents=True)
+    transient.parent.mkdir(parents=True)
+    durable.write_bytes(b"durable route")
+    transient.write_bytes(b"transient raw activity")
+    archive_path = tmp_path / "gpx.tar.gz"
+    result = subprocess.run(
+        [
+            "tar",
+            "czf",
+            str(archive_path),
+            "--exclude=./media/private/activity_uploads",
+            "-C",
+            str(storage_root),
+            ".",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = archive.getnames()
+    assert any(name.endswith("media/gpx/routes/route.gpx") for name in names)
+    assert not any("activity_uploads" in name for name in names)
 
 
 def test_restore_gpx_references_validates_all_rows(tmp_path: Path) -> None:

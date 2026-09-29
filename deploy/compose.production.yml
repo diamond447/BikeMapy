@@ -8,6 +8,7 @@ services:
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
       DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
+      DJANGO_ACTIVITY_UPLOAD_ROOT: /app/private-uploads
     # A release must run migrations as a one-shot job before this service is
     # started. Keep the guard in the long-running command as a second safety
     # boundary so an accidentally started candidate cannot serve against an
@@ -23,6 +24,7 @@ services:
         --workers ${WEB_WORKERS:-3} --error-logfile -
     volumes:
       - gpx_data:/app/storage
+      - activity_upload_data:/app/private-uploads
     networks:
       default: {}
       proxy:
@@ -56,6 +58,7 @@ services:
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
       DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
+      DJANGO_ACTIVITY_UPLOAD_ROOT: /app/private-uploads
     command:
       - /bin/sh
       - -c
@@ -65,6 +68,7 @@ services:
         exec uv run --locked --no-dev celery -A config worker --loglevel=INFO
     volumes:
       - gpx_data:/app/storage
+      - activity_upload_data:/app/private-uploads
     depends_on:
       db:
         condition: service_healthy
@@ -150,6 +154,7 @@ services:
 
 volumes:
   gpx_data:
+  activity_upload_data:
   postgres_data:
   redis_data:
 

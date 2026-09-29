@@ -160,3 +160,20 @@ and response process must be confirmed before launch.
 The raw HTML cache has a documented 24-hour live retention and an implemented
 hourly cleanup, but provider/operator approval for crawling and the backup
 propagation process remain launch gates.
+
+### Direct activity uploads
+
+FIT, GPX, and TCX request bodies have a 90 MiB transport ceiling. Raw upload
+objects live in the separate `activity_upload_data` Docker volume and are not
+included in durable GPX or database backups. Terminal and expired objects are
+queued for storage deletion; account deletion records every queued or
+processing object key before database cascades remove the upload rows. Failed
+deletions retain a retry record and are visible to the owner operator. A
+15-minute orphan reconciliation pass queues unreferenced objects after a
+one-hour grace period. Restore discards all transient upload references and
+clears the transient volume, so a snapshot cannot resurrect raw payloads.
+Normalized private activities and the minimal storage-key deletion metadata
+remain separate from raw payload retention. Deletion queue rows contain only
+opaque storage keys, retry state, and timestamps and are not tied to a player;
+successful rows expire after 30 days, while failed rows remain until deletion
+succeeds.

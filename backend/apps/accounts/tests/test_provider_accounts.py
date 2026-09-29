@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import os
 import struct
 import zipfile
 from collections.abc import Iterator
@@ -30,10 +31,12 @@ from apps.accounts.account_services import (
 from apps.accounts.models import (
     ActivityUpload,
     ActivityUploadBatch,
+    ActivityUploadDeletion,
     Competition,
     CompetitionInviteRedemption,
     Player,
 )
+from apps.accounts.services import delete_player
 from apps.accounts.upload_services import (
     UploadError,
     _fit_crc,
@@ -43,7 +46,12 @@ from apps.accounts.upload_services import (
     parse_activity,
     process_batch,
 )
-from apps.accounts.upload_tasks import cleanup_expired_activity_uploads_task
+from apps.accounts.upload_tasks import (
+    cleanup_expired_activity_uploads_task,
+    process_activity_upload_batch_task,
+    reconcile_orphan_activity_uploads_task,
+    retry_activity_upload_deletions_task,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -345,10 +353,11 @@ def test_upload_storage_is_removed_when_row_save_fails(tmp_path: Path) -> None:
     player, _ = create_invited_account(
         username="rider", email="rider@example.com", invite_code=competition.invite_code
     )
-    with override_settings(MEDIA_ROOT=tmp_path):
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
         with pytest.raises(RuntimeError, match="row save"):
             with patch.object(ActivityUpload, "save", side_effect=RuntimeError("row save")):
                 create_batch(player, [("ride.gpx", io.BytesIO(b"<gpx />"))], attested=True)
+        retry_activity_upload_deletions_task()
     assert not [path for path in tmp_path.rglob("*") if path.is_file()]
 
 
@@ -360,17 +369,22 @@ def test_upload_storage_is_removed_when_transaction_commit_fails(tmp_path: Path)
         username="rider", email="rider@example.com", invite_code=competition.invite_code
     )
     real_atomic = django_transaction.atomic
+    atomic_calls = 0
 
     @contextmanager
-    def failing_atomic() -> Iterator[None]:
-        with real_atomic():
+    def failing_atomic(*args: Any, **kwargs: Any) -> Iterator[None]:
+        nonlocal atomic_calls
+        atomic_calls += 1
+        with real_atomic(*args, **kwargs):
             yield
-        raise RuntimeError("commit failure")
+        if atomic_calls == 1:
+            raise RuntimeError("commit failure")
 
-    with override_settings(MEDIA_ROOT=tmp_path):
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
         with pytest.raises(RuntimeError, match="commit failure"):
             with patch("apps.accounts.upload_services.transaction.atomic", failing_atomic):
                 create_batch(player, [("ride.gpx", io.BytesIO(b"<gpx />"))], attested=True)
+        retry_activity_upload_deletions_task()
     assert not [path for path in tmp_path.rglob("*") if path.is_file()]
 
 
@@ -399,7 +413,7 @@ def test_expired_processing_upload_finalizes_parent_batch(tmp_path: Path) -> Non
     player, _ = create_invited_account(
         username="rider", email="rider@example.com", invite_code=competition.invite_code
     )
-    with override_settings(MEDIA_ROOT=tmp_path):
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
         batch = create_batch(player, [("ride.gpx", b"stale")], attested=True)
     upload = batch.files.get()
     stored_name = upload.content_path.name
@@ -412,13 +426,154 @@ def test_expired_processing_upload_finalizes_parent_batch(tmp_path: Path) -> Non
     upload.status = "processing"
     upload.created_at = timezone.now() - timedelta(days=2)
     upload.save(update_fields=("status", "created_at"))
-    with override_settings(MEDIA_ROOT=tmp_path):
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
         cleanup_expired_activity_uploads_task()
     batch.refresh_from_db()
     upload.refresh_from_db()
     assert batch.status == ActivityUploadBatch.Status.FAILED
     assert upload.content is None
     assert not stored_path.exists()
+
+
+def test_transport_accepts_supported_payload_above_one_megabyte(tmp_path: Path) -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
+        batch = create_batch(player, [("ride.gpx", b"x" * (1024 * 1024 + 1))], attested=True)
+    assert batch.total_files == 1
+    assert batch.files.get().size_bytes == 1024 * 1024 + 1
+
+
+def test_application_rejects_aggregate_request_over_transport_limit(
+    monkeypatch: Any,
+) -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    monkeypatch.setattr("apps.accounts.upload_services.MAX_UPLOAD_REQUEST_BYTES", 1024)
+    with pytest.raises(UploadError, match="request exceeds"):
+        create_batch(player, [("ride.gpx", b"x" * 1025)], attested=True)
+
+
+@pytest.mark.parametrize("status", [ActivityUpload.Status.QUEUED, ActivityUpload.Status.PROCESSING])
+def test_account_deletion_removes_queued_and_processing_payloads(
+    tmp_path: Path, status: str
+) -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
+        batch = create_batch(player, [("ride.gpx", b"private payload")], attested=True)
+        upload = batch.files.get()
+        upload.status = status
+        upload.save(update_fields=("status",))
+        storage_key = upload.content_path.name
+        assert storage_key is not None
+        delete_player(player)
+        assert ActivityUploadDeletion.objects.filter(
+            storage_key=storage_key, status=ActivityUploadDeletion.Status.PENDING
+        ).exists()
+        retry_activity_upload_deletions_task()
+        assert not (tmp_path / storage_key).exists()
+        assert ActivityUploadDeletion.objects.get(storage_key=storage_key).status == (
+            ActivityUploadDeletion.Status.DELETED
+        )
+
+
+def test_failed_storage_deletion_is_retryable_and_operator_visible(tmp_path: Path) -> None:
+    storage_key = "private/activity_uploads/orphan.bin"
+    payload_path = tmp_path / storage_key
+    payload_path.parent.mkdir(parents=True)
+    payload_path.write_bytes(b"synthetic private bytes")
+    deletion = ActivityUploadDeletion.objects.create(storage_key=storage_key)
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
+        with patch.object(ActivityUpload.content_path.field.storage, "delete", side_effect=OSError):
+            assert retry_activity_upload_deletions_task() == {
+                "deleted": 0,
+                "failed": 1,
+                "purged": 0,
+            }
+        deletion.refresh_from_db()
+        assert deletion.status == ActivityUploadDeletion.Status.FAILED
+        assert deletion.attempts == 1
+        assert deletion.last_error == "OSError"
+        ActivityUploadDeletion.objects.filter(pk=deletion.pk).update(next_attempt_at=timezone.now())
+        assert retry_activity_upload_deletions_task() == {
+            "deleted": 1,
+            "failed": 0,
+            "purged": 0,
+        }
+    assert not payload_path.exists()
+
+
+def test_orphan_reconciliation_queues_only_old_unreferenced_objects(tmp_path: Path) -> None:
+    orphan = tmp_path / "private/activity_uploads/orphan.bin"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_bytes(b"synthetic")
+    old = timezone.now() - timedelta(hours=2)
+    os.utime(orphan, (old.timestamp(), old.timestamp()))
+    recent = tmp_path / "private/activity_uploads/recent.bin"
+    recent.write_bytes(b"recent")
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
+        assert reconcile_orphan_activity_uploads_task() == {"queued": 1}
+    assert ActivityUploadDeletion.objects.filter(
+        storage_key="private/activity_uploads/orphan.bin"
+    ).exists()
+    assert not ActivityUploadDeletion.objects.filter(
+        storage_key="private/activity_uploads/recent.bin"
+    ).exists()
+
+
+def test_worker_race_with_account_deletion_does_not_recreate_activity(tmp_path: Path) -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
+        batch = create_batch(player, [("ride.gpx", b"private")], attested=True)
+
+        def delete_while_parsing(
+            *_args: Any, **_kwargs: Any
+        ) -> tuple[list[tuple[float, float]], datetime, str]:
+            delete_player(player)
+            return [(14.0, 50.0), (14.1, 50.1)], datetime(2026, 9, 28, tzinfo=UTC), "GPX"
+
+        with patch(
+            "apps.accounts.upload_services.parse_activity", side_effect=delete_while_parsing
+        ):
+            result = process_activity_upload_batch_task(str(batch.pk))
+        assert result["status"] == "deleted"
+        assert not Player.objects.filter(pk=player.pk).exists()
+        assert not ActivityUploadBatch.objects.filter(pk=batch.pk).exists()
+
+
+def test_restore_command_discards_transient_payloads_and_marks_unfinished_failed(
+    tmp_path: Path,
+) -> None:
+    from django.core.management import call_command
+
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
+        batch = create_batch(player, [("ride.gpx", b"private")], attested=True)
+        upload = batch.files.get()
+        upload.status = ActivityUpload.Status.PROCESSING
+        upload.save(update_fields=("status",))
+        storage_key = upload.content_path.name
+        assert storage_key is not None
+        call_command("discard_restored_activity_uploads")
+        upload.refresh_from_db()
+        assert upload.status == ActivityUpload.Status.FAILED
+        assert upload.error_code == "restore_payload_discarded"
+        assert not upload.content_path
+        retry_activity_upload_deletions_task()
+        assert not (tmp_path / storage_key).exists()
 
 
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)
@@ -438,7 +593,7 @@ def test_authenticated_player_cannot_read_another_players_batch(tmp_path: Path) 
         username="other-rider", email="other@example.com", password="password"
     )
     other = Player.objects.create(user=other_user)
-    with override_settings(MEDIA_ROOT=tmp_path):
+    with override_settings(ACTIVITY_UPLOAD_ROOT=tmp_path):
         batch = create_batch(owner, [("ride.gpx", b"private")], attested=True)
     client = APIClient()
     session = client.session

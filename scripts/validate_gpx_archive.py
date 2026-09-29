@@ -21,6 +21,10 @@ def _validate_member(member: tarfile.TarInfo) -> None:
     normalized = name.removeprefix("./")
     if normalized not in {"", ".", "media"} and not normalized.startswith("media/"):
         raise ValueError(f"GPX archive contains a path outside media/: {name!r}")
+    if normalized == "media/private/activity_uploads" or normalized.startswith(
+        "media/private/activity_uploads/"
+    ):
+        raise ValueError("GPX archive contains transient activity upload data")
 
 
 def main(argv: list[str]) -> int:
