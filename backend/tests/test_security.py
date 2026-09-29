@@ -77,6 +77,126 @@ def test_production_mode_rejects_missing_debug_setting() -> None:
     assert "DJANGO_DEBUG must be explicitly set to false" in result.stderr
 
 
+def test_production_mode_rejects_enabled_local_accounts_without_real_smtp() -> None:
+    environment = os.environ.copy()
+    for key in (
+        "EMAIL_BACKEND",
+        "EMAIL_HOST",
+        "EMAIL_PORT",
+        "EMAIL_HOST_USER",
+        "EMAIL_HOST_PASSWORD",
+        "EMAIL_USE_TLS",
+        "EMAIL_USE_SSL",
+        "DEFAULT_FROM_EMAIL",
+    ):
+        environment.pop(key, None)
+    environment.update(
+        {
+            "BIKEMAPY_DEPLOYMENT_MODE": "production",
+            "DJANGO_DEBUG": "false",
+            "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "DJANGO_SECRET_KEY": "a9f7b3c1e5d8f0a2b4c6d8e1f3a5b7c9d2e4f6a8b0c2d4e6f8a1b3c5d7e9f2",
+            "PLAYER_ACCOUNTS_ENABLED": "true",
+            "PYTHONPATH": "backend",
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config.settings"],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "PLAYER_ACCOUNTS_ENABLED requires usable mail configuration" in result.stderr
+
+
+def test_production_mode_accepts_real_local_account_mail_configuration() -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "BIKEMAPY_DEPLOYMENT_MODE": "production",
+            "DJANGO_DEBUG": "false",
+            "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "DJANGO_SECRET_KEY": "a9f7b3c1e5d8f0a2b4c6d8e1f3a5b7c9d2e4f6a8b0c2d4e6f8a1b3c5d7e9f2",
+            "PLAYER_ACCOUNTS_ENABLED": "true",
+            "GAME_FRONTEND_URL": "https://game.bikemapy.com/game",
+            "EMAIL_BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+            "EMAIL_HOST": "smtp.mail-provider.com",
+            "EMAIL_PORT": "587",
+            "EMAIL_HOST_USER": "bikemapy-mailer",
+            "EMAIL_HOST_PASSWORD": "private-production-mail-secret",
+            "EMAIL_USE_TLS": "true",
+            "EMAIL_USE_SSL": "false",
+            "DEFAULT_FROM_EMAIL": "BikeMapy <accounts@bikemapy.com>",
+            "PYTHONPATH": "backend",
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config.settings"],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("frontend_url", "expected_message"),
+    [
+        (None, "GAME_FRONTEND_URL must use HTTPS in production"),
+        ("http://game.bikemapy.com/game", "GAME_FRONTEND_URL must use HTTPS in production"),
+        (
+            "https://localhost/game",
+            "GAME_FRONTEND_URL must use a non-local HTTPS host",
+        ),
+        (
+            "https://www.example.invalid/game",
+            "GAME_FRONTEND_URL must not use a placeholder host",
+        ),
+    ],
+)
+def test_production_local_accounts_reject_missing_or_local_frontend_url(
+    frontend_url: str | None, expected_message: str
+) -> None:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "BIKEMAPY_DEPLOYMENT_MODE": "production",
+            "DJANGO_DEBUG": "false",
+            "DJANGO_DATABASE_ENGINE": "django.db.backends.sqlite3",
+            "DJANGO_SECRET_KEY": "a9f7b3c1e5d8f0a2b4c6d8e1f3a5b7c9d2e4f6a8b0c2d4e6f8a1b3c5d7e9f2",
+            "PLAYER_ACCOUNTS_ENABLED": "true",
+            "EMAIL_BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+            "EMAIL_HOST": "smtp.mail-provider.com",
+            "EMAIL_PORT": "587",
+            "EMAIL_HOST_USER": "bikemapy-mailer",
+            "EMAIL_HOST_PASSWORD": "private-production-mail-secret",
+            "EMAIL_USE_TLS": "true",
+            "EMAIL_USE_SSL": "false",
+            "DEFAULT_FROM_EMAIL": "accounts@bikemapy.com",
+            "PYTHONPATH": "backend",
+        }
+    )
+    if frontend_url is None:
+        environment.pop("GAME_FRONTEND_URL", None)
+    else:
+        environment["GAME_FRONTEND_URL"] = frontend_url
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import config.settings"],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert expected_message in result.stderr
+
+
 @pytest.mark.parametrize(
     ("name", "value", "message"),
     [

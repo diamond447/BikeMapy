@@ -51,6 +51,9 @@ class PlayerSessionThrottle(ExplicitIdentityThrottle):
         epoch = request.session.get("player_session_epoch")
         if player_id and epoch is not None:
             return rate_limit_identifier(f"player-session:{player_id}:{epoch}")
+        user = getattr(request, "user", None)
+        if user is not None and getattr(user, "is_authenticated", False):
+            return rate_limit_identifier(f"django-user:{user.pk}")
         return TrustedClientThrottleMixin.get_ident(self, request)
 
 
