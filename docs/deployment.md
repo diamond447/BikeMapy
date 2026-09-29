@@ -107,10 +107,9 @@ an `X-Accel-Redirect` internal handoff to stream directly from the read-only
 GPX volume; `/storage/` and `/media/` never map directly to a public location.
 Static files are collected during the image build and served by WhiteNoise
 only when `DEBUG=False`.
-The proxy permits request bodies up to 90 MiB and rejects larger bodies
-before multipart processing. This is below Cloudflare's standard 100 MB
-request-body ceiling while permitting the backend's 50 MiB archive limit plus
-multipart framing. Backend and worker mount the dedicated
+The backend caps aggregate file bytes at 90 MiB. Nginx permits complete
+multipart bodies up to 95 MiB, leaving 5 MiB for framing while staying below
+Cloudflare's standard 100 MB request-body ceiling. Backend and worker mount the dedicated
 `activity_upload_data` volume at `/app/private-uploads`; Nginx and the database
 service do not mount it. Backups include only the durable GPX volume and reject
 the legacy upload directory if it appears in an archive.

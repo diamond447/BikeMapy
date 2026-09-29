@@ -3,6 +3,7 @@ from django.utils import timezone
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 from django.db import migrations, models
+from django.db.models import Q
 
 from apps.accounts.upload_storage import ActivityUploadStorage
 
@@ -13,7 +14,9 @@ def migrate_legacy_activity_uploads(apps, schema_editor):
     Upload = apps.get_model("accounts", "ActivityUpload")
     old_storage = FileSystemStorage(location=settings.MEDIA_ROOT)
     new_storage = ActivityUploadStorage()
-    for upload in Upload.objects.exclude(content_path="").iterator():
+    for upload in (
+        Upload.objects.filter(content_path__isnull=False).exclude(content_path="").iterator()
+    ):
         key = upload.content_path
         if not key:
             continue
@@ -24,16 +27,33 @@ def migrate_legacy_activity_uploads(apps, schema_editor):
             except FileNotFoundError:
                 Upload.objects.filter(pk=upload.pk).update(
                     content_path="",
-                    status="failed",
-                    error_code="missing_payload",
-                    error_detail="The upload payload was unavailable during storage migration.",
-                    processed_at=timezone.now(),
+                    **(
+                        {
+                            "status": "failed",
+                            "error_code": "missing_payload",
+                            "error_detail": "The upload payload was unavailable during storage migration.",
+                            "processed_at": timezone.now(),
+                        }
+                        if upload.status in {"queued", "processing"}
+                        else {}
+                    ),
                 )
                 continue
             if saved_key != key:
                 upload.content_path = saved_key
                 upload.save(update_fields=("content_path",))
         old_storage.delete(key)
+    Upload.objects.filter(
+        status__in=("queued", "processing"),
+        content__isnull=False,
+    ).filter(Q(content_path__isnull=True) | Q(content_path="")).update(
+        content=None,
+        status="failed",
+        error_code="missing_payload",
+        error_detail="The inline upload payload was removed during storage migration.",
+        processed_at=timezone.now(),
+    )
+    Upload.objects.exclude(content=None).update(content=None)
 
 
 class Migration(migrations.Migration):

@@ -1,6 +1,7 @@
 """Discard transient upload payload references after a durable restore."""
 
 from django.core.management.base import BaseCommand
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounts.models import ActivityUpload, ActivityUploadDeletion
@@ -12,8 +13,15 @@ class Command(BaseCommand):
     def handle(self, *args: object, **options: object) -> None:
         now = timezone.now()
         deleted = 0
-        for upload in ActivityUpload.objects.exclude(content_path=""):
-            ActivityUploadDeletion.objects.get_or_create(storage_key=upload.content_path.name)
+        uploads = ActivityUpload.objects.filter(
+            Q(status__in=(ActivityUpload.Status.QUEUED, ActivityUpload.Status.PROCESSING))
+            | Q(content__isnull=False)
+            | (Q(content_path__isnull=False) & ~Q(content_path=""))
+        )
+        for upload in uploads.iterator():
+            storage_key = upload.content_path.name if upload.content_path else ""
+            if storage_key:
+                ActivityUploadDeletion.objects.get_or_create(storage_key=storage_key)
             upload.content_path = None
             upload.content = None
             if upload.status in (ActivityUpload.Status.QUEUED, ActivityUpload.Status.PROCESSING):
@@ -32,7 +40,4 @@ class Command(BaseCommand):
                 )
             )
             deleted += 1
-        # Legacy database payloads were never backed up as a separate file;
-        # clear any old inline values too.
-        ActivityUpload.objects.exclude(content=None).update(content=None)
         self.stdout.write(f"Discarded {deleted} restored transient activity upload payloads")

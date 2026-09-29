@@ -602,6 +602,7 @@ def _delete_player_once(
 
         upload_storage_keys = (
             ActivityUpload.objects.filter(batch__player=player)
+            .filter(content_path__isnull=False)
             .exclude(content_path="")
             .values_list("content_path", flat=True)
         )

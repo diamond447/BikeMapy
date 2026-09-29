@@ -42,7 +42,8 @@ def cleanup_expired_activity_uploads_task() -> dict[str, int]:
     stale = ActivityUpload.objects.filter(
         created_at__lt=cutoff,
         status__in=(ActivityUpload.Status.QUEUED, ActivityUpload.Status.PROCESSING),
-    )
+        content_path__isnull=False,
+    ).exclude(content_path="")
     batch_ids = list(stale.values_list("batch_id", flat=True).distinct())
     expired = list(stale)
     cleared = 0
@@ -176,7 +177,9 @@ def reconcile_orphan_activity_uploads_task(limit: int = 100) -> dict[str, int]:
         return {"queued": 0}
     cutoff = timezone.now() - timedelta(hours=1)
     referenced = set(
-        ActivityUpload.objects.exclude(content_path="").values_list("content_path", flat=True)
+        ActivityUpload.objects.filter(content_path__isnull=False)
+        .exclude(content_path="")
+        .values_list("content_path", flat=True)
     )
     queued = 0
     for directory, _subdirs, files in os.walk(root):

@@ -576,6 +576,81 @@ def test_restore_command_discards_transient_payloads_and_marks_unfinished_failed
         assert not (tmp_path / storage_key).exists()
 
 
+def test_restore_command_handles_inline_only_rows_without_creating_empty_deletions() -> None:
+    from django.core.management import call_command
+
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    batch = ActivityUploadBatch.objects.create(player=player, total_files=1, attested=True)
+    upload = ActivityUpload.objects.create(
+        batch=batch,
+        original_name="legacy.gpx",
+        content_sha256="a" * 64,
+        size_bytes=7,
+        status=ActivityUpload.Status.PROCESSING,
+        content=b"inline!",
+        content_path=None,
+    )
+    call_command("discard_restored_activity_uploads")
+    upload.refresh_from_db()
+    assert upload.status == ActivityUpload.Status.FAILED
+    assert upload.error_code == "restore_payload_discarded"
+    assert upload.content is None
+    assert not upload.content_path
+    assert not ActivityUploadDeletion.objects.filter(storage_key="").exists()
+
+
+def test_account_deletion_skips_processed_rows_with_null_storage_paths() -> None:
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    batch = ActivityUploadBatch.objects.create(player=player, total_files=1, attested=True)
+    ActivityUpload.objects.create(
+        batch=batch,
+        original_name="processed.gpx",
+        content_sha256="b" * 64,
+        size_bytes=0,
+        status=ActivityUpload.Status.ACCEPTED,
+        content_path=None,
+    )
+    delete_player(player)
+    assert not ActivityUploadDeletion.objects.exists()
+
+
+def test_migration_clears_legacy_inline_upload_payloads(tmp_path: Path) -> None:
+    from importlib import import_module
+
+    from django.apps import apps
+
+    migration = import_module("apps.accounts.migrations.0029_activity_upload_deletion_and_storage")
+
+    competition = _competition()
+    player, _ = create_invited_account(
+        username="rider", email="rider@example.com", invite_code=competition.invite_code
+    )
+    batch = ActivityUploadBatch.objects.create(player=player, total_files=1, attested=True)
+    upload = ActivityUpload.objects.create(
+        batch=batch,
+        original_name="legacy.gpx",
+        content_sha256="c" * 64,
+        size_bytes=7,
+        status=ActivityUpload.Status.QUEUED,
+        content=b"inline!",
+        content_path=None,
+    )
+    with override_settings(
+        MEDIA_ROOT=tmp_path / "durable", ACTIVITY_UPLOAD_ROOT=tmp_path / "private"
+    ):
+        migration.migrate_legacy_activity_uploads(apps, None)
+    upload.refresh_from_db()
+    assert upload.content is None
+    assert upload.status == ActivityUpload.Status.FAILED
+    assert upload.error_code == "missing_payload"
+
+
 @override_settings(PLAYER_ACCOUNTS_ENABLED=True)
 def test_upload_endpoints_do_not_disclose_other_players_batches() -> None:
     client = APIClient()

@@ -163,8 +163,10 @@ propagation process remain launch gates.
 
 ### Direct activity uploads
 
-FIT, GPX, and TCX request bodies have a 90 MiB transport ceiling. Raw upload
-objects live in the separate `activity_upload_data` Docker volume and are not
+FIT, GPX, and TCX uploaded files have a 90 MiB aggregate limit per request;
+Nginx allows up to 95 MiB for the complete multipart body, leaving 5 MiB for
+framing below Cloudflare's standard 100 MB ceiling. Raw upload objects live in
+the separate `activity_upload_data` Docker volume and are not
 included in durable GPX or database backups. Terminal and expired objects are
 queued for storage deletion; account deletion records every queued or
 processing object key before database cascades remove the upload rows. Failed

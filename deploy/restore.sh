@@ -12,6 +12,7 @@ ACTIVITY_UPLOAD_VOLUME="${ACTIVITY_UPLOAD_VOLUME:-bikemapy_activity_upload_data}
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
 RESTORE_ATTEMPT_ID="${RESTORE_ATTEMPT_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+ACTIVITY_UPLOAD_ROLLBACK_VOLUME="${ACTIVITY_UPLOAD_ROLLBACK_VOLUME:-bikemapy-restore-upload-${RESTORE_ATTEMPT_ID//[^a-zA-Z0-9_.-]/-}}"
 db_file="$BACKUP_DIR/db-${BACKUP_ID}.dump"
 gpx_file="$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz"
 manifest="$BACKUP_DIR/manifest-${BACKUP_ID}.json"
@@ -35,6 +36,14 @@ before_file_name="$(basename "$before_file")"
 before_db_file_name="$(basename "$before_db_file")"
 rollback_db_ready=0
 rollback_gpx_ready=0
+rollback_activity_uploads_ready=0
+preserve_activity_upload_rollback=0
+cleanup_activity_upload_rollback() {
+  if (( ! preserve_activity_upload_rollback )); then
+    docker volume rm "$ACTIVITY_UPLOAD_ROLLBACK_VOLUME" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_activity_upload_rollback EXIT
 rm -f "$BACKUP_DIR"/db-before-restore-${BACKUP_ID}-*.dump.part \
   "$BACKUP_DIR"/gpx-before-restore-${BACKUP_ID}-*.tar.gz.part
 restore_previous_gpx() {
@@ -42,6 +51,17 @@ restore_previous_gpx() {
     docker run --rm -v "${GPX_VOLUME}:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
       sh -c "find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf /backup/$before_file_name -C /data" \
       || echo "WARNING: automatic GPX rollback failed; restore $before_file manually" >&2
+  fi
+}
+restore_previous_activity_uploads() {
+  if (( rollback_activity_uploads_ready )); then
+    if ! docker run --rm \
+      -v "${ACTIVITY_UPLOAD_VOLUME}:/data" \
+      -v "${ACTIVITY_UPLOAD_ROLLBACK_VOLUME}:/rollback:ro" alpine \
+      sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf /rollback/activity-uploads.tar.gz -C /data'; then
+      echo "WARNING: transient activity uploads could not be rolled back; rollback volume $ACTIVITY_UPLOAD_ROLLBACK_VOLUME was preserved" >&2
+      preserve_activity_upload_rollback=1
+    fi
   fi
 }
 restore_previous_database() {
@@ -56,6 +76,7 @@ restore_previous_state() {
   $COMPOSE stop backend worker beat >/dev/null 2>&1 || true
   restore_previous_database
   restore_previous_gpx
+  restore_previous_activity_uploads
   echo "Restore failed; production writers remain stopped and paired pre-restore backups are available" >&2
 }
 trap restore_previous_state ERR
@@ -71,15 +92,25 @@ docker run --rm -v "${GPX_VOLUME}:/data:ro" -v "$BACKUP_DIR:/backup" alpine \
 test -s "$BACKUP_DIR/$before_file_name.part"
 mv -f "$BACKUP_DIR/$before_file_name.part" "$before_file"
 rollback_gpx_ready=1
+docker volume create "$ACTIVITY_UPLOAD_ROLLBACK_VOLUME" >/dev/null
+docker run --rm \
+  -v "${ACTIVITY_UPLOAD_VOLUME}:/source:ro" \
+  -v "${ACTIVITY_UPLOAD_ROLLBACK_VOLUME}:/rollback" alpine \
+  sh -c 'tar czf /rollback/activity-uploads.tar.gz -C /source .'
+docker run --rm -v "${ACTIVITY_UPLOAD_ROLLBACK_VOLUME}:/rollback:ro" alpine \
+  test -s /rollback/activity-uploads.tar.gz
+rollback_activity_uploads_ready=1
 $COMPOSE exec -T db pg_restore --username="$POSTGRES_USER" --clean --if-exists \
   --no-owner --dbname="$POSTGRES_DB" "/backup/db-${BACKUP_ID}.dump"
-echo "Discarding transient activity uploads from restored database and storage"
+docker run --rm -v "${GPX_VOLUME}:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
+  sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf "/backup/gpx-'"$BACKUP_ID"'.tar.gz" --exclude=./media/private/activity_uploads -C /data'
+echo "Migrating restored schema, then discarding transient upload references"
+$COMPOSE run --rm --no-deps backend uv run --locked --no-dev \
+  python backend/manage.py migrate --noinput
 $COMPOSE run --rm --no-deps backend uv run --locked --no-dev \
   python backend/manage.py discard_restored_activity_uploads
 docker run --rm -v "${ACTIVITY_UPLOAD_VOLUME}:/data" alpine \
   sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +'
-docker run --rm -v "${GPX_VOLUME}:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
-  sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf "/backup/gpx-'"$BACKUP_ID"'.tar.gz" -C /data'
 test -s "$before_file"
 test -s "$before_db_file"
 $COMPOSE up -d backend worker beat proxy

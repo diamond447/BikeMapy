@@ -25,9 +25,10 @@ makes retries idempotent; duplicate results are reported per file. Normalized
 activities use the same private `ImportedActivity` model and recomputation
 lifecycle as provider imports.
 
-The Nginx transport boundary accepts requests up to 90 MiB, matching the
-backend aggregate file limit; larger bodies are rejected at the proxy before
-multipart processing. Raw upload objects are stored in the dedicated
+The backend caps aggregate uploaded file bytes at 90 MiB. Nginx accepts
+multipart request bodies up to 95 MiB, leaving 5 MiB for framing before
+Cloudflare's standard 100 MB request-body ceiling. Larger bodies are rejected
+at the proxy before multipart processing. Raw upload objects are stored in the dedicated
 `activity_upload_data` volume, separate from durable GPX media. Account deletion
 captures queued and processing object keys in a database deletion queue before
 cascading upload rows. Storage failures remain visible in owner administration
