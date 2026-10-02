@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage'] },
+  { ignores: ['dist', 'coverage', 'public/bike-fitting-assets'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -19,6 +19,10 @@ export default tseslint.config(
   },
   {
     files: ['benchmark/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node } },
+  },
+  {
+    files: ['scripts/**/*.mjs'],
     languageOptions: { globals: { ...globals.node } },
   },
   {

@@ -30,6 +30,31 @@ function siteMetadataPlugin(siteUrl: string): Plugin {
   }
 }
 
+const bikeFittingWorkerPolicy =
+  "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' blob:; object-src 'none'; base-uri 'none'"
+
+function applyBikeFittingWorkerPolicy(
+  request: { url?: string },
+  response: { setHeader(name: string, value: string): void },
+  next: () => void,
+) {
+  const pathname = request.url?.split('?')[0] ?? ''
+  if (/(^|\/)pose\.worker(?:\.ts|[-.])/.test(pathname)) {
+    response.setHeader('Content-Security-Policy', bikeFittingWorkerPolicy)
+  }
+  next()
+}
+
+const bikeFittingWorkerPolicyPlugin: Plugin = {
+  name: 'bikemapy-bike-fitting-worker-csp',
+  configureServer(server) {
+    server.middlewares.use(applyBikeFittingWorkerPolicy)
+  },
+  configurePreviewServer(server) {
+    server.middlewares.use(applyBikeFittingWorkerPolicy)
+  },
+}
+
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   if (command === 'build') {
@@ -40,7 +65,7 @@ export default defineConfig(({ command, mode }) => {
   }
   const siteUrl = normalizePublicSiteUrl(env.VITE_PUBLIC_SITE_URL)
   return {
-    plugins: [react(), siteMetadataPlugin(siteUrl)],
+    plugins: [react(), siteMetadataPlugin(siteUrl), bikeFittingWorkerPolicyPlugin],
     server: { port: 5173 },
     test: {
       environment: 'jsdom',

@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/prepare-bike-fitting-assets.mjs",
     "dev": "vite --host 0.0.0.0",
+    "prebuild": "node scripts/prepare-bike-fitting-assets.mjs",
     "build": "tsc -b && vite build",
     "scan:bundle": "python3 ../scripts/check_frontend_bundle.py dist",
     "build:preview": "VITE_ENABLE_REPORTS=false pnpm build && pnpm scan:bundle --read-only",
@@ -18,6 +20,7 @@
     "api:generate": "openapi-typescript ../openapi.yaml -o src/api/generated/schema.ts && prettier --write src/api/generated/schema.ts"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
     "@tanstack/react-query": "^5.74.4",
     "maplibre-gl": "^6.10.0",
     "openapi-fetch": "^0.14.0",

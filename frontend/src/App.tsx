@@ -423,6 +423,11 @@ function App() {
           </span>
           <span>BikeMapy</span>
         </a>
+        {import.meta.env.VITE_ENABLE_BIKE_FITTING === 'true' && (
+          <a className="bike-fitting-nav" href="/bike-fitting">
+            {language === 'cs' ? 'Nastavení posedu' : 'Bike fitting'}
+          </a>
+        )}
         <GameAccount copy={copy} initialOpen={window.location.pathname === '/game'} />
       </header>
       <MapStage
