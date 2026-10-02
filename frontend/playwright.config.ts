@@ -4,7 +4,7 @@ export default defineConfig({
   testDir: './e2e',
   use: { baseURL: 'http://127.0.0.1:4173', ...devices['Desktop Chrome'] },
   webServer: {
-    command: 'corepack pnpm dev --host 127.0.0.1 --port 4173',
+    command: 'VITE_ENABLE_BIKE_FITTING=true corepack pnpm dev --host 127.0.0.1 --port 4173',
     port: 4173,
     reuseExistingServer: !process.env.CI,
   },

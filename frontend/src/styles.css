@@ -3195,3 +3195,487 @@ h1 {
     margin-left: auto;
   }
 }
+
+.bike-fitting-nav {
+  background: #e7f24e;
+  color: #162d28;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 9px 12px;
+  text-decoration: none;
+}
+
+.bike-fitting-app {
+  --fit-ink: #162d28;
+  --fit-paper: #f7faf2;
+  --fit-base: #dce6df;
+  --fit-highlight: #e7f24e;
+  --fit-orange: #d34d32;
+  background: var(--fit-base);
+  color: var(--fit-ink);
+  min-height: 100vh;
+}
+
+.bike-fitting-loading {
+  background: #dce6df;
+  color: #162d28;
+  padding: 24px;
+}
+
+.bike-fitting-header {
+  align-items: center;
+  background: var(--fit-paper);
+  border-bottom: 1px solid rgba(22, 45, 40, 0.16);
+  display: flex;
+  gap: 30px;
+  min-height: 90px;
+  padding: 16px 3.4vw;
+}
+
+.bike-fitting-title {
+  margin-right: auto;
+}
+
+.bike-fitting-title h1 {
+  font-size: clamp(1.1rem, 2.2vw, 1.65rem);
+  letter-spacing: -0.045em;
+  line-height: 1.1;
+  margin: 0;
+}
+
+.bike-fitting-title p,
+.bike-fitting-instructions p,
+.bike-fitting-footer {
+  line-height: 1.5;
+}
+
+.bike-fitting-title p {
+  color: #41675a;
+  font-size: 0.76rem;
+  margin: 5px 0 0;
+}
+
+.bike-fitting-header-actions {
+  align-items: center;
+  display: flex;
+  gap: 18px;
+}
+
+.bike-fitting-language,
+.bike-fitting-back {
+  background: transparent;
+  border: 0;
+  color: var(--fit-ink);
+  cursor: pointer;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.67rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.bike-fitting-layout {
+  display: grid;
+  gap: 22px;
+  grid-template-columns: minmax(245px, 310px) minmax(0, 1fr);
+  margin: 0 auto;
+  max-width: 1600px;
+  min-height: calc(100vh - 134px);
+  padding: 22px 3.4vw 52px;
+}
+
+.bike-fitting-instructions,
+.bike-fitting-measurements {
+  background: var(--fit-paper);
+  padding: 24px;
+}
+
+.bike-fitting-instructions {
+  align-self: start;
+}
+
+.bike-fitting-instructions h2,
+.bike-fitting-measurements h2 {
+  font-size: 1rem;
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+
+.bike-fitting-instructions p {
+  font-size: 0.77rem;
+  margin: 14px 0;
+}
+
+.bike-fitting-file {
+  background: var(--fit-ink);
+  color: var(--fit-paper);
+  cursor: pointer;
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin-top: 20px;
+  padding: 13px 15px;
+  text-align: center;
+}
+
+.bike-fitting-file:focus-within,
+.bike-fitting-start:focus-visible,
+.bike-fitting-cancel:focus-visible,
+.bike-fitting-side button:focus-visible,
+.bike-fitting-language:focus-visible,
+.bike-fitting-back:focus-visible {
+  outline: 3px solid var(--fit-orange);
+  outline-offset: 3px;
+}
+
+.bike-fitting-file input {
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
+
+.bike-fitting-limit,
+.bike-fitting-privacy,
+.bike-fitting-file-name,
+.bike-fitting-note {
+  color: #41675a;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.61rem !important;
+}
+
+.bike-fitting-side {
+  align-items: center;
+  border-bottom: 1px solid rgba(22, 45, 40, 0.16);
+  border-top: 1px solid rgba(22, 45, 40, 0.16);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 13px 0;
+}
+
+.bike-fitting-side span {
+  flex-basis: 100%;
+  font-size: 0.69rem;
+  font-weight: 700;
+}
+
+.bike-fitting-side button {
+  background: transparent;
+  border: 1px solid #9caea5;
+  color: var(--fit-ink);
+  cursor: pointer;
+  font-size: 0.68rem;
+  padding: 7px 10px;
+}
+
+.bike-fitting-side button[aria-pressed='true'] {
+  background: var(--fit-highlight);
+  border-color: var(--fit-ink);
+  font-weight: 700;
+}
+
+.bike-fitting-start,
+.bike-fitting-cancel {
+  cursor: pointer;
+  display: block;
+  font-size: 0.74rem;
+  margin-top: 10px;
+  padding: 11px 13px;
+  width: 100%;
+}
+
+.bike-fitting-start {
+  background: var(--fit-ink);
+  border: 1px solid var(--fit-ink);
+  color: var(--fit-paper);
+  font-weight: 700;
+}
+
+.bike-fitting-start:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.bike-fitting-cancel {
+  background: transparent;
+  border: 1px solid #9caea5;
+  color: var(--fit-ink);
+}
+
+.bike-fitting-privacy {
+  border-left: 3px solid var(--fit-highlight);
+  margin-top: 19px !important;
+  padding-left: 10px;
+}
+
+.bike-fitting-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bike-fitting-stage {
+  align-items: center;
+  background: #0b1d19;
+  display: flex;
+  justify-content: center;
+  min-height: min(54vw, 640px);
+  overflow: hidden;
+  position: relative;
+}
+
+.bike-fitting-stage > video:not(.bike-fitting-decoder) {
+  height: 100%;
+  inset: 0;
+  object-fit: contain;
+  position: absolute;
+  width: 100%;
+}
+
+.bike-fitting-decoder {
+  height: 1px;
+  left: -2px;
+  opacity: 0;
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  width: 1px;
+}
+
+.bike-fitting-skeleton {
+  height: 100%;
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 100%;
+}
+
+.bike-fitting-skeleton line {
+  stroke: #e7f24e;
+  stroke-linecap: round;
+  stroke-width: 7;
+}
+
+.bike-fitting-skeleton circle {
+  fill: #d34d32;
+  stroke: #f7faf2;
+  stroke-width: 2;
+}
+
+.bike-fitting-empty {
+  align-items: center;
+  color: #f7faf2;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  gap: 8px;
+  padding: 20px;
+  position: relative;
+  text-align: center;
+  z-index: 1;
+}
+
+.bike-fitting-frame-mark {
+  color: var(--fit-highlight);
+  font-size: 2.4rem;
+  line-height: 1;
+}
+
+.bike-fitting-timeline {
+  align-items: center;
+  background: var(--fit-paper);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  padding: 11px 16px;
+}
+
+.bike-fitting-timeline label {
+  font-size: 0.7rem;
+}
+
+.bike-fitting-timeline input,
+.bike-fitting-measurements progress {
+  accent-color: var(--fit-ink);
+  width: 100%;
+}
+
+.bike-fitting-timeline p {
+  color: var(--fit-orange);
+  font-size: 0.68rem;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.bike-fitting-measurements {
+  padding: 18px 20px;
+}
+
+.bike-fitting-measurement-heading {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.bike-fitting-measurement-heading span {
+  color: #41675a;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.57rem;
+}
+
+.bike-fitting-measurements progress {
+  height: 5px;
+  margin: 12px 0 0;
+}
+
+.bike-fitting-angle-grid {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.bike-fitting-angle-grid > div {
+  background: #e9eee7;
+  min-height: 65px;
+  padding: 10px 12px;
+}
+
+.bike-fitting-angle-grid span,
+.bike-fitting-angle-grid strong {
+  display: block;
+}
+
+.bike-fitting-angle-grid span {
+  color: #41675a;
+  font-size: 0.63rem;
+}
+
+.bike-fitting-angle-grid strong {
+  font-size: 1.2rem;
+  letter-spacing: -0.04em;
+  margin-top: 4px;
+}
+
+.bike-fitting-measurements > p {
+  color: #41675a;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.59rem;
+  margin: 12px 0 0;
+}
+
+.bike-fitting-measurements > .bike-fitting-warning {
+  color: #923b28;
+}
+
+.bike-fitting-error {
+  align-items: center;
+  background: #f8e8e2;
+  border-left: 4px solid var(--fit-orange);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.bike-fitting-error button {
+  background: var(--fit-ink);
+  border: 0;
+  color: white;
+  cursor: pointer;
+  padding: 7px 10px;
+}
+
+.bike-fitting-footer {
+  background: #cbd9d0;
+  color: #41675a;
+  font-family: 'DM Mono', monospace;
+  font-size: 0.59rem;
+  padding: 9px 3.4vw;
+  text-align: right;
+}
+
+.bike-fitting-disabled {
+  background: #dce6df;
+  color: #162d28;
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.bike-fitting-disabled h1 {
+  margin-top: 48px;
+}
+
+@media (max-width: 760px) {
+  .bike-fitting-header {
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    padding: 13px 17px;
+  }
+
+  .bike-fitting-header .wordmark {
+    font-size: 0.9rem;
+  }
+
+  .bike-fitting-title {
+    flex: 1;
+    min-width: 150px;
+  }
+
+  .bike-fitting-header-actions {
+    margin-left: auto;
+  }
+
+  .bike-fitting-layout {
+    gap: 12px;
+    grid-template-columns: 1fr;
+    padding: 12px 12px 44px;
+  }
+
+  .bike-fitting-instructions {
+    padding: 17px;
+  }
+
+  .bike-fitting-stage {
+    min-height: min(65vw, 430px);
+  }
+
+  .bike-fitting-measurements {
+    padding: 14px;
+  }
+
+  .bike-fitting-angle-grid > div {
+    padding: 8px;
+  }
+
+  .bike-fitting-angle-grid span {
+    font-size: 0.57rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .bike-fitting-header {
+    align-items: flex-start;
+  }
+
+  .bike-fitting-header .wordmark span:last-child {
+    display: none;
+  }
+
+  .bike-fitting-title h1 {
+    font-size: 1rem;
+  }
+
+  .bike-fitting-back {
+    display: none;
+  }
+
+  .bike-fitting-angle-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

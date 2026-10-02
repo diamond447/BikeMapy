@@ -14,6 +14,8 @@ an eventual launch remain documented and explicit.
 - A responsive React and TypeScript interface with a MapLibre map, route list,
   synchronized selection, URL-addressable filters and viewport state, Czech
   and English translations, route details, sharing, and source links.
+- An experimental, disabled-by-default [local bike fitting video workspace](docs/bike-fitting.md)
+  with same-device pose analysis and no fit recommendations.
 - A versioned Django REST API with paginated route search, bounded viewport
   queries, selected-route geometry, OpenAPI documentation, health endpoints,
   and a generated TypeScript client contract.
