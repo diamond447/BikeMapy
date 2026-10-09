@@ -47,6 +47,8 @@ RETIRED_TABLES = (
     "accounts_player",
     "accounts_competition",
 )
+# Case-insensitive unique indexes that accounts.0025 added to auth_user.
+RETIRED_INDEXES = ("accounts_user_username_ci", "accounts_user_email_ci")
 
 
 def drop_retired_tables(apps, schema_editor):  # type: ignore[no-untyped-def]
@@ -55,6 +57,8 @@ def drop_retired_tables(apps, schema_editor):  # type: ignore[no-untyped-def]
     cascade = " CASCADE" if connection.vendor == "postgresql" else ""
     for table in RETIRED_TABLES:
         schema_editor.execute(f"DROP TABLE IF EXISTS {connection.ops.quote_name(table)}{cascade}")
+    for index in RETIRED_INDEXES:
+        schema_editor.execute(f"DROP INDEX IF EXISTS {connection.ops.quote_name(index)}")
     # Forget the removed migration files so `showmigrations` stays accurate.
     schema_editor.execute(
         "DELETE FROM django_migrations WHERE app = %s OR (app = %s AND name < %s)",
