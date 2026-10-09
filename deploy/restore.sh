@@ -10,6 +10,12 @@ COMPOSE="${COMPOSE:-docker compose --env-file deploy/.env.production -f deploy/c
 GPX_VOLUME="${GPX_VOLUME:-bikemapy_gpx_data}"
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
+# Lean mode (compose.lean.yml) has no worker, beat or Redis. Act only on the
+# services present in the active Compose model so a backup or restore never
+# starts them.
+active_services() { $COMPOSE config --services | grep -xE "$1" | tr '\n' ' '; }
+writers="$(active_services 'backend|worker|beat')"
+stores="$(active_services 'db|redis')"
 RESTORE_ATTEMPT_ID="${RESTORE_ATTEMPT_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 db_file="$BACKUP_DIR/db-${BACKUP_ID}.dump"
 gpx_file="$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz"
@@ -27,7 +33,7 @@ verify_gpx_archive() {
 verify_gpx_archive
 
 echo "Stopping writers before restoring backup $BACKUP_ID"
-$COMPOSE stop backend worker beat
+$COMPOSE stop $writers
 before_file="$BACKUP_DIR/gpx-before-restore-${BACKUP_ID}-${RESTORE_ATTEMPT_ID}.tar.gz"
 before_db_file="$BACKUP_DIR/db-before-restore-${BACKUP_ID}-${RESTORE_ATTEMPT_ID}.dump"
 before_file_name="$(basename "$before_file")"
@@ -45,20 +51,20 @@ restore_previous_gpx() {
 }
 restore_previous_database() {
   if (( rollback_db_ready )) && [[ -s "$before_db_file" ]]; then
-    $COMPOSE start db redis >/dev/null 2>&1 || true
+    $COMPOSE start $stores >/dev/null 2>&1 || true
     $COMPOSE exec -T db pg_restore --username="$POSTGRES_USER" --clean --if-exists \
       --no-owner --dbname="$POSTGRES_DB" "/backup/$before_db_file_name" \
       || echo "WARNING: automatic database rollback failed; restore $before_db_file manually" >&2
   fi
 }
 restore_previous_state() {
-  $COMPOSE stop backend worker beat >/dev/null 2>&1 || true
+  $COMPOSE stop $writers >/dev/null 2>&1 || true
   restore_previous_database
   restore_previous_gpx
   echo "Restore failed; production writers remain stopped and paired pre-restore backups are available" >&2
 }
 trap restore_previous_state ERR
-$COMPOSE start db redis
+$COMPOSE start $stores
 $COMPOSE exec -T db pg_dump --username="$POSTGRES_USER" --format=custom \
   --file="/backup/$before_db_file_name.part" "$POSTGRES_DB"
 test -s "$BACKUP_DIR/$before_db_file_name.part"
@@ -75,6 +81,6 @@ docker run --rm -v "${GPX_VOLUME}:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
   sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf "/backup/gpx-'"$BACKUP_ID"'.tar.gz" -C /data'
 test -s "$before_file"
 test -s "$before_db_file"
-$COMPOSE up -d backend worker beat proxy
+$COMPOSE up -d $writers proxy
 trap - ERR
 echo "Restore completed; pre-restore GPX archive: $before_file; verify /health/ready/ and representative route reads before reopening traffic"

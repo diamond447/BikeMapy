@@ -24,10 +24,19 @@ def test_restore_failure_path_restores_database_and_gpx_pair() -> None:
     failure_handler = script[
         script.index("restore_previous_state()") : script.index("trap restore_previous_state")
     ]
-    assert failure_handler.index("stop backend worker beat") < failure_handler.index(
+    assert failure_handler.index("stop $writers") < failure_handler.index(
         "restore_previous_database"
     )
     assert script.index("before_db_file=") < script.index('"/backup/db-${BACKUP_ID}.dump"')
+
+
+@pytest.mark.parametrize("name", ["backup.sh", "restore.sh"])
+def test_backup_and_restore_only_touch_services_in_the_active_compose_model(name: str) -> None:
+    script = (Path(__file__).parents[3] / "deploy" / name).read_text()
+    assert "$COMPOSE config --services" in script
+    assert "writers=\"$(active_services 'backend|worker|beat')\"" in script
+    for hardcoded in ("backend worker beat", "start db redis"):
+        assert hardcoded not in script
 
 
 def test_backup_and_restore_share_the_volume_relative_gpx_layout() -> None:

@@ -109,6 +109,58 @@ def test_production_compose_requires_explicit_debug_false(tmp_path: Path) -> Non
     assert "DJANGO_DEBUG" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("profiles", "expected"),
+    [
+        ("", {"db", "backend", "proxy"}),
+        ("jobs", {"db", "backend", "proxy", "redis", "worker", "beat"}),
+    ],
+)
+def test_lean_compose_override_runs_only_database_api_and_proxy(
+    tmp_path: Path, profiles: str, expected: set[str]
+) -> None:
+    """The lean override keeps background services behind the `jobs` profile."""
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker is required to render the production Compose model")
+
+    root = Path(__file__).parents[3]
+    env_file = tmp_path / ".env.production"
+    example = (root / "deploy" / ".env.production.example").read_text()
+    env_file.write_text(f"BIKEMAPY_ENV_FILE={env_file}\n{example}")
+    environment = {**os.environ, "COMPOSE_PROFILES": profiles}
+
+    result = subprocess.run(
+        [
+            docker,
+            "compose",
+            "--project-directory",
+            str(root),
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(root / "deploy" / "compose.production.yml"),
+            "-f",
+            str(root / "deploy" / "compose.lean.yml"),
+            "config",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    services = json.loads(result.stdout)["services"]
+    assert services.keys() == expected
+    backend = services["backend"]
+    assert backend["environment"]["BACKGROUND_JOBS_ENABLED"] == "false"
+    assert backend["depends_on"].keys() == {"db"}
+    assert backend["depends_on"]["db"]["restart"] is True
+
+
 def test_launch_rehearsal_runtime_env_disables_debug(tmp_path: Path) -> None:
     env_file = tmp_path / "runtime.env"
     runtime_env(env_file, "bikemapy-rehearsal:test")

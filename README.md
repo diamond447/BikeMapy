@@ -32,7 +32,8 @@ an eventual launch remain documented and explicit.
   is disabled until its legal gate is approved.
 - Docker Compose development and production-like topologies with PostGIS,
   Redis, Celery, Nginx, health checks, immutable backend image builds,
-  backups, restore drills, and rollback rehearsal scripts.
+  backups, restore drills, and rollback rehearsal scripts, plus a lean
+  single-host mode that runs only PostgreSQL, the API, and Nginx.
 
 ## Screenshots
 

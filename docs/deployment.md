@@ -260,6 +260,43 @@ Record the selected digest, backup ID, migration output, and readiness response
 in the release log. A backup is not a monitoring system: verify that the files
 exist and periodically test restoring them on an isolated stack.
 
+## Lean single-host mode
+
+A small home server that only needs to serve the catalogue can skip Redis and
+Celery. Add `deploy/compose.lean.yml` after the production file (it uses the
+Compose `!override` tag, so Docker Compose 2.24.4 or newer is required):
+
+```sh
+export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml -f deploy/compose.lean.yml"
+```
+
+The override puts `redis`, `worker` and `beat` behind the `jobs` profile, so
+`$COMPOSE up -d` starts only `db`, `backend` and `proxy`. It also sets
+`BACKGROUND_JOBS_ENABLED=false` for the backend. In that mode:
+
+- tasks triggered by web requests (for example the GPX payload deletion queued
+  by an owner moderation action) run inline in the request, because there is
+  no broker and no worker;
+- the shared cache used for throttling, report rate limits and spatial query
+  epochs lives in PostgreSQL (`bikemapy_cache`, created by a regular
+  migration), and `/health/ready/` checks that table instead of Redis;
+- nothing runs the Celery beat schedule. Install
+  [`maintenance.cron.example`](../deploy/maintenance.cron.example) so
+  `manage.py run_periodic_tasks` handles report retention, crawler cache
+  expiry, GPX reconciliation and deletion retries every hour. The incremental
+  crawl only runs with `--with-crawl`; add it once crawling is approved.
+
+`backup.sh` and `restore.sh` read the active Compose model and only stop or
+start services that exist in it. In the manual release and rollback commands,
+use `backend proxy` wherever they list `backend worker beat proxy`, because
+naming a profiled service explicitly would start it. To return to the full
+topology, drop the override file from `COMPOSE` and run `$COMPOSE up -d`.
+
+Lean mode suits a read-mostly catalogue. Crawling and GPX extraction stay
+behind their own deployment gates; if they are enabled, extraction work runs
+inside the cron or request process that triggers it, so prefer the full
+topology for a regular ingestion workload.
+
 ## Rollback
 
 Keep the previous image digest and backup ID with every release. For an
