@@ -98,9 +98,11 @@ uv run --locked --no-dev python scripts/production_compose_smoke.py --daemon-res
 ## Retired private game data
 
 Hosts that ran a build with the retired private game (see the README's
-project history) keep some data that the current code no longer manages. The
-`accounts.0030` migration drops the game tables and indexes automatically;
-after it runs, the operator should also:
+project history) keep some data that the current code no longer manages.
+The removal release leaves the game tables in place so the previous image can
+still be rolled back to without restoring a backup. Once the release is
+verified, a follow-up `accounts.0030` migration drops those tables and the
+retired `auth_user` indexes; after it runs, the operator should also:
 
 1. Run `manage.py remove_stale_contenttypes --include-stale-apps` to remove
    the retired content types and their permissions.
