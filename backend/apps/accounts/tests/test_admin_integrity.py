@@ -13,7 +13,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import Client, override_settings
 
-from apps.accounts.adapters import OwnerSocialAccountAdapter
+from apps.accounts.adapters import OwnerAccountAdapter, OwnerSocialAccountAdapter
 from apps.accounts.admin import owner_admin_site
 from apps.accounts.authorization import is_owner
 from apps.catalogue.models import (
@@ -69,9 +69,41 @@ def test_allauth_adapter_staff_alignment_uses_provider_uid() -> None:
         user.is_staff = False
         adapter.pre_social_login(request, login)
         assert user.is_staff
+        user.is_staff = False
+        with patch(
+            "allauth.socialaccount.adapter.DefaultSocialAccountAdapter.save_user",
+            return_value=user,
+        ):
+            adapter.save_user(request, login)
+        assert user.is_staff
         login.account.uid = "not-a-number"
         adapter.pre_social_login(request, login)
         assert not user.is_staff
+
+
+def test_allauth_adapter_opens_signup_only_for_allowlisted_owner() -> None:
+    request = Client().get("/").wsgi_request
+    adapter = OwnerSocialAccountAdapter()
+    with override_settings(GITHUB_OWNER_IDS=frozenset({"12345"})):
+        for provider, uid, expected in (
+            ("github", "12345", True),
+            ("github", "67890", False),
+            ("github", "not-a-number", False),
+            ("google", "12345", False),
+        ):
+            login = SimpleNamespace(account=SimpleNamespace(provider=provider, uid=uid))
+            assert adapter.is_open_for_signup(request, login) is expected
+
+
+def test_local_password_signup_is_closed() -> None:
+    client = Client()
+    assert not OwnerAccountAdapter().is_open_for_signup(client.get("/").wsgi_request)
+    response = client.post(
+        "/accounts/signup/",
+        {"username": "visitor", "password1": "a-Long-pass-123", "password2": "a-Long-pass-123"},
+    )
+    assert not get_user_model().objects.filter(username="visitor").exists()
+    assert response.status_code != 302
 
 
 def test_allowlist_requires_current_github_record_and_rejects_flags() -> None:

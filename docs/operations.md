@@ -95,6 +95,28 @@ installation that allows privileged containers:
 uv run --locked --no-dev python scripts/production_compose_smoke.py --daemon-restart
 ```
 
+## Retired private game data
+
+Hosts that ran a build with the retired private game (see the README's
+project history) keep some data that the current code no longer manages.
+The removal release leaves the game tables in place so the previous image can
+still be rolled back to without restoring a backup. Once the release is
+verified, a follow-up `accounts.0030` migration drops those tables and the
+retired `auth_user` indexes; after it runs, the operator should also:
+
+1. Run `manage.py remove_stale_contenttypes --include-stale-apps` to remove
+   the retired content types and their permissions.
+2. Delete former player users from `auth_user` (every user except the owner
+   whose GitHub ID is in `GITHUB_OWNER_IDS`) through owner administration or
+   a reviewed SQL statement; their allauth e-mail and social-account rows
+   cascade with them.
+3. Remove the `activity_upload_data` volume, any `bikemapy-restore-upload-*`
+   rollback volumes and a leftover `media/private/activity_uploads` directory
+   in the GPX volume. They held transient raw activity uploads only.
+
+Unknown `bikemapy.accounts.*` messages still queued in Redis are rejected and
+logged by the worker; purge the queue with `celery -A config purge` if needed.
+
 ## Logs and Sentry
 
 Django and Celery write one JSON object per line to stdout. The formatter
@@ -145,15 +167,6 @@ dispatch the same Celery task with a smaller `limit`; repeat until its logged
 `remaining` value is zero. Never delete the cache row solely to remove body
 content, because its validators are useful crawler state.
 
-Activity upload retention runs hourly. Deletion queue retries and orphan
-reconciliation run every 15 minutes. Review **Activity upload deletions** in
-owner administration for rows in `failed`; the attempt count, last error type,
-and next retry time remain visible there. Successful queue rows are purged
-after 30 days. The queue stores opaque storage keys rather than player
-identifiers. Orphan cleanup ignores objects younger than one hour to allow a
-storage write and its database transaction to finish. The
-`activity_upload_data` volume is intentionally omitted from backup artifacts.
-
 ## Daily snapshots
 
 Create a restricted backup directory owned by the deployment operator and run
@@ -180,10 +193,6 @@ restore drill additionally needs the PostGIS image.
 
 The production Compose database mounts this directory at `/backup`. Keep the
 directory outside Git and never place `.env.production` or credentials in it.
-The separate `activity_upload_data` volume is not mounted into the backup
-container. Restore marks in-progress uploads failed, removes transient payload
-references, and clears that volume before writers start. This also discards
-uploads submitted after the selected backup was created.
 
 Archives created by older copies of the deployment runbook may contain a
 top-level `data/` directory. They are not compatible with the canonical
@@ -256,17 +265,6 @@ route reads before reopening traffic. Keep the backup ID, image digest,
 operator, timestamps, command output, and endpoint responses as recovery
 evidence. Do not delete the pre-restore volume or backup until verification is
 complete.
-
-Before a restore clears the transient upload volume, it makes a temporary
-rollback snapshot so a failed restore can put the pre-restore private uploads
-back. Successful snapshots are removed on exit. Labeled volumes left by a
-crashed host or failed removal expire after 24 hours; backup and restore
-operations reconcile them and report failed cleanup for retry. Restore holds a
-shared host lock (`/var/lock/bikemapy-restore-upload-rollback.lock` by
-default) for the full transaction, so concurrent cleanup
-cannot expire an active snapshot. Do not manually remove a labeled rollback
-volume while a restore is running. Inspect outstanding snapshots with
-`docker volume ls --filter label=com.bikemapy.restore-upload-rollback=true`.
 
 Run a non-production drill every Sunday using
 `deploy/restore-drill.sh BACKUP_ID` and the supplied
