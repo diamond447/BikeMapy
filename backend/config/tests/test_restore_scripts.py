@@ -34,6 +34,8 @@ def test_restore_failure_path_restores_database_and_gpx_pair() -> None:
 def test_backup_and_restore_only_touch_services_in_the_active_compose_model(name: str) -> None:
     script = (Path(__file__).parents[3] / "deploy" / name).read_text()
     assert "$COMPOSE config --services" in script
+    # The default must follow the BIKEMAPY_LEAN toggle so cron jobs agree.
+    assert 'COMPOSE="${COMPOSE:-$(dirname "$0")/compose.sh}"' in script
     assert "writers=\"$(active_services 'backend|worker|beat')\"" in script
     for hardcoded in ("backend worker beat", "start db redis"):
         assert hardcoded not in script

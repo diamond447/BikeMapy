@@ -226,7 +226,7 @@ network; with `DJANGO_DEBUG=false`, removing that internal hostname makes the
 backend unhealthy even when the public `PUBLIC_HOST` is correct.
 
 ```sh
-export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
+export COMPOSE=./deploy/compose.sh
 export BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 export BACKUP_DIR="$PWD/backup"
 
@@ -263,39 +263,58 @@ exist and periodically test restoring them on an isolated stack.
 ## Lean single-host mode
 
 A small home server that only needs to serve the catalogue can skip Redis and
-Celery. Add `deploy/compose.lean.yml` after the production file (it uses the
-Compose `!override` tag, so Docker Compose 2.24.4 or newer is required):
+Celery. Enable it with one line in `deploy/.env.production`:
 
 ```sh
-export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml -f deploy/compose.lean.yml"
+BIKEMAPY_LEAN=true
 ```
 
-The override puts `redis`, `worker` and `beat` behind the `jobs` profile, so
-`$COMPOSE up -d` starts only `db`, `backend` and `proxy`. It also sets
-`BACKGROUND_JOBS_ENABLED=false` for the backend. In that mode:
+`deploy/compose.sh`, which the release commands, `backup.sh`, `restore.sh` and
+the cron examples all use, then adds `deploy/compose.lean.yml` after the
+production file. That override needs Docker Compose 2.24.4 or newer for the
+`!override` tag. It puts `redis`, `worker` and `beat` behind the `jobs`
+profile, so `./deploy/compose.sh up -d` starts only `db`, `backend` and
+`proxy`, and it sets `BACKGROUND_JOBS_ENABLED=false` for the backend. In that
+mode:
 
 - tasks triggered by web requests (for example the GPX payload deletion queued
   by an owner moderation action) run inline in the request, because there is
   no broker and no worker;
 - the shared cache used for throttling, report rate limits and spatial query
   epochs lives in PostgreSQL (`bikemapy_cache`, created by a regular
-  migration), and `/health/ready/` checks that table instead of Redis;
+  migration), and `/health/ready/` checks that table instead of Redis. Cache
+  increments are not atomic there, so concurrent report submissions can
+  slightly exceed the report rate limit;
 - nothing runs the Celery beat schedule. Install
   [`maintenance.cron.example`](../deploy/maintenance.cron.example) so
   `manage.py run_periodic_tasks` handles report retention, crawler cache
   expiry, GPX reconciliation and deletion retries every hour. The incremental
-  crawl only runs with `--with-crawl`; add it once crawling is approved.
+  crawl only runs with `--with-crawl`; until it is added, `/health/crawler/`
+  stays stale by design.
+
+Switching a running full deployment to lean mode: stop and remove the
+background services *before* adding the flag, because Compose does not remove
+containers of services that only became profile-gated:
+
+```sh
+./deploy/compose.sh stop worker beat redis
+./deploy/compose.sh rm -f worker beat redis
+# now add BIKEMAPY_LEAN=true to deploy/.env.production
+./deploy/compose.sh up -d
+```
 
 `backup.sh` and `restore.sh` read the active Compose model and only stop or
 start services that exist in it. In the manual release and rollback commands,
 use `backend proxy` wherever they list `backend worker beat proxy`, because
 naming a profiled service explicitly would start it. To return to the full
-topology, drop the override file from `COMPOSE` and run `$COMPOSE up -d`.
+topology, remove `BIKEMAPY_LEAN=true` and run `./deploy/compose.sh up -d`.
+Combining the lean override with `COMPOSE_PROFILES=jobs` is not supported:
+the worker would use Redis while the backend uses the database cache.
 
 Lean mode suits a read-mostly catalogue. Crawling and GPX extraction stay
 behind their own deployment gates; if they are enabled, extraction work runs
-inside the cron or request process that triggers it, so prefer the full
-topology for a regular ingestion workload.
+inside the cron or request process that triggers it (outside Celery's task
+time limit), so prefer the full topology for a regular ingestion workload.
 
 ## Rollback
 
@@ -304,7 +323,7 @@ application-only failure, select the previous digest and restart without
 running new migrations:
 
 ```sh
-export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
+export COMPOSE=./deploy/compose.sh
 export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<previous-digest>"
 $COMPOSE pull backend worker beat
 $COMPOSE up -d backend worker beat proxy
@@ -320,7 +339,7 @@ stopped and validates the restored database before traffic is reopened:
 
 ```sh
 # Select and pull the previous image before maintenance or data restoration.
-export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
+export COMPOSE=./deploy/compose.sh
 export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<previous-digest>"
 export BACKUP_ID="<selected-backup-id>"
 export BACKUP_DIR="$PWD/backup"

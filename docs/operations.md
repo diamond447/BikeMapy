@@ -44,7 +44,7 @@ the application processes reconnect where supported, and the operator should
 reconcile the full stack if a dependent remains unhealthy:
 
 ```sh
-export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
+export COMPOSE=./deploy/compose.sh
 $COMPOSE ps
 $COMPOSE logs --since=10m db redis backend worker beat proxy
 $COMPOSE up -d db redis backend worker beat proxy

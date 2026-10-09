@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
 BACKUP_ID="${BACKUP_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-COMPOSE="${COMPOSE:-docker compose --env-file deploy/.env.production -f deploy/compose.production.yml}"
+COMPOSE="${COMPOSE:-$(dirname "$0")/compose.sh}"
 GPX_VOLUME="${GPX_VOLUME:-bikemapy_gpx_data}"
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
