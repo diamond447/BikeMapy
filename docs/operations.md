@@ -95,6 +95,26 @@ installation that allows privileged containers:
 uv run --locked --no-dev python scripts/production_compose_smoke.py --daemon-restart
 ```
 
+## Retired private game data
+
+Hosts that ran a build with the retired private game (see the README's
+project history) keep some data that the current code no longer manages. The
+`accounts.0030` migration drops the game tables and indexes automatically;
+after it runs, the operator should also:
+
+1. Run `manage.py remove_stale_contenttypes --include-stale-apps` to remove
+   the retired content types and their permissions.
+2. Delete former player users from `auth_user` (every user except the owner
+   whose GitHub ID is in `GITHUB_OWNER_IDS`) through owner administration or
+   a reviewed SQL statement; their allauth e-mail and social-account rows
+   cascade with them.
+3. Remove the `activity_upload_data` volume, any `bikemapy-restore-upload-*`
+   rollback volumes and a leftover `media/private/activity_uploads` directory
+   in the GPX volume. They held transient raw activity uploads only.
+
+Unknown `bikemapy.accounts.*` messages still queued in Redis are rejected and
+logged by the worker; purge the queue with `celery -A config purge` if needed.
+
 ## Logs and Sentry
 
 Django and Celery write one JSON object per line to stdout. The formatter

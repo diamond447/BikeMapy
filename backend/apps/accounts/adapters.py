@@ -7,9 +7,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from allauth.account.adapter import DefaultAccountAdapter
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 
 from .authorization import is_owner_github_id, sociallogin_github_id
+
+
+class OwnerAccountAdapter(DefaultAccountAdapter):
+    """Disable local username/password signup; the owner signs in via GitHub."""
+
+    def is_open_for_signup(self, request: Any) -> bool:
+        return False
 
 
 class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):

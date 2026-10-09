@@ -122,6 +122,7 @@ AUTHENTICATION_BACKENDS = [
 ]
 LOGIN_REDIRECT_URL = "/admin/"
 SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
+ACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerAccountAdapter"
 SOCIALACCOUNT_STORE_TOKENS = False
 SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 ACCOUNT_EMAIL_VERIFICATION = "none"
