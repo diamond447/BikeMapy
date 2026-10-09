@@ -4,10 +4,15 @@ set -Eeuo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
 BACKUP_ID="${BACKUP_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-COMPOSE="${COMPOSE:-docker compose --env-file deploy/.env.production -f deploy/compose.production.yml}"
+COMPOSE="${COMPOSE:-$(dirname "$0")/compose.sh}"
 GPX_VOLUME="${GPX_VOLUME:-bikemapy_gpx_data}"
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
+# Lean mode (compose.lean.yml) has no worker, beat or Redis. Act only on the
+# services present in the active Compose model so a backup or restore never
+# starts them.
+active_services() { $COMPOSE config --services | grep -xE "$1" | tr '\n' ' '; }
+writers="$(active_services 'backend|worker|beat')"
 mkdir -p "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 failure_marker="$BACKUP_DIR/backup-failed-${BACKUP_ID}"
@@ -27,7 +32,7 @@ restart_services() {
       echo "WARNING: no previously running backend image was found; leaving writers stopped" >&2
       return 0
     fi
-    if ! BIKEMAPY_BACKEND_IMAGE="$previous_backend_image" $COMPOSE up -d --force-recreate backend worker beat proxy; then
+    if ! BIKEMAPY_BACKEND_IMAGE="$previous_backend_image" $COMPOSE up -d --force-recreate $writers proxy; then
       echo "WARNING: failed to restart services after backup" >&2
       return 1
     fi
@@ -46,7 +51,7 @@ trap restart_services EXIT
 db_file="$BACKUP_DIR/db-${BACKUP_ID}.dump"
 gpx_file="$BACKUP_DIR/gpx-${BACKUP_ID}.tar.gz"
 services_stopped=1
-$COMPOSE stop backend worker beat
+$COMPOSE stop $writers
 $COMPOSE exec -T db pg_dump --username="$POSTGRES_USER" --format=custom \
   --file="/backup/db-${BACKUP_ID}.dump.part" "$POSTGRES_DB"
 # The archive root is the volume root (/app/storage in production). Keep

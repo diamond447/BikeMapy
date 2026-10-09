@@ -1,0 +1,7 @@
+# Lean mode only (BIKEMAPY_LEAN=true): there is no Celery beat, so run the
+# scheduled maintenance tasks (report retention, crawler cache expiry, GPX
+# reconciliation and deletion retries) from the host every hour. Minute 40
+# avoids the 02:15 backup window, when the backend is stopped.
+40 * * * * cd /srv/bikemapy && ./deploy/compose.sh exec -T backend uv run --locked --no-dev python backend/manage.py run_periodic_tasks >> /var/log/bikemapy-maintenance.log 2>&1
+# Once crawling is approved (BIKEFORUM_CRAWL_ENABLED=true), add the daily crawl.
+# 50 3 * * * cd /srv/bikemapy && ./deploy/compose.sh exec -T backend uv run --locked --no-dev python backend/manage.py run_periodic_tasks --with-crawl >> /var/log/bikemapy-maintenance.log 2>&1

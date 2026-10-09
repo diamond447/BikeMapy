@@ -1,0 +1,25 @@
+# Lean single-host mode: run only PostgreSQL, the API and Nginx.
+#
+# Enable it with BIKEMAPY_LEAN=true in deploy/.env.production; deploy/compose.sh
+# then adds this file after compose.production.yml (Docker Compose 2.24.4+).
+#
+# Redis, the Celery worker and beat move to the `jobs` profile and stay
+# stopped. Django runs web-triggered tasks inline and keeps its cache in
+# PostgreSQL; schedule deploy/maintenance.cron.example for periodic cleanup.
+services:
+  backend:
+    environment:
+      BACKGROUND_JOBS_ENABLED: "false"
+    depends_on: !override
+      db:
+        condition: service_healthy
+        restart: true
+
+  worker:
+    profiles: [jobs]
+
+  beat:
+    profiles: [jobs]
+
+  redis:
+    profiles: [jobs]

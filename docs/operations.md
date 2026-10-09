@@ -10,7 +10,7 @@ Use three independent HTTPS checks from an external uptime provider:
 | URL | Meaning | Alert |
 | --- | --- | --- |
 | `/health/live/` | The web process can answer without checking dependencies. | Any non-2xx response. |
-| `/health/ready/` | PostgreSQL and the configured Redis cache complete a round trip. | Any non-2xx response; this is the traffic-readiness check. |
+| `/health/ready/` | PostgreSQL and the configured cache (Redis, or PostgreSQL in [lean mode](deployment.md#lean-single-host-mode)) complete a round trip. | Any non-2xx response; this is the traffic-readiness check. |
 | `/health/crawler/` | The incremental crawler checkpoint succeeded within `CRAWLER_FRESHNESS_MAX_AGE` (36 hours by default). | Any non-2xx response; this indicates stale ingestion, not API downtime. |
 
 Configure checks from outside the host and notify the operator on two
@@ -44,7 +44,7 @@ the application processes reconnect where supported, and the operator should
 reconcile the full stack if a dependent remains unhealthy:
 
 ```sh
-export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
+export COMPOSE=./deploy/compose.sh
 $COMPOSE ps
 $COMPOSE logs --since=10m db redis backend worker beat proxy
 $COMPOSE up -d db redis backend worker beat proxy

@@ -109,6 +109,49 @@ def test_production_compose_requires_explicit_debug_false(tmp_path: Path) -> Non
     assert "DJANGO_DEBUG" in result.stderr
 
 
+def test_lean_compose_override_runs_only_database_api_and_proxy(tmp_path: Path) -> None:
+    """The lean override keeps background services behind the `jobs` profile."""
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker is required to render the production Compose model")
+
+    root = Path(__file__).parents[3]
+    env_file = tmp_path / ".env.production"
+    example = (root / "deploy" / ".env.production.example").read_text()
+    env_file.write_text(f"BIKEMAPY_ENV_FILE={env_file}\n{example}")
+    environment = {key: value for key, value in os.environ.items() if key != "COMPOSE_PROFILES"}
+
+    result = subprocess.run(
+        [
+            docker,
+            "compose",
+            "--project-directory",
+            str(root),
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(root / "deploy" / "compose.production.yml"),
+            "-f",
+            str(root / "deploy" / "compose.lean.yml"),
+            "config",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    services = json.loads(result.stdout)["services"]
+    assert services.keys() == {"db", "backend", "proxy"}
+    backend = services["backend"]
+    assert backend["environment"]["BACKGROUND_JOBS_ENABLED"] == "false"
+    assert backend["depends_on"].keys() == {"db"}
+    assert backend["depends_on"]["db"]["restart"] is True
+
+
 def test_launch_rehearsal_runtime_env_disables_debug(tmp_path: Path) -> None:
     env_file = tmp_path / "runtime.env"
     runtime_env(env_file, "bikemapy-rehearsal:test")
@@ -131,3 +174,35 @@ def test_launch_rehearsal_runtime_env_enables_only_synthetic_crawler(
     assert values["BIKEFORUM_PROVIDER_AUTHORIZED"] == "true"
     assert values["BIKEFORUM_OPERATOR_APPROVED"] == "true"
     assert values["BIKEFORUM_ALLOWED_ORIGINS"] == "http://host.docker.internal:43123"
+
+
+@pytest.mark.parametrize(("flag", "lean"), [("true", True), ("false", False), (None, False)])
+def test_compose_wrapper_adds_the_lean_override_only_when_enabled(
+    tmp_path: Path, flag: str | None, lean: bool
+) -> None:
+    root = Path(__file__).parents[3]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+    fake_docker.chmod(0o755)
+    env_file = tmp_path / ".env.production"
+    env_file.write_text("POSTGRES_DB=bikemapy\n" + (f"BIKEMAPY_LEAN={flag}\n" if flag else ""))
+
+    result = subprocess.run(
+        [str(root / "deploy" / "compose.sh"), "config", "--services"],
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "BIKEMAPY_COMPOSE_ENV_FILE": str(env_file),
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    args = result.stdout.splitlines()
+    assert args[:3] == ["compose", "--env-file", str(env_file)]
+    assert args[-2:] == ["config", "--services"]
+    assert any(arg.endswith("compose.production.yml") for arg in args)
+    assert any(arg.endswith("compose.lean.yml") for arg in args) is lean
