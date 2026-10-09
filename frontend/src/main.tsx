@@ -1,4 +1,4 @@
-import { lazy, StrictMode, Suspense } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import App from './App'
@@ -8,11 +8,6 @@ import { MAP_PROVIDER } from './mapProvider'
 import { loadMapLibre } from './mapLibreLoader'
 import './styles.css'
 
-const GameApp = lazy(() => import('./GameApp'))
-
-const isGamePath =
-  window.location.pathname === '/game' ||
-  window.location.pathname.startsWith('/game/reset-password/')
 
 setupCloudflareWebAnalytics()
 
@@ -30,21 +25,13 @@ function preconnect(url: string) {
   }
 }
 
-if (!isGamePath) {
-  preconnect(apiBaseUrl)
-  preconnect(MAP_PROVIDER.style)
-  // Start downloading the map library now; the map effect reuses the request.
-  loadMapLibre().catch(() => undefined)
-}
+preconnect(apiBaseUrl)
+preconnect(MAP_PROVIDER.style)
+// Start downloading the map library now; the map effect reuses the request.
+loadMapLibre().catch(() => undefined)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {isGamePath ? (
-      <Suspense fallback={null}>
-        <GameApp />
-      </Suspense>
-    ) : (
-      <App />
-    )}
+    <App />
   </StrictMode>,
 )
