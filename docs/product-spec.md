@@ -427,4 +427,6 @@ reference routes with PostGIS. Potential group statistics and achievements
 would be considered only after the core product is stable.
 
 This future direction is recorded to preserve product context, not to define
-the current data model or promise delivery in the MVP.
+the current data model or promise delivery in the MVP. An experimental
+implementation was built and later removed from `main`; it is preserved at the
+`archive/strava-game` tag.

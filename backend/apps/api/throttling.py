@@ -4,10 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from django.conf import settings
-from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle, UserRateThrottle
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
 from config.client_identity import client_ip, rate_limit_identifier
 
@@ -15,7 +12,7 @@ from config.client_identity import client_ip, rate_limit_identifier
 class TrustedClientThrottleMixin:
     """Use the deployment-boundary identity policy for throttle keys."""
 
-    def get_ident(self, request: Any) -> str:
+    def get_ident(self, request):  # type: ignore[no-untyped-def]
         return rate_limit_identifier(client_ip(request))
 
 
@@ -25,42 +22,3 @@ class ApiAnonRateThrottle(TrustedClientThrottleMixin, AnonRateThrottle):
 
 class ApiUserRateThrottle(TrustedClientThrottleMixin, UserRateThrottle):
     """Throttle authenticated API clients using the same boundary policy."""
-
-
-class ExplicitIdentityThrottle(TrustedClientThrottleMixin, SimpleRateThrottle):
-    """Apply the selected identity even when DRF has an authenticated user."""
-
-    def get_cache_key(self, request: Any, view: Any) -> str | None:
-        del view
-        ident = self.get_ident(request)
-        if not ident:
-            return None
-        return str(self.cache_format % {"scope": self.scope, "ident": ident})
-
-
-class PlayerSessionThrottle(ExplicitIdentityThrottle):
-    """Throttle session-authenticated players by player and epoch."""
-
-    scope = "game_player"
-
-    def get_rate(self) -> str | None:
-        return str(getattr(settings, "GAME_PLAYER_RATE", "600/minute"))
-
-    def get_ident(self, request: Any) -> str:
-        player_id = request.session.get("player_id")
-        epoch = request.session.get("player_session_epoch")
-        if player_id and epoch is not None:
-            return rate_limit_identifier(f"player-session:{player_id}:{epoch}")
-        user = getattr(request, "user", None)
-        if user is not None and getattr(user, "is_authenticated", False):
-            return rate_limit_identifier(f"django-user:{user.pk}")
-        return TrustedClientThrottleMixin.get_ident(self, request)
-
-
-class CompetitionInviteThrottle(ExplicitIdentityThrottle):
-    """Keep invite-code guessing bound to the stricter client-IP bucket."""
-
-    scope = "competition_invites"
-
-    def get_rate(self) -> str | None:
-        return str(getattr(settings, "COMPETITION_INVITE_RATE", "10/minute"))

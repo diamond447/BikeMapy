@@ -1,10 +1,8 @@
 """Django settings for local development and the production baseline."""
 
-import ipaddress
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -16,18 +14,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 def env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
-
-
-def env_int(name: str, default: int = 0) -> int:
-    """Parse optional integer settings while treating blank env values as unset."""
-
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        raise ImproperlyConfigured(f"{name} must be an integer") from exc
 
 
 LOCAL_DEVELOPMENT_SECRET_KEY = "local-development-key-do-not-use-in-production"
@@ -73,28 +59,6 @@ if DEPLOYMENT_MODE == "production" and "DJANGO_DEBUG" not in os.environ:
         "DJANGO_DEBUG must be explicitly set to false in production deployments"
     )
 DEBUG = env_bool("DJANGO_DEBUG", True)
-GAME_ENABLED = env_bool("GAME_ENABLED", False)
-# Provider-neutral local accounts can be enabled independently of the legacy
-# Strava OAuth rollout gate.
-PLAYER_ACCOUNTS_ENABLED = env_bool("PLAYER_ACCOUNTS_ENABLED", False)
-# Raw activity payloads are transient worker input and are never retained for
-# more than this period (the cleanup task runs from the Celery beat schedule).
-ACTIVITY_UPLOAD_MAX_RETENTION_HOURS = env_int("ACTIVITY_UPLOAD_MAX_RETENTION_HOURS", 24)
-# Account authentication and competition/cross-member features have separate
-# rollout and legal gates. Competition endpoints remain unavailable unless
-# both flags are explicitly enabled.
-COMPETITION_GAME_ENABLED = env_bool("COMPETITION_GAME_ENABLED", False)
-REFERENCE_ROUTE_AUTHORIZER = os.getenv(
-    "REFERENCE_ROUTE_AUTHORIZER",
-    "apps.api.reference_authorization.default_reference_route_authorizer",
-)
-REFERENCE_ROUTE_DERIVATIVE_OFFER_URL = os.getenv(
-    "REFERENCE_ROUTE_DERIVATIVE_OFFER_URL",
-    "",
-)
-# Synthetic source snapshots are useful in local tests, but must be explicitly
-# enabled and can never satisfy the production publication gate.
-REFERENCE_ROUTE_ALLOW_TEST_IMPORTS = env_bool("REFERENCE_ROUTE_ALLOW_TEST_IMPORTS", False)
 if DEPLOYMENT_MODE == "production" and DEBUG:
     raise ImproperlyConfigured("DJANGO_DEBUG must be false in production deployments")
 DATABASE_ENGINE = os.getenv("DJANGO_DATABASE_ENGINE", "django.contrib.gis.db.backends.postgis")
@@ -126,7 +90,6 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.api",
     "apps.analytics",
-    "apps.reference_routes",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
     # Host-side smoke checks can run without native GeoDjango libraries. The
@@ -136,7 +99,6 @@ if DATABASE_ENGINE == "django.db.backends.sqlite3":
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "config.middleware.TrustedProxyClientIdentityMiddleware",
-    "config.middleware.CredentialedCorsOriginMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "config.middleware.PreviewReadOnlyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -153,7 +115,6 @@ if not DEBUG:
     MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "config.urls"
-CSRF_FAILURE_VIEW = "apps.accounts.csrf.csrf_failure"
 SITE_ID = 1
 AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
@@ -161,7 +122,6 @@ AUTHENTICATION_BACKENDS = [
 ]
 LOGIN_REDIRECT_URL = "/admin/"
 SOCIALACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerSocialAccountAdapter"
-ACCOUNT_ADAPTER = "apps.accounts.adapters.OwnerAccountAdapter"
 SOCIALACCOUNT_STORE_TOKENS = False
 SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 ACCOUNT_EMAIL_VERIFICATION = "none"
@@ -177,159 +137,6 @@ if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
         "client_id": GITHUB_OAUTH_CLIENT_ID,
         "secret": GITHUB_OAUTH_CLIENT_SECRET,
     }
-
-STRAVA_OAUTH_CLIENT_ID = os.getenv("STRAVA_OAUTH_CLIENT_ID", "")
-STRAVA_OAUTH_CLIENT_SECRET = os.getenv("STRAVA_OAUTH_CLIENT_SECRET", "")
-STRAVA_TOKEN_ENCRYPTION_KEY = os.getenv("STRAVA_TOKEN_ENCRYPTION_KEY", "")
-STRAVA_IDENTITY_GUARD_KEY = os.getenv("STRAVA_IDENTITY_GUARD_KEY", "")
-STRAVA_WEBHOOK_VERIFY_TOKEN = os.getenv("STRAVA_WEBHOOK_VERIFY_TOKEN", "")
-STRAVA_WEBHOOK_SUBSCRIPTION_ID = env_int("STRAVA_WEBHOOK_SUBSCRIPTION_ID")
-STRAVA_API_TIMEOUT = float(os.getenv("STRAVA_API_TIMEOUT", "10"))
-STRAVA_SYNC_PAGE_SIZE = int(os.getenv("STRAVA_SYNC_PAGE_SIZE", "100"))
-STRAVA_SYNC_PAGES_PER_RUN = int(os.getenv("STRAVA_SYNC_PAGES_PER_RUN", "5"))
-STRAVA_SYNC_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_LEASE_SECONDS", "600"))
-STRAVA_SYNC_DISPATCH_LEASE_SECONDS = int(os.getenv("STRAVA_SYNC_DISPATCH_LEASE_SECONDS", "60"))
-STRAVA_SYNC_MAX_RETRY_AFTER = int(os.getenv("STRAVA_SYNC_MAX_RETRY_AFTER", "3600"))
-ROUTE_COMPLETION_TOLERANCE_METERS = float(os.getenv("ROUTE_COMPLETION_TOLERANCE_METERS", "50"))
-ROUTE_COMPLETION_LEASE_SECONDS = int(os.getenv("ROUTE_COMPLETION_LEASE_SECONDS", "600"))
-ROUTE_COMPLETION_DISPATCH_LEASE_SECONDS = int(
-    os.getenv("ROUTE_COMPLETION_DISPATCH_LEASE_SECONDS", "60")
-)
-ROUTE_COMPLETION_MAX_ACTIVITIES = int(os.getenv("ROUTE_COMPLETION_MAX_ACTIVITIES", "10000"))
-REFERENCE_ROUTE_VIA_CZECHIA_ENABLED = env_bool("REFERENCE_ROUTE_VIA_CZECHIA_ENABLED", False)
-STRAVA_SYNC_MAX_DISPATCH_PER_RUN = env_int("STRAVA_SYNC_MAX_DISPATCH_PER_RUN", 10)
-STRAVA_QUOTA_SHORT_LIMIT = env_int("STRAVA_QUOTA_SHORT_LIMIT", 100)
-STRAVA_QUOTA_DAILY_LIMIT = env_int("STRAVA_QUOTA_DAILY_LIMIT", 1000)
-STRAVA_QUOTA_SAFETY_MARGIN = env_int("STRAVA_QUOTA_SAFETY_MARGIN", 1)
-STRAVA_OAUTH_REDIRECT_URI = os.getenv(
-    "STRAVA_OAUTH_REDIRECT_URI",
-    "http://localhost:8000/api/v1/game/auth/strava/callback/",
-)
-GAME_FRONTEND_URL = os.getenv("GAME_FRONTEND_URL", "http://localhost:5173/game")
-EMAIL_BACKEND = os.getenv(
-    "EMAIL_BACKEND",
-    "django.core.mail.backends.console.EmailBackend"
-    if DEPLOYMENT_MODE != "production"
-    else "django.core.mail.backends.smtp.EmailBackend",
-)
-EMAIL_HOST = os.getenv("EMAIL_HOST", "")
-EMAIL_PORT = env_int("EMAIL_PORT", 587)
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
-EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
-EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", False)
-EMAIL_TIMEOUT = env_int("EMAIL_TIMEOUT", 10)
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@localhost")
-
-
-def validate_account_email_settings() -> None:
-    """Require deliverable email settings before enabling local accounts."""
-
-    if not PLAYER_ACCOUNTS_ENABLED:
-        return
-    sender = DEFAULT_FROM_EMAIL.strip()
-    missing = []
-    if not sender or "@" not in sender:
-        missing.append("DEFAULT_FROM_EMAIL")
-    if DEPLOYMENT_MODE == "production":
-        placeholder_markers = ("example", "invalid", "localhost", "placeholder", "replace-with")
-        from_address = sender.lower()
-        if any(marker in from_address for marker in placeholder_markers):
-            missing.append("DEFAULT_FROM_EMAIL (placeholder address)")
-        if EMAIL_BACKEND != "django.core.mail.backends.smtp.EmailBackend":
-            missing.append("EMAIL_BACKEND (SMTP required in production)")
-        if not EMAIL_HOST.strip() or any(
-            marker in EMAIL_HOST.lower() for marker in placeholder_markers
-        ):
-            missing.append("EMAIL_HOST")
-        if EMAIL_PORT < 1 or EMAIL_PORT > 65535:
-            missing.append("EMAIL_PORT")
-        if EMAIL_USE_TLS == EMAIL_USE_SSL:
-            missing.append("exactly one of EMAIL_USE_TLS or EMAIL_USE_SSL")
-        if any(
-            not value.strip() or any(marker in value.lower() for marker in placeholder_markers)
-            for value in (EMAIL_HOST_USER, EMAIL_HOST_PASSWORD)
-        ):
-            missing.append("EMAIL_HOST_USER and EMAIL_HOST_PASSWORD")
-    if missing:
-        raise ImproperlyConfigured(
-            "PLAYER_ACCOUNTS_ENABLED requires usable mail configuration: " + ", ".join(missing)
-        )
-
-
-validate_account_email_settings()
-
-
-def validate_game_frontend_url(value: str) -> None:
-    parsed = urlsplit(value)
-    hostname = (parsed.hostname or "").lower()
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path != "/game"
-    ):
-        raise ImproperlyConfigured(
-            "GAME_FRONTEND_URL must be an absolute /game URL without credentials or fragments"
-        )
-    secure_frontend_required = DEPLOYMENT_MODE == "production" and (
-        GAME_ENABLED or PLAYER_ACCOUNTS_ENABLED
-    )
-    if secure_frontend_required and parsed.scheme != "https":
-        raise ImproperlyConfigured("GAME_FRONTEND_URL must use HTTPS in production")
-    if secure_frontend_required and PLAYER_ACCOUNTS_ENABLED:
-        try:
-            loopback = ipaddress.ip_address(hostname).is_loopback
-        except ValueError:
-            loopback = False
-        local_hosts = {"localhost", "host.docker.internal"}
-        placeholder_hosts = (
-            hostname.endswith((".invalid", ".example", ".test"))
-            or hostname in {"example.com", "example.org", "example.net"}
-            or hostname.endswith((".example.com", ".example.org", ".example.net"))
-        )
-        if hostname in local_hosts or hostname.endswith(".localhost") or loopback:
-            raise ImproperlyConfigured(
-                "GAME_FRONTEND_URL must use a non-local HTTPS host when "
-                "PLAYER_ACCOUNTS_ENABLED=true"
-            )
-        if placeholder_hosts:
-            raise ImproperlyConfigured(
-                "GAME_FRONTEND_URL must not use a placeholder host when "
-                "PLAYER_ACCOUNTS_ENABLED=true"
-            )
-
-
-validate_game_frontend_url(GAME_FRONTEND_URL)
-if GAME_ENABLED:
-    missing_game_settings = [
-        name
-        for name, value in (
-            ("STRAVA_OAUTH_CLIENT_ID", STRAVA_OAUTH_CLIENT_ID),
-            ("STRAVA_OAUTH_CLIENT_SECRET", STRAVA_OAUTH_CLIENT_SECRET),
-            ("STRAVA_TOKEN_ENCRYPTION_KEY", STRAVA_TOKEN_ENCRYPTION_KEY),
-            ("STRAVA_IDENTITY_GUARD_KEY", STRAVA_IDENTITY_GUARD_KEY),
-        )
-        if not value
-    ]
-    if missing_game_settings:
-        raise ImproperlyConfigured("GAME_ENABLED requires: " + ", ".join(missing_game_settings))
-    try:
-        from cryptography.fernet import Fernet
-
-        Fernet(STRAVA_TOKEN_ENCRYPTION_KEY.encode())
-    except (ImportError, TypeError, ValueError) as exc:
-        raise ImproperlyConfigured(
-            "STRAVA_TOKEN_ENCRYPTION_KEY must be a valid Fernet key when GAME_ENABLED=true"
-        ) from exc
-    if len(STRAVA_IDENTITY_GUARD_KEY) < 32 or len(set(STRAVA_IDENTITY_GUARD_KEY)) < 12:
-        raise ImproperlyConfigured(
-            "STRAVA_IDENTITY_GUARD_KEY must be at least 32 characters and "
-            "contain sufficient variation"
-        )
 
 # Authorization uses GitHub's immutable numeric account ID.  Keep this empty
 # by default so a deployment must explicitly opt in to owner administration.
@@ -375,12 +182,7 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 ROOT_STORAGE = BASE_DIR / "storage"
 MEDIA_ROOT = Path(os.getenv("DJANGO_MEDIA_ROOT", str(ROOT_STORAGE / "media")))
-ACTIVITY_UPLOAD_ROOT = Path(
-    os.getenv("DJANGO_ACTIVITY_UPLOAD_ROOT", str(ROOT_STORAGE / "private-uploads"))
-)
 MEDIA_URL = "/media/"
-FILE_UPLOAD_MAX_MEMORY_SIZE = 2_621_440
-DATA_UPLOAD_MAX_MEMORY_SIZE = 90 * 1024 * 1024
 if not DEBUG:
     STORAGES = {
         "default": {
@@ -400,16 +202,6 @@ CORS_ALLOWED_ORIGINS = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
     if origin
 ]
-if any(
-    origin == "*" or urlsplit(origin).scheme not in {"http", "https"} or not urlsplit(origin).netloc
-    for origin in CORS_ALLOWED_ORIGINS
-):
-    raise ImproperlyConfigured("CORS_ALLOWED_ORIGINS must contain explicit HTTP(S) origins")
-# Credentialed browser requests are enabled only for the explicit origin list;
-# preview regex origins remain read-only and cannot receive player cookies.
-CORS_ALLOW_CREDENTIALS = bool(CORS_ALLOWED_ORIGINS)
-CORS_EXPOSE_HEADERS = ["X-CSRFToken"]
-CSRF_TRUSTED_ORIGINS = list(CORS_ALLOWED_ORIGINS)
 READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
     "READ_ONLY_PREVIEW_ORIGIN_REGEX",
     r"\Ahttps://([a-z0-9-]+\.)+bikemapy\.pages\.dev\Z",
@@ -477,12 +269,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.getenv("API_ANON_RATE", "120/minute"),
         "user": os.getenv("API_USER_RATE", "600/minute"),
-        "player_accounts": os.getenv("PLAYER_ACCOUNT_RATE", "20/minute"),
     },
 }
-GAME_PLAYER_RATE = os.getenv("GAME_PLAYER_RATE", "600/minute")
-COMPETITION_INVITE_RATE = os.getenv("COMPETITION_INVITE_RATE", "10/minute")
-PLAYER_ACCOUNT_RATE = os.getenv("PLAYER_ACCOUNT_RATE", "20/minute")
 # Analytics is deliberately protected by one coarse, non-identifying bucket;
 # unlike the generic API throttle it never derives a cache key from an IP.
 ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
@@ -491,7 +279,6 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Public, versioned read API for BikeMapy.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
-    "COMPONENT_SPLIT_REQUEST": True,
 }
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
@@ -515,10 +302,6 @@ else:
     }
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10
-GAME_RECOMPUTATION_LEASE_SECONDS = int(os.getenv("GAME_RECOMPUTATION_LEASE_SECONDS", "600"))
-GAME_RECOMPUTATION_DISPATCH_LEASE_SECONDS = int(
-    os.getenv("GAME_RECOMPUTATION_DISPATCH_LEASE_SECONDS", "60")
-)
 CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 CELERY_WORKER_REDIRECT_STDOUTS = True
@@ -546,50 +329,6 @@ CELERY_BEAT_SCHEDULE = {
     "cleanup-crawler-response-cache": {
         "task": "bikemapy.ingestion.cleanup_crawl_response_cache",
         "schedule": 3600,
-    },
-    "purge-expired-player-accounts": {
-        "task": "bikemapy.accounts.purge_expired_players",
-        "schedule": 3600,
-    },
-    "cleanup-strava-identity-guards": {
-        "task": "bikemapy.accounts.cleanup_identity_guards",
-        "schedule": 900,
-    },
-    "purge-expired-consent-audits": {
-        "task": "bikemapy.accounts.purge_expired_consent_audits",
-        "schedule": 86400,
-    },
-    "retry-player-revocations": {
-        "task": "bikemapy.accounts.retry_revocations",
-        "schedule": 900,
-    },
-    "cleanup-expired-activity-uploads": {
-        "task": "bikemapy.accounts.cleanup_expired_activity_uploads",
-        "schedule": 3600,
-    },
-    "retry-activity-upload-deletions": {
-        "task": "bikemapy.accounts.retry_activity_upload_deletions",
-        "schedule": 900,
-    },
-    "reconcile-orphan-activity-uploads": {
-        "task": "bikemapy.accounts.reconcile_orphan_activity_uploads",
-        "schedule": 900,
-    },
-    "dispatch-game-recomputations": {
-        "task": "bikemapy.accounts.dispatch_competition_recomputations",
-        "schedule": 60,
-    },
-    "dispatch-capture-calculations": {
-        "task": "bikemapy.accounts.dispatch_capture_calculations",
-        "schedule": 60,
-    },
-    "dispatch-strava-sync": {
-        "task": "bikemapy.accounts.dispatch_strava_sync",
-        "schedule": 60,
-    },
-    "dispatch-route-completions": {
-        "task": "bikemapy.reference_routes.dispatch_completion_jobs",
-        "schedule": 60,
     },
 }
 

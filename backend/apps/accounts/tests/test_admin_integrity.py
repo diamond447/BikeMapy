@@ -69,9 +69,30 @@ def test_allauth_adapter_staff_alignment_uses_provider_uid() -> None:
         user.is_staff = False
         adapter.pre_social_login(request, login)
         assert user.is_staff
+        user.is_staff = False
+        with patch(
+            "allauth.socialaccount.adapter.DefaultSocialAccountAdapter.save_user",
+            return_value=user,
+        ):
+            adapter.save_user(request, login)
+        assert user.is_staff
         login.account.uid = "not-a-number"
         adapter.pre_social_login(request, login)
         assert not user.is_staff
+
+
+def test_allauth_adapter_opens_signup_only_for_allowlisted_owner() -> None:
+    request = Client().get("/").wsgi_request
+    adapter = OwnerSocialAccountAdapter()
+    with override_settings(GITHUB_OWNER_IDS=frozenset({"12345"})):
+        for provider, uid, expected in (
+            ("github", "12345", True),
+            ("github", "67890", False),
+            ("github", "not-a-number", False),
+            ("google", "12345", False),
+        ):
+            login = SimpleNamespace(account=SimpleNamespace(provider=provider, uid=uid))
+            assert adapter.is_open_for_signup(request, login) is expected
 
 
 def test_allowlist_requires_current_github_record_and_rejects_flags() -> None:

@@ -1,11 +1,9 @@
 """A dedicated Django Admin site that admits only the configured owner."""
 
-from django.contrib import admin
 from django.contrib.admin import AdminSite
 from django.http import HttpRequest, HttpResponseForbidden
 
 from .authorization import is_owner
-from .models import ActivityUploadDeletion
 
 
 class OwnerAdminSite(AdminSite):
@@ -30,11 +28,3 @@ class OwnerAdminSite(AdminSite):
 
 
 owner_admin_site = OwnerAdminSite(name="owner_admin")
-
-
-@admin.register(ActivityUploadDeletion, site=owner_admin_site)
-class ActivityUploadDeletionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
-    list_display = ("storage_key", "status", "attempts", "next_attempt_at", "created_at")
-    list_filter = ("status",)
-    readonly_fields = tuple(field.name for field in ActivityUploadDeletion._meta.fields)
-    search_fields = ("storage_key", "last_error")
