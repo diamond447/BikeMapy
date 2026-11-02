@@ -48,11 +48,12 @@ def owner(github_id: str = "12345") -> Any:
     return user
 
 
-def oauth_session(client: Client, uid: str = "12345") -> None:
+def oauth_session(client: Client, user: Any, uid: str = "12345") -> None:
+    # allauth >= 65.21 only records authentications bound to a signed-in user.
     session = client.session
     record_authentication(
         type("Request", (), {"session": session})(),
-        None,
+        user,
         "socialaccount",
         provider="github",
         uid=uid,
@@ -135,7 +136,7 @@ def test_workflow_models_are_not_directly_mutable_or_deletable() -> None:
     user = owner()
     request = Client().get("/").wsgi_request
     request.user = user
-    oauth_session(Client(), "12345")
+    oauth_session(Client(), user, "12345")
     for model in (
         RouteSource,
         RouteVersion,
@@ -311,7 +312,7 @@ def test_admin_denylist_restore_post_uses_actor_and_reason() -> None:
         )
         client = Client()
         client.force_login(user)
-        oauth_session(client)
+        oauth_session(client, user)
         response = client.post(
             f"/admin/catalogue/sourcedenylistentry/{entry.pk}/restore/",
             {"reason": "reviewed takedown"},
