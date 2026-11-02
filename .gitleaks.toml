@@ -6,6 +6,8 @@ useDefault = true
 [allowlist]
 description = "Synthetic test fixtures that are not credentials."
 commits = ["3f43e20282f668f0e5310dc4902048b2b2858503"]
+# The detect-secrets baseline stores only SHA-1 hashes of reviewed findings.
+paths = ['''^\.secrets\.baseline$''']
 regexTarget = "line"
 regexes = [
   # Synthetic production-mode signing key used only by settings tests.
