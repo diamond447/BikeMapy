@@ -57,6 +57,17 @@ describe('Pages metadata functions', () => {
     expect(html).not.toContain('content="generic"')
   })
 
+  it('does not expand replacement patterns from route titles', () => {
+    const html = renderRouteDocument(
+      '<html><head><title>BikeMapy</title></head><body><script src="/app.js"></script></body></html>',
+      { id: routeId, slug: 'south-ridge', title: "Ridge $' $` $& $$" },
+      'https://rides.example.test',
+    )
+    expect(html).toContain('<title>Ridge $&#39; $` $&amp; $$ · BikeMapy</title>')
+    expect(html.match(/<script/g)).toHaveLength(1)
+    expect(html.match(/<body>/g)).toHaveLength(1)
+  })
+
   it('serves route metadata through the Pages request handler', async () => {
     const next = vi
       .fn()
