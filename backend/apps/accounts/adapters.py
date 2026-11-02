@@ -31,6 +31,13 @@ def _game_redirect(result: str) -> HttpResponseRedirect:
 class OwnerAccountAdapter(DefaultAccountAdapter):
     """Attach game sessions and route successful logins by account role."""
 
+    def is_open_for_signup(self, request: Any) -> bool:
+        # Local accounts are created only through the invite-gated
+        # ``/api/v1/game/auth/local/onboard/`` flow. django-allauth's own
+        # ``/accounts/signup/`` form would otherwise let anyone create an
+        # unverified user and squat usernames or e-mail addresses.
+        return False
+
     def login(self, request: Any, user: Any) -> None:
         # django-allauth calls this account adapter hook (the social-account
         # adapter's similarly named method is never part of the login flow).
@@ -63,6 +70,11 @@ class OwnerAccountAdapter(DefaultAccountAdapter):
 
 class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
     """Keep staff status aligned with the immutable GitHub allowlist."""
+
+    def is_open_for_signup(self, request: Any, sociallogin: Any) -> bool:
+        # GitHub sign-up stays available; ``pre_social_login`` and
+        # ``save_user`` enforce the owner allowlist or a valid invite.
+        return True
 
     def pre_social_login(self, request: Any, sociallogin: Any) -> None:
         super().pre_social_login(request, sociallogin)
