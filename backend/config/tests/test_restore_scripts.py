@@ -769,3 +769,22 @@ def test_gpx_archive_validation_rejects_corrupt_and_legacy_archives(tmp_path: Pa
     assert all(validate(archive).returncode != 0 for archive in truncated_archives)
     assert validate(symlink).returncode != 0
     assert validate(traversal).returncode != 0
+
+
+@pytest.mark.parametrize("script", ["restore.sh", "restore-drill.sh"])
+@pytest.mark.parametrize("backup_id", ['x";id;"', "../etc", "a b", "$(id)", ""])
+def test_restore_scripts_reject_unsafe_backup_ids(
+    tmp_path: Path, script: str, backup_id: str
+) -> None:
+    root = Path(__file__).parents[3]
+    result = subprocess.run(
+        ["bash", str(root / "deploy" / script), backup_id],
+        cwd=tmp_path,
+        env={**os.environ, "BACKUP_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    if backup_id:
+        assert "BACKUP_ID must be" in result.stderr

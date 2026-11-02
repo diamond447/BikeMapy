@@ -3,6 +3,11 @@
 set -Eeuo pipefail
 : "${1:?Usage: restore.sh BACKUP_ID}"
 BACKUP_ID="$1"
+# The identifier is interpolated into file names and container shell commands.
+if [[ ! "$BACKUP_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
+  echo "BACKUP_ID must be 1-64 characters of letters, digits, '.', '_' or '-'" >&2
+  exit 2
+fi
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
 test -d "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
