@@ -380,7 +380,10 @@ ACTIVITY_UPLOAD_ROOT = Path(
 )
 MEDIA_URL = "/media/"
 FILE_UPLOAD_MAX_MEMORY_SIZE = 2_621_440
-DATA_UPLOAD_MAX_MEMORY_SIZE = 90 * 1024 * 1024
+# Applies to non-file request bodies only (JSON, form fields). Activity files
+# use multipart uploads, which stream to temporary files and are bounded by the
+# upload service, so unauthenticated JSON endpoints must not buffer 90 MiB.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
 if not DEBUG:
     STORAGES = {
         "default": {
