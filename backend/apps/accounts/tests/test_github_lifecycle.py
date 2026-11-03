@@ -247,3 +247,21 @@ def test_authenticated_player_can_reauthenticate_its_exact_linked_github_account
     assert response["Location"] == "http://localhost:5173/game"
     assert request.session["player_id"] == player.pk
     assert request.session["player_session_epoch"] == player.session_epoch
+
+
+def test_allauth_local_signup_form_is_closed() -> None:
+    client = Client()
+    response = client.post(
+        "/accounts/signup/",
+        {
+            "username": "squatter",
+            "email": "invitee@example.org",
+            "password1": "Very-long-Pass-123!",
+            "password2": "Very-long-Pass-123!",
+        },
+    )
+
+    assert response.status_code == 200
+    assert b"Sign Up Closed" in response.content or b"closed" in response.content.lower()
+    assert not get_user_model().objects.filter(username="squatter").exists()
+    assert not get_user_model().objects.filter(email__iexact="invitee@example.org").exists()
