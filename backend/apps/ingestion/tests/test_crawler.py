@@ -67,6 +67,31 @@ def test_fixture_parser_contract_uses_stable_post_and_source_fields() -> None:
     assert LxmlBikeForumParser().parse_thread(FIXTURE.read_text(), THREAD_URL).title == parsed.title
 
 
+@pytest.mark.parametrize(
+    "href",
+    [
+        "javascript:alert(document.domain)//#x",
+        "https://attacker.example/phish#post-7",
+        "https://mapy.com/s/demo#route",
+        "data:text/html,<script>alert(1)</script>#x",
+    ],
+)
+def test_post_and_author_urls_from_user_content_stay_on_the_forum_origin(href: str) -> None:
+    body = f"""
+    <html><body><h1>Thread</h1>
+      <article id="post-9" data-post-id="9">
+        <a class="author" href="{href}">rider</a>
+        <div class="content">See <a href="{href}">this</a> and
+          <a href="https://mapy.com/s/demo">route</a></div>
+      </article>
+    </body></html>
+    """
+    parsed = BeautifulSoupBikeForumParser().parse(body, THREAD_URL)
+    assert parsed.posts[0].url == f"{THREAD_URL}#post-9"
+    assert parsed.posts[0].author_url == ""
+    assert parsed.posts[0].source_urls[-1] == "https://mapy.com/s/demo"
+
+
 def test_index_fixture_discovers_thread_frontier_links() -> None:
     parsed = BeautifulSoupBikeForumParser().parse(
         (FIXTURE.parent / "index.html").read_text(), "https://bikeforum.example/"

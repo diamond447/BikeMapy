@@ -246,11 +246,13 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             if not post_id and raw_node_id:
                 post_id = re.sub(r"^(?:post|p|comment)[-_]", "", raw_node_id)
             anchor = node.select_one("a.permalink, a[href*='#'], a[data-post-url]")
-            post_url = (
-                _absolute(url, str(anchor.get("href", "")))
-                if anchor
-                else f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
-            )
+            fallback_post_url = f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
+            post_url = _absolute(url, str(anchor.get("href", ""))) if anchor else ""
+            # Post bodies are user-controlled. A link written inside a post
+            # (for example ``javascript:...#`` or an external phishing page)
+            # must never become the public attribution URL for that post.
+            if not post_url or not _same_origin(url, post_url):
+                post_url = fallback_post_url
             author_node = node.select_one("[data-author], .author, .username, .user")
             author = _text(author_node)
             author_id = str(author_node.get("data-author-id", "")) if author_node else ""
@@ -264,6 +266,8 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             author_url = (
                 _absolute(url, str(author_url_node.get("href", ""))) if author_url_node else ""
             )
+            if author_url and not _same_origin(url, author_url):
+                author_url = ""
             time_node = node.select_one("time[datetime], time, [data-posted-at]")
             posted_value = str(time_node.get("datetime", "")) if time_node else ""
             posted_value = posted_value or (
