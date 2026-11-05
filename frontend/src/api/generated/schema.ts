@@ -3198,7 +3198,10 @@ export interface operations {
   }
   v1_routes_retrieve: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description Set to `geometry` to embed the full normalized geometry. It is null otherwise; map clients read it from the geometry endpoint. */
+        include?: 'geometry'
+      }
       header?: never
       path: {
         route_id: string
@@ -3316,7 +3319,10 @@ export interface operations {
   }
   v1_routes_by_slug_retrieve: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description Set to `geometry` to embed the full normalized geometry. It is null otherwise; map clients read it from the geometry endpoint. */
+        include?: 'geometry'
+      }
       header?: never
       path: {
         slug: string

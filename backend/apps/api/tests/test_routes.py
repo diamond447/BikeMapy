@@ -111,6 +111,15 @@ def test_route_list_is_paginated_and_filters_public_metadata(public_route: Route
         assert detail_field not in item
 
 
+def test_route_detail_loads_geometry_only_when_requested(public_route: Route) -> None:
+    with CaptureQueriesContext(connection) as queries:
+        payload = Client().get(f"/api/v1/routes/{public_route.pk}/").json()
+    assert payload["elevation_profile"]
+    route_sql = [query["sql"] for query in queries if 'FROM "catalogue_route"' in query["sql"]]
+    assert route_sql
+    assert all("normalized_geometry" not in sql for sql in route_sql)
+
+
 def test_route_list_does_not_load_heavy_version_columns(public_route: Route) -> None:
     with CaptureQueriesContext(connection) as queries:
         response = Client().get("/api/v1/routes/?author=route-author&category=gravel")
@@ -128,7 +137,9 @@ def test_route_detail_resolves_stable_id_and_slug(public_route: Route) -> None:
     client = Client()
     response = client.get(f"/api/v1/routes/{public_route.pk}/")
     assert response.status_code == 200
-    assert response.json()["geometry"]["coordinates"][0] == [16.6, 49.2]
+    assert response.json()["geometry"] is None
+    with_geometry = client.get(f"/api/v1/routes/{public_route.pk}/?include=geometry")
+    assert with_geometry.json()["geometry"]["coordinates"][0] == [16.6, 49.2]
     by_slug = client.get(f"/api/v1/routes/by-slug/{public_route.slug}/")
     assert by_slug.status_code == 200
     assert by_slug.json()["id"] == str(public_route.pk)

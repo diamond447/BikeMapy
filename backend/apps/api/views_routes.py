@@ -104,13 +104,15 @@ _HEAVY_VERSION_FIELDS = (
 )
 
 
-def public_route_queryset(*, detail: bool = False) -> QuerySet[Route]:
+def public_route_queryset(*, detail: bool = False, geometry: bool = False) -> QuerySet[Route]:
     """Return only published routes with a technically approved version.
 
     All relationships rendered by the public serializers are prefetched here,
     keeping list responses bounded in query count as the catalogue grows.
     ``detail`` adds what only the route detail renders (variants and the
     elevation profile); otherwise the heavy version columns are deferred.
+    The geometries are loaded only with ``geometry``: the map draws the
+    selected line from the dedicated geometry endpoint.
     Every filter here and in :func:`filter_routes` is a forward foreign key or
     an ``EXISTS`` predicate, so no ``DISTINCT`` is needed over these rows.
     """
@@ -152,6 +154,8 @@ def public_route_queryset(*, detail: bool = False) -> QuerySet[Route]:
     )
     if not detail:
         return queryset.defer(*_HEAVY_VERSION_FIELDS)
+    if not geometry:
+        queryset = queryset.defer(*_HEAVY_VERSION_FIELDS[:2])
     public_variant = SimilarityRelationship.objects.filter(
         relationship_type=SimilarityRelationship.RelationshipType.VARIANT,
         route_a__lifecycle=RouteLifecycle.PUBLISHED,
@@ -352,14 +356,33 @@ class RouteListView(ListAPIView):
         return queryset.order_by("-updated_at", "id")
 
 
-@extend_schema(responses=RouteSerializer)
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            "include",
+            OpenApiTypes.STR,
+            enum=["geometry"],
+            description=(
+                "Set to `geometry` to embed the full normalized geometry. It is null "
+                "otherwise; map clients read it from the geometry endpoint."
+            ),
+        )
+    ],
+    responses=RouteSerializer,
+)
 class RouteDetailView(APIView):
     """Resolve by stable UUID; a slug is only a readable alternate lookup."""
 
     def get(
         self, request: Request, route_id: UUID | None = None, slug: str | None = None
     ) -> Response:
-        queryset = public_route_queryset(detail=True)
+        include = {
+            item.strip()
+            for value in request.query_params.getlist("include")
+            for item in value.split(",")
+        }
+        include_geometry = "geometry" in include
+        queryset = public_route_queryset(detail=True, geometry=include_geometry)
         if route_id is not None:
             route = get_object_or_404(queryset, pk=route_id)
         else:
@@ -367,7 +390,7 @@ class RouteDetailView(APIView):
         return Response(
             RouteSerializer(
                 route,
-                context={"include_geometry": True, "request": request},
+                context={"include_geometry": include_geometry, "request": request},
             ).data
         )
 
