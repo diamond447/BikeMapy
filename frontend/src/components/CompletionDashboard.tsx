@@ -83,12 +83,12 @@ function detailKey(competitionId: string | undefined, routeId: string) {
   return `${competitionId ?? ''}:${routeId}`
 }
 
-function currentPragueMonth() {
+function currentPragueMonth(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en', {
     timeZone: 'Europe/Prague',
     year: 'numeric',
     month: '2-digit',
-  }).formatToParts()
+  }).formatToParts(now)
   const year = parts.find((part) => part.type === 'year')?.value ?? ''
   const month = parts.find((part) => part.type === 'month')?.value ?? ''
   return `${year}-${month}`

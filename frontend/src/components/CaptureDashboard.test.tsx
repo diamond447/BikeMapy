@@ -159,11 +159,17 @@ function apiResult(data: unknown) {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.clearAllMocks()
 })
 
 beforeEach(() => {
+  // The fixtures describe September 2026 and the dashboard selects the
+  // current Prague month, so pin the clock. Only Date is faked; timers and
+  // promises stay real for the async queries.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-09-22T12:00:00Z'))
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
   get.mockResolvedValue(apiResult(capture))
 })

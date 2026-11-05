@@ -190,6 +190,15 @@ jobs:
         run: pnpm exec playwright test
       - name: Run production preview MapLibre smoke test
         run: pnpm exec playwright test --config playwright.preview.config.ts
+      - name: Upload Playwright reports
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-reports
+          path: |
+            frontend/playwright-report
+            frontend/playwright-report-preview
+          if-no-files-found: ignore
       - name: Upload issue 10 screenshots
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
