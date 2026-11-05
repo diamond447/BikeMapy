@@ -362,12 +362,15 @@ DATABASES = {
         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "bikemapy-local-only"),
         "HOST": os.getenv("POSTGRES_HOST", "db"),
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
-        # Reuse a worker's connection across requests instead of paying the
-        # connect and authentication round trip on every API call. Health
-        # checks replace a connection that broke while idle, for example after
-        # a database restart or a restore drill. 0 restores per-request
-        # connections.
-        "CONN_MAX_AGE": env_int("DJANGO_CONN_MAX_AGE", 60),
+        # Production workers reuse their connection across requests instead of
+        # paying the connect and authentication round trip on every API call.
+        # Health checks replace a connection that broke while idle, for
+        # example after a database restart. Elsewhere connections stay
+        # per-request: threaded tests would otherwise leave idle connections
+        # behind that block dropping the test database.
+        "CONN_MAX_AGE": env_int(
+            "DJANGO_CONN_MAX_AGE", 60 if DEPLOYMENT_MODE == "production" else 0
+        ),
         "CONN_HEALTH_CHECKS": True,
     }
 }
@@ -739,7 +742,7 @@ ROUTE_DEDUPLICATION_BATCH_SIZE = int(os.getenv("ROUTE_DEDUPLICATION_BATCH_SIZE",
 # Spatial browse products.  The heatmap is deliberately limited to low zooms;
 # route lines take over at closer zooms.  Every public query has an explicit
 # bound so a large viewport cannot accidentally become a catalogue dump.
-SPATIAL_BROWSE_ZOOMS = os.getenv("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14,16,18")
+SPATIAL_BROWSE_ZOOMS = os.getenv("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14")
 SPATIAL_HEATMAP_ZOOMS = os.getenv("SPATIAL_HEATMAP_ZOOMS", "3,4,5,6,7,8")
 SPATIAL_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_MAX_ROUTES_PER_QUERY", "500"))
 SPATIAL_MAX_CELLS_PER_QUERY = int(os.getenv("SPATIAL_MAX_CELLS_PER_QUERY", "10000"))
