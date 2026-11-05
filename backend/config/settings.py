@@ -362,6 +362,13 @@ DATABASES = {
         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "bikemapy-local-only"),
         "HOST": os.getenv("POSTGRES_HOST", "db"),
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        # Reuse a worker's connection across requests instead of paying the
+        # connect and authentication round trip on every API call. Health
+        # checks replace a connection that broke while idle, for example after
+        # a database restart or a restore drill. 0 restores per-request
+        # connections.
+        "CONN_MAX_AGE": env_int("DJANGO_CONN_MAX_AGE", 60),
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
