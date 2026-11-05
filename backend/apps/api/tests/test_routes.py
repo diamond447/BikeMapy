@@ -103,9 +103,25 @@ def test_route_list_is_paginated_and_filters_public_metadata(public_route: Route
     assert item["id"] == str(public_route.pk)
     assert item["title"] == "Brno gravel loop"
     assert item["categories"][0]["slug"] == "gravel"
-    assert item["geometry"] is None
     assert item["sources"][0]["mapy_url"] == "https://mapy.com/s/public-route"
     assert "original_gpx_storage_key" not in item["sources"][0]
+    # Detail-only payloads stay out of the list: the profile alone dominated
+    # the size of a page.
+    for detail_field in ("geometry", "elevation_profile", "variants", "gpx_download_url"):
+        assert detail_field not in item
+
+
+def test_route_list_does_not_load_heavy_version_columns(public_route: Route) -> None:
+    with CaptureQueriesContext(connection) as queries:
+        response = Client().get("/api/v1/routes/?author=route-author&category=gravel")
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    route_sql = [query["sql"] for query in queries if 'FROM "catalogue_route"' in query["sql"]]
+    assert route_sql
+    for sql in route_sql:
+        assert "elevation_profile" not in sql
+        assert "normalized_geometry" not in sql
+        assert "DISTINCT" not in sql.upper()
 
 
 def test_route_detail_resolves_stable_id_and_slug(public_route: Route) -> None:

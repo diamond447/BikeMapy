@@ -1049,7 +1049,7 @@ export interface components {
       previous?: string | null
       results: components['schemas']['ReferenceRouteList'][]
     }
-    PaginatedRouteList: {
+    PaginatedRouteSummaryList: {
       /** @example 123 */
       count: number
       /**
@@ -1062,7 +1062,7 @@ export interface components {
        * @example http://api.example.org/accounts/?page=2
        */
       previous?: string | null
-      results: components['schemas']['Route'][]
+      results: components['schemas']['RouteSummary'][]
     }
     PasswordInputRequest: {
       password: string
@@ -1185,6 +1185,7 @@ export interface components {
       /** Format: email */
       email: string
     }
+    /** @description Full public route detail. */
     Route: {
       /** Format: uuid */
       readonly id: string
@@ -1210,6 +1211,34 @@ export interface components {
       readonly elevation_profile: components['schemas']['ElevationProfilePoint'][] | null
       /** Format: uri */
       readonly gpx_download_url: string | null
+      /** Format: date-time */
+      readonly created_at: string
+      /** Format: date-time */
+      readonly updated_at: string
+    }
+    /**
+     * @description Route fields rendered by the paginated list.
+     *
+     *     Elevation profiles, geometry, variants and the GPX link are detail-only:
+     *     the list renders none of them, and the profile alone made up almost all of
+     *     a 100-route page.
+     */
+    RouteSummary: {
+      /** Format: uuid */
+      readonly id: string
+      readonly slug: string
+      readonly title: string
+      readonly categories: components['schemas']['Category'][]
+      /** Format: decimal */
+      readonly distance_m: string | null
+      /** Format: decimal */
+      readonly ascent_m: string | null
+      /** Format: decimal */
+      readonly descent_m: string | null
+      readonly loop_status: string
+      readonly source_status: string
+      readonly sources: components['schemas']['SourceAttribution'][]
+      readonly reviewed: boolean
       /** Format: date-time */
       readonly created_at: string
       /** Format: date-time */
@@ -3162,7 +3191,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['PaginatedRouteList']
+          'application/json': components['schemas']['PaginatedRouteSummaryList']
         }
       }
     }

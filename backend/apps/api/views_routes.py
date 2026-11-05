@@ -48,6 +48,7 @@ from apps.catalogue.spatial import (
 from .pagination import RoutePagination
 from .serializers import (
     RouteSerializer,
+    RouteSummarySerializer,
     SpatialRouteSerializer,
     ViewportResponseSerializer,
 )
@@ -93,21 +94,27 @@ def _source_queryset() -> QuerySet[RouteSource]:
     return RouteSource.objects.prefetch_related("posts__thread", "posts__author").order_by("pk")
 
 
-def public_route_queryset() -> QuerySet[Route]:
+# Version columns no list renders: the full and simplified geometries and the
+# elevation profile are by far the widest values in a route row.
+_HEAVY_VERSION_FIELDS = (
+    "current_approved_version__normalized_geometry",
+    "current_approved_version__simplified_geometry",
+    "current_approved_version__elevation_profile",
+)
+
+
+def public_route_queryset(*, detail: bool = False) -> QuerySet[Route]:
     """Return only published routes with a technically approved version.
 
     All relationships rendered by the public serializers are prefetched here,
     keeping list responses bounded in query count as the catalogue grows.
+    ``detail`` adds what only the route detail renders (variants and the
+    elevation profile); otherwise the heavy version columns are deferred.
+    Every filter here and in :func:`filter_routes` is a forward foreign key or
+    an ``EXISTS`` predicate, so no ``DISTINCT`` is needed over these rows.
     """
 
-    public_variant = SimilarityRelationship.objects.filter(
-        relationship_type=SimilarityRelationship.RelationshipType.VARIANT,
-        route_a__lifecycle=RouteLifecycle.PUBLISHED,
-        route_a__current_approved_version__isnull=False,
-        route_b__lifecycle=RouteLifecycle.PUBLISHED,
-        route_b__current_approved_version__isnull=False,
-    ).select_related("route_a", "route_b")
-    return (
+    queryset = (
         Route.objects.filter(
             lifecycle=RouteLifecycle.PUBLISHED,
             current_approved_version__isnull=False,
@@ -134,16 +141,6 @@ def public_route_queryset() -> QuerySet[Route]:
                 to_attr="public_source_merges",
             ),
             Prefetch(
-                "similarity_a",
-                queryset=public_variant,
-                to_attr="public_variant_relationships_a",
-            ),
-            Prefetch(
-                "similarity_b",
-                queryset=public_variant,
-                to_attr="public_variant_relationships_b",
-            ),
-            Prefetch(
                 "moderation_decisions",
                 queryset=ModerationDecision.objects.filter(
                     action=ModerationDecision.Action.REVIEW
@@ -151,8 +148,45 @@ def public_route_queryset() -> QuerySet[Route]:
                 to_attr="public_review_decisions",
             ),
         )
-        .distinct()
     )
+    if not detail:
+        return queryset.defer(*_HEAVY_VERSION_FIELDS)
+    public_variant = SimilarityRelationship.objects.filter(
+        relationship_type=SimilarityRelationship.RelationshipType.VARIANT,
+        route_a__lifecycle=RouteLifecycle.PUBLISHED,
+        route_a__current_approved_version__isnull=False,
+        route_b__lifecycle=RouteLifecycle.PUBLISHED,
+        route_b__current_approved_version__isnull=False,
+    ).select_related("route_a", "route_b")
+    return queryset.prefetch_related(
+        Prefetch(
+            "similarity_a",
+            queryset=public_variant,
+            to_attr="public_variant_relationships_a",
+        ),
+        Prefetch(
+            "similarity_b",
+            queryset=public_variant,
+            to_attr="public_variant_relationships_b",
+        ),
+    )
+
+
+def _source_exists(source_filter: Q) -> Exists | Q:
+    """Match routes whose direct or actively merged sources satisfy a filter.
+
+    Each path is its own correlated ``EXISTS`` so the planner can serve it from
+    the foreign-key indexes. A join through the many-to-many source tables
+    would repeat route rows and force a ``DISTINCT`` over the whole row.
+    """
+
+    direct = RouteSource.objects.filter(source_filter, route=OuterRef("pk"))
+    merged = RouteSource.objects.filter(
+        source_filter,
+        canonical_route_links__canonical_route=OuterRef("pk"),
+        canonical_route_links__active=True,
+    )
+    return Exists(direct) | Exists(merged)
 
 
 def _decimal(value: str, name: str) -> Decimal:
@@ -228,39 +262,26 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
                 | Exists(author_trigram)
             )
         else:
+            post_text = (
+                Q(posts__thread__title__icontains=search)
+                | Q(posts__thread__locality__icontains=search)
+                | Q(posts__author__username__icontains=search)
+            )
             queryset = queryset.filter(
                 Q(display_title__icontains=search)
                 | Q(generated_title__icontains=search)
                 | Q(thread_title__icontains=search)
-                | Q(sources__posts__thread__title__icontains=search)
-                | Q(sources__posts__thread__locality__icontains=search)
-                | Q(sources__posts__author__username__icontains=search)
-                | Q(
-                    merged_source_links__active=True,
-                    merged_source_links__source__posts__thread__title__icontains=search,
-                )
-                | Q(
-                    merged_source_links__active=True,
-                    merged_source_links__source__posts__thread__locality__icontains=search,
-                )
-                | Q(
-                    merged_source_links__active=True,
-                    merged_source_links__source__posts__author__username__icontains=search,
-                )
+                | _source_exists(post_text)
             )
 
     author = params.get("author", "").strip()
     if author:
-        queryset = queryset.filter(
-            Q(sources__posts__author__username__iexact=author)
-            | Q(
-                merged_source_links__active=True,
-                merged_source_links__source__posts__author__username__iexact=author,
-            )
-        )
+        queryset = queryset.filter(_source_exists(Q(posts__author__username__iexact=author)))
     category = params.get("category", "").strip()
     if category:
-        queryset = queryset.filter(category_links__category__slug=category)
+        queryset = queryset.filter(
+            Exists(RouteCategory.objects.filter(route=OuterRef("pk"), category__slug=category))
+        )
 
     numeric_filters = {
         "min_distance": ("current_approved_version__distance_m__gte", "distance"),
@@ -308,12 +329,12 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
                 current_approved_version__simplified_geometry__intersects=viewport,
             )
         )
-    return queryset.distinct()
+    return queryset
 
 
 @extend_schema(parameters=ROUTE_FILTER_PARAMETERS)
 class RouteListView(ListAPIView):
-    serializer_class = RouteSerializer
+    serializer_class = RouteSummarySerializer
     pagination_class = RoutePagination
 
     def get_queryset(self) -> QuerySet[Route]:
@@ -325,9 +346,6 @@ class RouteListView(ListAPIView):
             return queryset.order_by("-_search_rank", "-updated_at", "id")
         return queryset.order_by("-updated_at", "id")
 
-    def get_serializer_context(self) -> dict[str, Any]:
-        return {**super().get_serializer_context(), "include_geometry": False}
-
 
 @extend_schema(responses=RouteSerializer)
 class RouteDetailView(APIView):
@@ -336,7 +354,7 @@ class RouteDetailView(APIView):
     def get(
         self, request: Request, route_id: UUID | None = None, slug: str | None = None
     ) -> Response:
-        queryset = public_route_queryset()
+        queryset = public_route_queryset(detail=True)
         if route_id is not None:
             route = get_object_or_404(queryset, pk=route_id)
         else:

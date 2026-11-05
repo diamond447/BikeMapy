@@ -128,7 +128,12 @@ function App() {
     metadataLoading: selectedMetadataLoading,
     geometryLoading: selectedGeometryLoading,
   } = selectedState
-  const selectedRoute = routes.find((route) => route.id === selectedId) ?? selectedRecord
+  // Prefer the detail record, which carries the elevation profile and GPX link;
+  // the list summary fills the panel while that record loads.
+  const selectedRoute =
+    selectedRecord?.id === selectedId
+      ? selectedRecord
+      : (routes.find((route) => route.id === selectedId) ?? null)
   const report = useReport(selectedRoute, copy, REPORTS_ENABLED)
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
   const selectionVisible = Boolean(
