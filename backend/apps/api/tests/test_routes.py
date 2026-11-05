@@ -330,6 +330,10 @@ def test_postgres_route_search_uses_tsvector_match_not_rank_threshold(
     assert "ts_rank" in query
     where_clause = query[query.find("WHERE") : query.find("ORDER BY")]
     assert "ts_rank" not in where_clause
+    # Thread and author matches are uncorrelated IN subqueries, which
+    # PostgreSQL hashes once; a correlated EXISTS under the OR ran per route.
+    assert "EXISTS" not in where_clause
+    assert " IN (SELECT" in where_clause
 
 
 def test_openapi_contract_contains_versioned_read_endpoints(tmp_path: Path) -> None:

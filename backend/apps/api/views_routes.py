@@ -29,6 +29,7 @@ from rest_framework.views import APIView
 
 from apps.catalogue.models import (
     ForumAuthor,
+    ForumPost,
     ForumThread,
     ModerationDecision,
     Route,
@@ -189,6 +190,23 @@ def _source_exists(source_filter: Q) -> Exists | Q:
     return Exists(direct) | Exists(merged)
 
 
+def _routes_with_posts(post_filter: Q) -> QuerySet[RouteSource, Any]:
+    """Route ids whose direct sources cite a post matching ``post_filter``."""
+
+    return RouteSource.objects.filter(
+        post_links__post__in=ForumPost.objects.filter(post_filter)
+    ).values("route_id")
+
+
+def _merged_routes_with_posts(post_filter: Q) -> QuerySet[RouteSourceMerge, Any]:
+    """Canonical route ids whose actively merged sources cite a matching post."""
+
+    return RouteSourceMerge.objects.filter(
+        active=True,
+        source__post_links__post__in=ForumPost.objects.filter(post_filter),
+    ).values("canonical_route_id")
+
+
 def _decimal(value: str, name: str) -> Decimal:
     try:
         result = Decimal(value)
@@ -218,48 +236,35 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
                 + SearchVector("thread_title", config="simple")
             )
             query = SearchQuery(search, search_type="websearch", config="simple")
-            source_threads = ForumThread.objects.filter(
-                Q(posts__source_links__source__route=OuterRef("pk"))
-                | Q(
-                    posts__source_links__source__canonical_route_links__canonical_route=OuterRef(
-                        "pk"
-                    ),
-                    posts__source_links__source__canonical_route_links__active=True,
-                )
-            )
-            source_authors = ForumAuthor.objects.filter(
-                Q(posts__source_links__source__route=OuterRef("pk"))
-                | Q(
-                    posts__source_links__source__canonical_route_links__canonical_route=OuterRef(
-                        "pk"
-                    ),
-                    posts__source_links__source__canonical_route_links__active=True,
-                )
-            )
-            thread_fts = source_threads.annotate(
+            # Match threads and authors once through their GIN indexes, then
+            # map them to routes with uncorrelated ``IN`` subqueries. PostgreSQL
+            # evaluates each as a hashed subplan; the former correlated
+            # ``EXISTS`` with an ``OR`` across the direct and merged source
+            # paths could not use an index and ran once per route row.
+            matching_threads = ForumThread.objects.annotate(
                 _text=SearchVector("title", config="simple")
                 + SearchVector("locality", config="simple")
-            ).filter(_text=query)
-            author_fts = source_authors.annotate(
-                _text=SearchVector("username", config="simple")
-            ).filter(_text=query)
-            # ``__trigram_similar`` emits the `%` operator, allowing the GIN
-            # trigram indexes to serve typo-tolerant searches.
-            thread_trigram = source_threads.filter(
-                Q(title__trigram_similar=search) | Q(locality__trigram_similar=search)
+            ).filter(
+                # ``__trigram_similar`` emits the `%` operator, allowing the
+                # GIN trigram indexes to serve typo-tolerant searches.
+                Q(_text=query)
+                | Q(title__trigram_similar=search)
+                | Q(locality__trigram_similar=search)
             )
-            author_trigram = source_authors.filter(username__trigram_similar=search)
+            matching_authors = ForumAuthor.objects.annotate(
+                _text=SearchVector("username", config="simple")
+            ).filter(Q(_text=query) | Q(username__trigram_similar=search))
             queryset = queryset.annotate(
                 _search_vector=vector,
                 _search_rank=SearchRank(F("_search_vector"), query),
             ).filter(
                 Q(_search_vector=query)
-                | Exists(thread_fts)
-                | Exists(author_fts)
                 | Q(display_title__trigram_similar=search)
                 | Q(generated_title__trigram_similar=search)
-                | Exists(thread_trigram)
-                | Exists(author_trigram)
+                | Q(pk__in=_routes_with_posts(Q(thread__in=matching_threads)))
+                | Q(pk__in=_routes_with_posts(Q(author__in=matching_authors)))
+                | Q(pk__in=_merged_routes_with_posts(Q(thread__in=matching_threads)))
+                | Q(pk__in=_merged_routes_with_posts(Q(author__in=matching_authors)))
             )
         else:
             post_text = (
