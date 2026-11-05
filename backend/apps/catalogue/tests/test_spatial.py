@@ -75,6 +75,24 @@ def published_route() -> Route:
     return Route.objects.get(pk=route.pk)
 
 
+def _publish_without_geometry(*routes: Route) -> None:
+    """Approve a geometry-less version so a bare test route becomes public.
+
+    Without geometry the approval adds no browse rows or heatmap memberships,
+    leaving the hand-built heatmap of a test unchanged.
+    """
+
+    for route in routes:
+        key = str(route.pk)
+        thread = ForumThread.objects.create(url=f"https://example.test/{key}", title=key)
+        post = ForumPost.objects.create(thread=thread, url=f"https://example.test/{key}#1")
+        source, _ = register_source(route=route, post=post, mapy_url=f"https://mapy.com/s/{key}")
+        version, _ = record_route_version(
+            source=source, checksum=f"public-{key}", technical_status=ProcessingStatus.VALID
+        )
+        approve_version(version)
+
+
 @override_settings(SPATIAL_BROWSE_ZOOMS="8,12", SPATIAL_HEATMAP_ZOOMS="5,6")
 def test_browse_geometries_are_zoom_specific_and_selected_route_is_full(
     published_route: Route,
@@ -108,6 +126,7 @@ def test_filtered_heatmap_limits_after_filtered_count_ordering(published_route: 
     other_route = Route.objects.create()
     another_other_route = Route.objects.create()
     matching_route = Route.objects.create()
+    _publish_without_geometry(matching_route)
     RouteHeatmapCell.objects.filter(zoom=5).delete()
     x, y = _tile_xy(16.0, 49.0, 5)
     stronger_unfiltered = RouteHeatmapCell.objects.create(
@@ -139,7 +158,7 @@ def test_filtered_heatmap_limits_after_filtered_count_ordering(published_route: 
             north=60,
             zoom=2,
             limits=SpatialQueryLimits(max_cells=1),
-            route_ids={published_route.pk, matching_route.pk},
+            candidate_queryset=Route.objects.filter(pk__in=[published_route.pk, matching_route.pk]),
         )
 
     assert result["mode"] == "heatmap"
@@ -176,6 +195,7 @@ def test_filtered_heatmap_limits_after_viewport_relevance_and_reports_overflow()
     first_match = Route.objects.create(id=UUID(int=100))
     second_match = Route.objects.create(id=UUID(int=101))
     third_match = Route.objects.create(id=UUID(int=102))
+    _publish_without_geometry(*off_view_routes, first_match, second_match, third_match)
     RouteHeatmapMembership.objects.bulk_create(
         [
             *(RouteHeatmapMembership(cell=off_view_cell, route=route) for route in off_view_routes),
@@ -193,7 +213,9 @@ def test_filtered_heatmap_limits_after_viewport_relevance_and_reports_overflow()
         north=49.1,
         zoom=2,
         limits=SpatialQueryLimits(max_routes=1, max_cells=1),
-        route_ids=set(route.pk for route in [*off_view_routes, first_match]),
+        candidate_queryset=Route.objects.filter(
+            pk__in=[route.pk for route in [*off_view_routes, first_match]]
+        ),
     )
     assert result["cells"][0]["x"] == in_view_x
     assert result["cells"][0]["count"] == 1
@@ -206,8 +228,10 @@ def test_filtered_heatmap_limits_after_viewport_relevance_and_reports_overflow()
         north=49.1,
         zoom=2,
         limits=SpatialQueryLimits(max_routes=1, max_cells=1),
-        route_ids=set(
-            route.pk for route in [*off_view_routes, first_match, second_match, third_match]
+        candidate_queryset=Route.objects.filter(
+            pk__in=[
+                route.pk for route in [*off_view_routes, first_match, second_match, third_match]
+            ]
         ),
     )
     assert overflow["cells"][0]["count"] == 2

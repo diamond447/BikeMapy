@@ -540,20 +540,276 @@ class SpatialQueryLimits:
         object.__setattr__(self, "max_cells", min(self.max_cells, hard_cells))
 
 
-def _viewport_candidates(
-    candidate_queryset: QuerySet[Route] | None, *, public_only: bool = True
-) -> QuerySet[Route]:
-    """Build a clean route base with an optional correlated filter predicate."""
+def _use_postgis() -> bool:
+    return _GIS_AVAILABLE and connection.vendor == "postgresql"
 
-    candidates = Route.objects.all()
-    if public_only:
-        candidates = candidates.filter(
-            lifecycle=RouteLifecycle.PUBLISHED, current_approved_version__isnull=False
-        )
+
+def _viewport_candidates(candidate_queryset: QuerySet[Route] | None) -> QuerySet[Route]:
+    """Build a clean public route base with an optional correlated filter predicate."""
+
+    candidates = Route.objects.filter(
+        lifecycle=RouteLifecycle.PUBLISHED, current_approved_version__isnull=False
+    )
     if candidate_queryset is not None:
         matching_routes = candidate_queryset.filter(pk=OuterRef("pk")).order_by().values("pk")
         candidates = candidates.filter(Exists(matching_routes))
     return candidates
+
+
+def _candidate_scan_limit(limits: SpatialQueryLimits, *, bounded_by_limit: bool) -> int:
+    configured_scan_limit = max(1, int(_setting("SPATIAL_MAX_CANDIDATE_SCAN", 5_000)))
+    if not bounded_by_limit:
+        return configured_scan_limit
+    return min(configured_scan_limit, max(1, limits.max_routes + 1))
+
+
+def _viewport_cache_key(
+    *,
+    bounds: tuple[float, float, float, float],
+    zoom: int,
+    limits: SpatialQueryLimits,
+    candidate_queryset: QuerySet[Route] | None,
+    filter_inputs: Mapping[str, Any] | None,
+) -> str | None:
+    """Return the cache key, or ``None`` for a candidate set without filter inputs.
+
+    A caller-supplied queryset is only cacheable together with the normalized
+    filter inputs it was built from; its compiled SQL makes the key specific
+    to the candidate definition.
+    """
+
+    if candidate_queryset is not None and filter_inputs is None:
+        return None
+    candidate_identity = ""
+    filter_epoch: int | None = None
+    if candidate_queryset is not None:
+        query_sql, query_params = candidate_queryset.query.sql_with_params()
+        candidate_identity = hashlib.sha256(
+            json.dumps(
+                [query_sql, [_normalize_cache_param(param) for param in query_params]]
+            ).encode()
+        ).hexdigest()
+        filter_epoch = int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0))
+    west, south, east, north = bounds
+    raw_key = json.dumps(
+        {
+            "bounds": [
+                _normalize_filter_value("west", west),
+                _normalize_filter_value("south", south),
+                _normalize_filter_value("east", east),
+                _normalize_filter_value("north", north),
+            ],
+            "epoch": int(cache.get(_CACHE_EPOCH_KEY, 0)),
+            "filter_epoch": filter_epoch,
+            "filters": normalize_filter_inputs(filter_inputs),
+            "candidate": candidate_identity,
+            "limits": [limits.max_routes, limits.max_cells],
+            "zoom": zoom,
+        },
+        separators=(",", ":"),
+    )
+    return "bikemapy:spatial:viewport:" + hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+def _heatmap_data_zoom(zoom: int) -> int | None:
+    """Return the stored heatmap zoom serving ``zoom``, or ``None`` for route lines."""
+
+    if zoom > heatmap_max_zoom():
+        return None
+    return next(item for item in heatmap_zooms() if item >= zoom)
+
+
+def _query_heatmap(
+    bounds: tuple[float, float, float, float],
+    *,
+    zoom: int,
+    data_zoom: int,
+    limits: SpatialQueryLimits,
+    candidate_queryset: QuerySet[Route] | None,
+) -> dict[str, Any]:
+    west, south, east, north = bounds
+    cell_query = RouteHeatmapCell.objects.filter(zoom=data_zoom, route_count__gt=0)
+    cell_order: tuple[str, ...] = ("-route_count", "y", "x")
+    candidate_overflow = False
+    cell_viewport_filter: dict[str, Any] = {}
+    if candidate_queryset is not None:
+        candidates = _viewport_candidates(candidate_queryset)
+        if _use_postgis():
+            from django.contrib.gis.geos import Polygon
+
+            viewport_geometry = Polygon.from_bbox(bounds)
+            relevant_memberships = RouteHeatmapMembership.objects.filter(
+                route_id=OuterRef("pk"),
+                cell__zoom=data_zoom,
+                cell__boundary__intersects=viewport_geometry,
+            )
+            cell_viewport_filter = {"boundary__intersects": viewport_geometry}
+        else:
+            minimum_x, maximum_x, minimum_y, maximum_y = _viewport_tile_range(
+                west, south, east, north, data_zoom
+            )
+            relevant_memberships = RouteHeatmapMembership.objects.filter(
+                route_id=OuterRef("pk"),
+                cell__zoom=data_zoom,
+                cell__x__gte=minimum_x,
+                cell__x__lte=maximum_x,
+                cell__y__gte=minimum_y,
+                cell__y__lte=maximum_y,
+            )
+            cell_viewport_filter = {
+                "x__gte": minimum_x,
+                "x__lte": maximum_x,
+                "y__gte": minimum_y,
+                "y__lte": maximum_y,
+            }
+        candidates = candidates.filter(Exists(relevant_memberships))
+        candidate_scan_limit = _candidate_scan_limit(limits, bounded_by_limit=True)
+        candidate_ids = candidates.order_by("pk").values("pk")[:candidate_scan_limit]
+        candidate_overflow = (
+            candidates.order_by("pk")
+            .values("pk")[candidate_scan_limit : candidate_scan_limit + 1]
+            .exists()
+        )
+        cell_query = (
+            RouteHeatmapCell.objects.filter(
+                zoom=data_zoom,
+                memberships__route_id__in=Subquery(candidate_ids),
+            )
+            .annotate(_filtered_route_count=Count("memberships__route_id", distinct=True))
+            .filter(_filtered_route_count__gt=0)
+        )
+        cell_order = ("-_filtered_route_count", "y", "x")
+    if _use_postgis():
+        from django.contrib.gis.geos import Polygon
+
+        cell_query = cell_query.filter(boundary__intersects=Polygon.from_bbox(bounds))
+    elif cell_viewport_filter:
+        cell_query = cell_query.filter(**cell_viewport_filter)
+    cells = list(cell_query.order_by(*cell_order)[: limits.max_cells + 1])
+    items = []
+    for cell in cells[: limits.max_cells]:
+        cell_bounds = _tile_bounds(cell.x, cell.y, cell.zoom)
+        if (
+            cell_bounds[2] >= west
+            and cell_bounds[0] <= east
+            and cell_bounds[3] >= south
+            and cell_bounds[1] <= north
+        ):
+            items.append(
+                {
+                    "zoom": cell.zoom,
+                    "x": cell.x,
+                    "y": cell.y,
+                    "count": getattr(cell, "_filtered_route_count", cell.route_count),
+                    "geometry": _geojson(cell.boundary),
+                }
+            )
+    return {
+        "mode": "heatmap",
+        "zoom": zoom,
+        "data_zoom": data_zoom,
+        "cells": items,
+        "routes": [],
+        "truncated": len(cells) > limits.max_cells or candidate_overflow,
+    }
+
+
+def _query_routes(
+    bounds: tuple[float, float, float, float],
+    *,
+    zoom: int,
+    limits: SpatialQueryLimits,
+    candidate_queryset: QuerySet[Route] | None,
+) -> dict[str, Any]:
+    west, south, east, north = bounds
+    candidates = _viewport_candidates(candidate_queryset)
+    if _use_postgis():
+        from django.contrib.gis.geos import Polygon
+
+        viewport_geometry = Polygon.from_bbox(bounds)
+        relevant_browse_geometry = RouteBrowseGeometry.objects.filter(
+            version_id=OuterRef("current_approved_version_id"),
+            geometry__intersects=viewport_geometry,
+            zoom__lte=zoom,
+        ).values("pk")
+        candidates = candidates.filter(Exists(relevant_browse_geometry))
+    # The SQLite/non-GIS path must retain the configured scan before Python
+    # bbox filtering, otherwise off-screen rows can hide later in-view rows
+    # within the supported candidate bound.
+    candidate_scan_limit = _candidate_scan_limit(limits, bounded_by_limit=_use_postgis())
+    candidate_overflow = (
+        candidates.order_by("pk")
+        .values("pk")[candidate_scan_limit : candidate_scan_limit + 1]
+        .exists()
+    )
+    candidate_routes = cast(
+        list[dict[str, Any]],
+        list(
+            candidates.order_by("pk").values(
+                "id",
+                "slug",
+                "display_title",
+                "generated_title",
+                "admin_title_override",
+                "current_approved_version_id",
+            )[:candidate_scan_limit]
+        ),
+    )
+    version_ids = [
+        route["current_approved_version_id"]
+        for route in candidate_routes
+        if route["current_approved_version_id"] is not None
+    ]
+    browse_rows = RouteBrowseGeometry.objects.filter(
+        version_id__in=version_ids, zoom__lte=zoom
+    ).order_by("version_id", "-zoom")
+    browse_by_version: dict[Any, Any] = {}
+    if _use_postgis():
+        from django.contrib.gis.db.models.functions import AsGeoJSON
+
+        annotated_browse_rows = browse_rows.annotate(_geometry_json=AsGeoJSON("geometry")).values(
+            "version_id", "_geometry_json"
+        )
+        for browse in annotated_browse_rows:
+            browse_by_version.setdefault(browse["version_id"], json.loads(browse["_geometry_json"]))
+    else:
+        for browse_geometry in browse_rows:
+            browse_by_version.setdefault(browse_geometry.version_id, browse_geometry.geometry)
+    missing_version_ids = set(version_ids) - set(browse_by_version)
+    fallback_geometry_by_version: dict[Any, Any] = {}
+    if missing_version_ids:
+        fallback_geometry_by_version = {
+            # A viewport must never fall back to the full normalized
+            # payload; selected-route queries are the full-geometry boundary.
+            version.pk: version.simplified_geometry
+            for version in RouteVersion.objects.filter(pk__in=missing_version_ids)
+        }
+    rows: list[dict[str, Any]] = []
+    for route in candidate_routes:
+        version_id = route["current_approved_version_id"]
+        geometry = browse_by_version.get(version_id)
+        geometry = geometry or fallback_geometry_by_version.get(version_id)
+        points = _coordinates(geometry)
+        if (
+            not points
+            or max(p[0] for p in points) < west
+            or min(p[0] for p in points) > east
+            or max(p[1] for p in points) < south
+            or min(p[1] for p in points) > north
+        ):
+            continue
+        rows.append(_route_values_dict(route, geometry))
+        if len(rows) > limits.max_routes:
+            break
+    return {
+        "mode": "routes",
+        "zoom": zoom,
+        "cells": [],
+        "routes": rows[: limits.max_routes],
+        # A full candidate scan is intentionally bounded; reaching that
+        # bound means there may be qualifying simplified lines beyond it.
+        "truncated": len(rows) > limits.max_routes or candidate_overflow,
+    }
 
 
 def query_viewport(
@@ -566,9 +822,12 @@ def query_viewport(
     limits: SpatialQueryLimits | None = None,
     candidate_queryset: QuerySet[Route] | None = None,
     filter_inputs: Mapping[str, Any] | None = None,
-    route_ids: set[Any] | None = None,
 ) -> dict[str, Any]:
-    """Return heatmap cells or simplified lines for a bounded viewport."""
+    """Return heatmap cells or simplified lines for a bounded viewport.
+
+    ``candidate_queryset`` restricts the result to matching public routes.
+    Pass the ``filter_inputs`` it was built from to make the result cacheable.
+    """
 
     _validate_bounds(west, south, east, north)
     if not 0 <= zoom <= 22:
@@ -577,239 +836,31 @@ def query_viewport(
         max_routes=int(_setting("SPATIAL_MAX_ROUTES_PER_QUERY", 500)),
         max_cells=int(_setting("SPATIAL_MAX_CELLS_PER_QUERY", 10_000)),
     )
-    epoch = int(cache.get(_CACHE_EPOCH_KEY, 0))
-    if candidate_queryset is not None and route_ids is not None:
-        raise ValidationError("candidate_queryset and route_ids are mutually exclusive")
-    legacy_route_filter = route_ids is not None
-    if route_ids is not None:
-        # Kept for non-HTTP callers while they migrate to candidate_queryset.
-        # In particular, never put this potentially large legacy collection in
-        # a cache key; uncached execution preserves correctness for each set.
-        candidate_queryset = Route.objects.filter(pk__in=route_ids)
-    filter_epoch = (
-        int(cache.get(_FILTER_CACHE_EPOCH_KEY, 0)) if candidate_queryset is not None else 0
+    bounds = (west, south, east, north)
+    cache_key = _viewport_cache_key(
+        bounds=bounds,
+        zoom=zoom,
+        limits=limits,
+        candidate_queryset=candidate_queryset,
+        filter_inputs=filter_inputs,
     )
-    normalized_filters = normalize_filter_inputs(filter_inputs)
-    cacheable = route_ids is None and (candidate_queryset is None or filter_inputs is not None)
-    candidate_identity = ""
-    if cacheable and candidate_queryset is not None:
-        query_sql, query_params = candidate_queryset.query.sql_with_params()
-        candidate_identity = hashlib.sha256(
-            json.dumps(
-                [query_sql, [_normalize_cache_param(param) for param in query_params]]
-            ).encode()
-        ).hexdigest()
-    cache_key: str | None = None
-    if cacheable:
-        raw_key = json.dumps(
-            {
-                "bounds": [
-                    _normalize_filter_value("west", west),
-                    _normalize_filter_value("south", south),
-                    _normalize_filter_value("east", east),
-                    _normalize_filter_value("north", north),
-                ],
-                "epoch": epoch,
-                "filter_epoch": filter_epoch if candidate_queryset is not None else None,
-                "filters": normalized_filters,
-                "candidate": candidate_identity,
-                "limits": [limits.max_routes, limits.max_cells],
-                "zoom": zoom,
-            },
-            separators=(",", ":"),
-        )
-        cache_key = "bikemapy:spatial:viewport:" + hashlib.sha256(raw_key.encode()).hexdigest()
+    if cache_key is not None:
         cached = cache.get(cache_key)
         if cached is not None:
             return cast(dict[str, Any], cached)
-    selected_heatmap_zoom = next((item for item in heatmap_zooms() if item >= zoom), None)
-    if selected_heatmap_zoom is None and zoom <= heatmap_max_zoom():
-        selected_heatmap_zoom = heatmap_max_zoom()
-    if selected_heatmap_zoom is not None and zoom <= heatmap_max_zoom():
-        cell_query = RouteHeatmapCell.objects.filter(zoom=selected_heatmap_zoom, route_count__gt=0)
-        cell_order = ("-route_count", "y", "x")
-        candidate_overflow = False
-        cell_viewport_filter: dict[str, Any] = {}
-        if candidate_queryset is not None:
-            candidates = _viewport_candidates(
-                candidate_queryset, public_only=not legacy_route_filter
-            )
-            if _GIS_AVAILABLE and connection.vendor == "postgresql":
-                from django.contrib.gis.geos import Polygon
-
-                viewport_geometry = Polygon.from_bbox((west, south, east, north))
-                relevant_memberships = RouteHeatmapMembership.objects.filter(
-                    route_id=OuterRef("pk"),
-                    cell__zoom=selected_heatmap_zoom,
-                    cell__boundary__intersects=viewport_geometry,
-                )
-                cell_viewport_filter = {"boundary__intersects": viewport_geometry}
-            else:
-                minimum_x, maximum_x, minimum_y, maximum_y = _viewport_tile_range(
-                    west, south, east, north, selected_heatmap_zoom
-                )
-                relevant_memberships = RouteHeatmapMembership.objects.filter(
-                    route_id=OuterRef("pk"),
-                    cell__zoom=selected_heatmap_zoom,
-                    cell__x__gte=minimum_x,
-                    cell__x__lte=maximum_x,
-                    cell__y__gte=minimum_y,
-                    cell__y__lte=maximum_y,
-                )
-                cell_viewport_filter = {
-                    "x__gte": minimum_x,
-                    "x__lte": maximum_x,
-                    "y__gte": minimum_y,
-                    "y__lte": maximum_y,
-                }
-            candidates = candidates.filter(Exists(relevant_memberships))
-            configured_scan_limit = max(1, int(_setting("SPATIAL_MAX_CANDIDATE_SCAN", 5_000)))
-            candidate_scan_limit = min(configured_scan_limit, max(1, limits.max_routes + 1))
-            candidate_ids = candidates.order_by("pk").values("pk")[:candidate_scan_limit]
-            candidate_overflow = (
-                candidates.order_by("pk")
-                .values("pk")[candidate_scan_limit : candidate_scan_limit + 1]
-                .exists()
-            )
-            cell_query = (
-                RouteHeatmapCell.objects.filter(
-                    zoom=selected_heatmap_zoom,
-                    memberships__route_id__in=Subquery(candidate_ids),
-                )
-                .annotate(_filtered_route_count=Count("memberships__route_id", distinct=True))
-                .filter(_filtered_route_count__gt=0)
-            )
-            cell_order = ("-_filtered_route_count", "y", "x")
-        if _GIS_AVAILABLE and connection.vendor == "postgresql":
-            from django.contrib.gis.geos import Polygon
-
-            cell_query = cell_query.filter(
-                boundary__intersects=Polygon.from_bbox((west, south, east, north))
-            )
-        elif cell_viewport_filter:
-            cell_query = cell_query.filter(**cell_viewport_filter)
-        cells = list(cell_query.order_by(*cell_order)[: limits.max_cells + 1])
-        items = []
-        for cell in cells[: limits.max_cells]:
-            bounds = _tile_bounds(cell.x, cell.y, cell.zoom)
-            if (
-                bounds[2] >= west
-                and bounds[0] <= east
-                and bounds[3] >= south
-                and bounds[1] <= north
-            ):
-                items.append(
-                    {
-                        "zoom": cell.zoom,
-                        "x": cell.x,
-                        "y": cell.y,
-                        "count": getattr(cell, "_filtered_route_count", cell.route_count),
-                        "geometry": _geojson(cell.boundary),
-                    }
-                )
-        result = {
-            "mode": "heatmap",
-            "zoom": zoom,
-            "data_zoom": selected_heatmap_zoom,
-            "cells": items,
-            "routes": [],
-            "truncated": len(cells) > limits.max_cells or candidate_overflow,
-        }
+    data_zoom = _heatmap_data_zoom(zoom)
+    if data_zoom is not None:
+        result = _query_heatmap(
+            bounds,
+            zoom=zoom,
+            data_zoom=data_zoom,
+            limits=limits,
+            candidate_queryset=candidate_queryset,
+        )
     else:
-        candidates = _viewport_candidates(candidate_queryset)
-        if _GIS_AVAILABLE and connection.vendor == "postgresql":
-            from django.contrib.gis.geos import Polygon
-
-            viewport_geometry = Polygon.from_bbox((west, south, east, north))
-            relevant_browse_geometry = RouteBrowseGeometry.objects.filter(
-                version_id=OuterRef("current_approved_version_id"),
-                geometry__intersects=viewport_geometry,
-                zoom__lte=zoom,
-            ).values("pk")
-            candidates = candidates.filter(Exists(relevant_browse_geometry))
-        configured_scan_limit = max(1, int(_setting("SPATIAL_MAX_CANDIDATE_SCAN", 5_000)))
-        if _GIS_AVAILABLE and connection.vendor == "postgresql":
-            candidate_scan_limit = min(configured_scan_limit, max(1, limits.max_routes + 1))
-        else:
-            # The SQLite/non-GIS path must retain the configured scan before
-            # Python bbox filtering, otherwise off-screen rows can hide later
-            # in-view rows within the supported candidate bound.
-            candidate_scan_limit = configured_scan_limit
-        candidate_overflow = (
-            candidates.order_by("pk")
-            .values("pk")[candidate_scan_limit : candidate_scan_limit + 1]
-            .exists()
+        result = _query_routes(
+            bounds, zoom=zoom, limits=limits, candidate_queryset=candidate_queryset
         )
-        candidate_routes = cast(
-            list[dict[str, Any]],
-            list(
-                candidates.order_by("pk").values(
-                    "id",
-                    "slug",
-                    "display_title",
-                    "generated_title",
-                    "admin_title_override",
-                    "current_approved_version_id",
-                )[:candidate_scan_limit]
-            ),
-        )
-        version_ids = [
-            route["current_approved_version_id"]
-            for route in candidate_routes
-            if route["current_approved_version_id"] is not None
-        ]
-        browse_rows = RouteBrowseGeometry.objects.filter(
-            version_id__in=version_ids, zoom__lte=zoom
-        ).order_by("version_id", "-zoom")
-        browse_by_version: dict[Any, Any] = {}
-        if _GIS_AVAILABLE and connection.vendor == "postgresql":
-            from django.contrib.gis.db.models.functions import AsGeoJSON
-
-            annotated_browse_rows = browse_rows.annotate(
-                _geometry_json=AsGeoJSON("geometry")
-            ).values("version_id", "_geometry_json")
-            for browse in annotated_browse_rows:
-                browse_by_version.setdefault(
-                    browse["version_id"], json.loads(browse["_geometry_json"])
-                )
-        else:
-            for browse_geometry in browse_rows:
-                browse_by_version.setdefault(browse_geometry.version_id, browse_geometry.geometry)
-        missing_version_ids = set(version_ids) - set(browse_by_version)
-        fallback_geometry_by_version: dict[Any, Any] = {}
-        if missing_version_ids:
-            fallback_geometry_by_version = {
-                # A viewport must never fall back to the full normalized
-                # payload; selected-route queries are the full-geometry boundary.
-                version.pk: version.simplified_geometry
-                for version in RouteVersion.objects.filter(pk__in=missing_version_ids)
-            }
-        rows: list[dict[str, Any]] = []
-        for route in candidate_routes:
-            version_id = route["current_approved_version_id"]
-            geometry = browse_by_version.get(version_id)
-            geometry = geometry or fallback_geometry_by_version.get(version_id)
-            points = _coordinates(geometry)
-            if (
-                not points
-                or max(p[0] for p in points) < west
-                or min(p[0] for p in points) > east
-                or max(p[1] for p in points) < south
-                or min(p[1] for p in points) > north
-            ):
-                continue
-            rows.append(_route_values_dict(route, geometry))
-            if len(rows) > limits.max_routes:
-                break
-        result = {
-            "mode": "routes",
-            "zoom": zoom,
-            "cells": [],
-            "routes": rows[: limits.max_routes],
-            # A full candidate scan is intentionally bounded; reaching that
-            # bound means there may be qualifying simplified lines beyond it.
-            "truncated": len(rows) > limits.max_routes or candidate_overflow,
-        }
     if cache_key is not None:
         cache.set(cache_key, result, timeout=int(_setting("SPATIAL_QUERY_CACHE_TTL", 60)))
     return result
@@ -830,11 +881,3 @@ def query_selected_route(route_id: Any = None, *, slug: str | None = None) -> di
     if geometry is None:
         raise ValidationError("public route has no geometry")
     return _route_dict(route, geometry)
-
-
-# Short aliases make the data products convenient to import from callers that
-# use their product names rather than their persistence names.
-build_browse_geometries = generate_browse_geometries
-refresh_heatmap = refresh_route_heatmap
-viewport_query = query_viewport
-selected_route_query = query_selected_route
