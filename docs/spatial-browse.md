@@ -52,16 +52,24 @@ p95 <= 150 ms for a heatmap viewport, and <= 150 ms for a selected full route
 scalability claim; the lightweight SQLite quality suite is not a PostGIS
 performance measurement.
 
-The local PostGIS 17 benchmark (2026-09-04, twenty cold-cache samples, 2,000
-synthetic routes with varied positions, vertex counts, lengths, and hit ratios)
-reported route viewport min/median/p95 of 1,517.85/1,539.11/1,564.22 ms,
-heatmap viewport 1.64/1.71/2.20 ms, and selected route 2.80/3.25/3.81 ms.
-The route viewport returned 500 lines at its hard cap, exercising the
-high-hit workload.  The route result exceeds the initial 250 ms budget in
-this local setup; this is an optimization signal, not a production claim. These measurements include ORM and
-GeoJSON service time as well as the database query; they are a local baseline,
-not a production scalability claim.  Record query plans and the PostGIS
-version with future runs.
+The benchmark seeds 2,000 synthetic routes of 300-1,500 vertices spread over
+Czechia, generates browse lines for every configured zoom and runs `ANALYZE`
+before measuring.  It prints the PostGIS version and the `EXPLAIN (ANALYZE,
+BUFFERS)` plan of the slowest route-viewport query next to the timings.
+
+The local PostGIS 3.5 / PostgreSQL 17 run of 2026-11-05 (twenty cold-cache
+samples) reported route viewport min/median/p95 of 103.7/116.8/215.5 ms with
+500 lines returned at the hard cap, heatmap viewport 1.79/2.09/2.43 ms, and
+selected route 4.16/4.78/5.86 ms.  All three are within budget.  The slowest
+query was the browse-line fetch (23 ms, an index scan with `DISTINCT ON`).
+
+The earlier result of about 1.5 s per route viewport (2026-09-04) measured
+missing planner statistics rather than the query: the rows were created inside
+the test transaction, where autovacuum never analyses them, and PostgreSQL
+chose a per-route nested loop.  The same dataset and code measured 15 ms
+(median) once `ANALYZE` had run.  `rebuild_spatial_products` therefore
+analyses the route, browse and heatmap tables when it finishes; run `ANALYZE`
+on those tables after any other bulk import as well.
 
 Vector-tile work should be reconsidered when two consecutive representative
 PostGIS runs exceed either viewport budget after query plans, indexes, cache

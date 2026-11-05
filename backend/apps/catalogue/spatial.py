@@ -176,36 +176,44 @@ def generate_browse_geometries(
     if zooms is None:
         zooms = browse_zooms()
         RouteBrowseGeometry.objects.filter(version=version).exclude(zoom__in=zooms).delete()
-    result: list[RouteBrowseGeometry] = []
+    projected: Any = None
+    if _GIS_AVAILABLE:
+        from django.contrib.gis.geos import GEOSGeometry
+
+        # Simplify in EPSG:3857 so the tolerance is metres.  Transforming
+        # through GEOS uses the same robust implementation as PostGIS and
+        # preserves topology for route lines at realistic GPX sizes.  The
+        # line is projected once and each simplified copy projected back.
+        projected = GEOSGeometry(
+            json.dumps({"type": "LineString", "coordinates": points}), srid=4326
+        )
+        projected.transform(3857)
+    generated_at = timezone.now()
+    rows: list[RouteBrowseGeometry] = []
     for zoom in zooms:
         tolerance = simplification_tolerance_m(zoom)
         geometry: Any
-        if _GIS_AVAILABLE:
-            from django.contrib.gis.geos import GEOSGeometry
-
-            # Simplify in EPSG:3857 so the tolerance is metres.  Transforming
-            # through GEOS uses the same robust implementation as PostGIS and
-            # preserves topology for route lines at realistic GPX sizes.
-            geometry = GEOSGeometry(
-                json.dumps({"type": "LineString", "coordinates": points}), srid=4326
-            )
-            geometry.transform(3857)
-            geometry = geometry.simplify(tolerance, preserve_topology=True)
+        if projected is not None:
+            geometry = projected.simplify(tolerance, preserve_topology=True)
             geometry.transform(4326)
         else:
             simplified = _line_simplify(points, tolerance)
             geometry = {"type": "LineString", "coordinates": simplified}
-        row, _ = RouteBrowseGeometry.objects.update_or_create(
-            version=version,
-            zoom=zoom,
-            defaults={
-                "geometry": geometry,
-                "tolerance_m": tolerance,
-                "generated_at": timezone.now(),
-            },
+        rows.append(
+            RouteBrowseGeometry(
+                version=version,
+                zoom=zoom,
+                geometry=geometry,
+                tolerance_m=tolerance,
+                generated_at=generated_at,
+            )
         )
-        result.append(row)
-    return result
+    return RouteBrowseGeometry.objects.bulk_create(
+        rows,
+        update_conflicts=True,
+        unique_fields=["version", "zoom"],
+        update_fields=["geometry", "tolerance_m", "generated_at"],
+    )
 
 
 def _tile_xy(longitude: float, latitude: float, zoom: int) -> tuple[int, int]:

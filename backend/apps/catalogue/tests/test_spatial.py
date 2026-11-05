@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
@@ -19,6 +20,7 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
 from apps.catalogue.fields import _GIS_AVAILABLE
+from apps.catalogue.management.commands.rebuild_spatial_products import analyze_spatial_tables
 from apps.catalogue.models import (
     Category,
     ForumAuthor,
@@ -502,8 +504,15 @@ def test_spatial_products_can_be_rebuilt_for_existing_routes(published_route: Ro
     version = published_route.current_approved_version
     assert version is not None
     RouteBrowseGeometry.objects.filter(version=version).delete()
-    call_command("rebuild_spatial_products", route_id=str(published_route.pk))
+    with CaptureQueriesContext(connection) as queries:
+        call_command("rebuild_spatial_products", route_id=str(published_route.pk))
     assert RouteBrowseGeometry.objects.filter(version=version).exists()
+    analyzed = [query["sql"] for query in queries if query["sql"].startswith("ANALYZE")]
+    if connection.vendor == "postgresql":
+        assert len(analyzed) == 1
+        assert '"catalogue_routebrowsegeometry"' in analyzed[0]
+    else:
+        assert analyzed == []
 
 
 @pytest.mark.django_db(transaction=True)
@@ -565,25 +574,30 @@ def test_concurrent_route_refreshes_preserve_shared_cell_count(published_route: 
     reason="opt-in benchmark; run against the Compose PostGIS database",
 )
 def test_representative_route_viewport_benchmark(published_route: Route) -> None:
-    """Keep a repeatable query measurement next to the spatial contract."""
+    """Keep a repeatable query measurement next to the spatial contract.
 
-    source_version = published_route.current_approved_version
-    assert source_version is not None
+    The synthetic catalogue resembles real GPX imports: 2,000 routes of
+    300-1,500 vertices spread over Czechia, with browse lines for every
+    configured zoom. Statistics are refreshed before measuring; rows created
+    inside the test transaction are invisible to autovacuum, and without them
+    the planner chose a per-route nested loop that measured the missing
+    statistics rather than the query.
+    """
+
+    rng = random.Random(2026)
     geometries: list[Any] = []
     simplified_geometries: list[Any] = []
-    for index in range(1, 2_000):
-        longitude = 14.0 + (index % 40) * 0.1
-        latitude = 47.5 + (index % 30) * 0.1
-        vertex_count = 4 + index % 40
-        coordinates = [
-            [longitude + step * 0.002, latitude + math.sin(step / 3) * 0.01]
-            for step in range(vertex_count)
-        ]
+    for _index in range(1, 2_000):
+        longitude, latitude = rng.uniform(12.6, 18.4), rng.uniform(48.8, 50.8)
+        heading = rng.uniform(0, 2 * math.pi)
+        coordinates = []
+        for _step in range(rng.randint(300, 1_500)):
+            heading += rng.gauss(0, 0.25)
+            longitude += 0.0004 * math.cos(heading)
+            latitude += 0.00027 * math.sin(heading)
+            coordinates.append([longitude, latitude])
         payload = {"type": "LineString", "coordinates": coordinates}
-        simplified_payload = {
-            "type": "LineString",
-            "coordinates": [coordinates[0], coordinates[-1]],
-        }
+        simplified_payload = {"type": "LineString", "coordinates": coordinates[::10]}
         if _GIS_AVAILABLE:
             from django.contrib.gis.geos import GEOSGeometry
 
@@ -617,17 +631,8 @@ def test_representative_route_viewport_benchmark(published_route: Route) -> None
     for route, version in zip(routes, versions, strict=True):
         route.current_approved_version = version
     Route.objects.bulk_update(routes, ["current_approved_version"])
-    RouteBrowseGeometry.objects.bulk_create(
-        [
-            RouteBrowseGeometry(
-                version=version,
-                zoom=12,
-                geometry=simplified_geometries[index],
-                tolerance_m=10,
-            )
-            for index, version in enumerate(versions)
-        ]
-    )
+    for version in versions:
+        generate_browse_geometries(version)
     heatmap_cells = [
         RouteHeatmapCell.objects.get_or_create(
             zoom=6,
@@ -646,6 +651,7 @@ def test_representative_route_viewport_benchmark(published_route: Route) -> None
     for index, cell in enumerate(heatmap_cells):
         cell.route_count = sum(1 for item in range(len(routes)) if item % 3 == index)
         cell.save(update_fields=["route_count", "updated_at"])
+    analyze_spatial_tables()
 
     def measure(call: Any) -> list[float]:
         samples = []
@@ -675,6 +681,33 @@ def test_representative_route_viewport_benchmark(published_route: Route) -> None
         limits=SpatialQueryLimits(max_routes=500, max_cells=10_000),
     )
     print(f"route_viewport_returned={len(route_result['routes'])}")
+    if connection.vendor == "postgresql":
+        captured: list[tuple[float, str, Any]] = []
+
+        def capture(execute: Any, sql: str, params: Any, many: bool, context: Any) -> Any:
+            started = time.perf_counter()
+            try:
+                return execute(sql, params, many, context)
+            finally:
+                captured.append((time.perf_counter() - started, sql, params))
+
+        cache.clear()
+        with connection.execute_wrapper(capture):
+            query_viewport(
+                west=14.5,
+                south=47.5,
+                east=17.5,
+                north=50.2,
+                zoom=12,
+                limits=SpatialQueryLimits(max_routes=500, max_cells=10_000),
+            )
+        _elapsed, slowest_sql, slowest_params = max(captured, key=lambda item: item[0])
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT postgis_full_version()")
+            print(f"postgis={cursor.fetchone()[0]}")
+            cursor.execute("EXPLAIN (ANALYZE, BUFFERS) " + slowest_sql, slowest_params)
+            print("slowest_route_viewport_query_plan:")
+            print("\n".join(row[0] for row in cursor.fetchall()))
     heatmap_samples = measure(
         lambda: query_viewport(
             west=14.5,
