@@ -2,9 +2,15 @@
 
 BikeMapy stores two derived products alongside the immutable route version:
 
-* `RouteBrowseGeometry` stores one lossy LineString per configured zoom.  The
-  tolerance is half an equatorial Web-Mercator pixel; normalized geometry is
-  still returned for a selected route.
+* `RouteBrowseGeometry` stores one lossy LineString per configured zoom
+  (`SPATIAL_BROWSE_ZOOMS`, default `6,8,10,12,14`).  The tolerance is half an
+  equatorial Web-Mercator pixel; normalized geometry is still returned for a
+  selected route.  A viewport reads only the closest stored zoom at or below
+  its own zoom (`DISTINCT ON`), so above z14 it serves the z14 line: at z16
+  and z18 the simplification kept nearly every vertex of the normalized
+  geometry.  Browse lines are returned with six coordinate decimals (about
+  0.1 m).  After changing the zoom list, run `rebuild_spatial_products`; it
+  also deletes rows for zooms that are no longer configured.
 * `RouteHeatmapCell` and `RouteHeatmapMembership` store a Web-Mercator tile
   grid and the distinct canonical routes crossing each cell.  A publication,
   quarantine, restoration, or removal deletes and rebuilds memberships for

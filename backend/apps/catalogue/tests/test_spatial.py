@@ -37,6 +37,7 @@ from apps.catalogue.services import approve_version, record_route_version, regis
 from apps.catalogue.spatial import (
     SpatialQueryLimits,
     _cell_geometry,
+    _coordinates,
     _line_simplify,
     _tile_xy,
     generate_browse_geometries,
@@ -107,6 +108,37 @@ def test_browse_geometries_are_zoom_specific_and_selected_route_is_full(
     assert selected["geometry"]["coordinates"] == [[16.0, 49.0], [16.1, 49.001], [16.2, 49.0]]
     viewport = query_viewport(west=15.9, south=48.9, east=16.3, north=49.1, zoom=8)
     assert viewport["routes"][0]["geometry"]["coordinates"] == [[16.0, 49.0], [16.2, 49.0]]
+
+
+@override_settings(SPATIAL_BROWSE_ZOOMS="8,12")
+def test_rebuilding_browse_geometries_drops_zooms_that_are_no_longer_configured(
+    published_route: Route,
+) -> None:
+    version = published_route.current_approved_version
+    assert version is not None
+    generate_browse_geometries(version, zooms=(16, 18))
+    generate_browse_geometries(version)
+    rows = RouteBrowseGeometry.objects.filter(version=version).order_by("zoom")
+    assert list(rows.values_list("zoom", flat=True)) == [8, 12]
+
+
+@override_settings(SPATIAL_BROWSE_ZOOMS="8,12")
+def test_viewport_above_the_highest_browse_zoom_serves_that_line_once(
+    published_route: Route,
+) -> None:
+    version = published_route.current_approved_version
+    assert version is not None
+    generate_browse_geometries(version)
+    # A stale row from an earlier configuration must not be served.
+    generate_browse_geometries(version, zooms=(16,))
+    cache.clear()
+    with CaptureQueriesContext(connection) as queries:
+        result = query_viewport(west=15.9, south=48.9, east=16.3, north=49.1, zoom=18)
+    assert [route["id"] for route in result["routes"]] == [str(published_route.pk)]
+    stored = RouteBrowseGeometry.objects.get(version=version, zoom=12)
+    assert len(result["routes"][0]["geometry"]["coordinates"]) == len(_coordinates(stored.geometry))
+    if connection.vendor == "postgresql":
+        assert any("DISTINCT ON" in query["sql"] for query in queries)
 
 
 @override_settings(SPATIAL_BROWSE_ZOOMS="12", SPATIAL_HEATMAP_ZOOMS="5,6")

@@ -41,8 +41,21 @@ def _setting(name: str, default: Any) -> Any:
     return getattr(settings, name, default)
 
 
+# GeoJSON coordinate decimals for browse lines: six decimals of a degree are
+# about 0.1 m, well below the half-pixel simplification tolerance at any
+# stored browse zoom.
+BROWSE_GEOJSON_PRECISION = 6
+
+
 def browse_zooms() -> tuple[int, ...]:
-    value = _setting("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14,16,18")
+    """Zooms that store a simplified browse line.
+
+    Above the highest one the viewport serves that line; at z16 and z18 the
+    simplification kept nearly every vertex, so those rows mostly duplicated
+    the normalized geometry that a selected route already loads.
+    """
+
+    value = _setting("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14")
     if isinstance(value, str):
         values = tuple(sorted({int(item.strip()) for item in value.split(",") if item.strip()}))
     else:
@@ -150,14 +163,21 @@ def simplification_tolerance_m(zoom: int) -> float:
 def generate_browse_geometries(
     version: RouteVersion, *, zooms: tuple[int, ...] | None = None
 ) -> list[RouteBrowseGeometry]:
-    """Generate or replace derived geometries for a route version."""
+    """Generate or replace derived geometries for a route version.
+
+    Without explicit ``zooms`` the configured set is rebuilt and rows for
+    zooms that are no longer configured are removed.
+    """
 
     source = version.normalized_geometry or version.simplified_geometry
     points = _coordinates(source)
     if len(points) < 2:
         return []
+    if zooms is None:
+        zooms = browse_zooms()
+        RouteBrowseGeometry.objects.filter(version=version).exclude(zoom__in=zooms).delete()
     result: list[RouteBrowseGeometry] = []
-    for zoom in zooms or browse_zooms():
+    for zoom in zooms:
         tolerance = simplification_tolerance_m(zoom)
         geometry: Any
         if _GIS_AVAILABLE:
@@ -731,6 +751,7 @@ def _query_routes(
             version_id=OuterRef("current_approved_version_id"),
             geometry__intersects=viewport_geometry,
             zoom__lte=zoom,
+            zoom__in=browse_zooms(),
         ).values("pk")
         candidates = candidates.filter(Exists(relevant_browse_geometry))
     # The SQLite/non-GIS path must retain the configured scan before Python
@@ -761,17 +782,21 @@ def _query_routes(
         if route["current_approved_version_id"] is not None
     ]
     browse_rows = RouteBrowseGeometry.objects.filter(
-        version_id__in=version_ids, zoom__lte=zoom
+        version_id__in=version_ids, zoom__lte=zoom, zoom__in=browse_zooms()
     ).order_by("version_id", "-zoom")
     browse_by_version: dict[Any, Any] = {}
     if _use_postgis():
         from django.contrib.gis.db.models.functions import AsGeoJSON
 
-        annotated_browse_rows = browse_rows.annotate(_geometry_json=AsGeoJSON("geometry")).values(
-            "version_id", "_geometry_json"
+        # DISTINCT ON keeps only the closest stored zoom of each version; the
+        # lower-zoom rows used to be read and then discarded in Python.
+        annotated_browse_rows = (
+            browse_rows.distinct("version_id")
+            .annotate(_geometry_json=AsGeoJSON("geometry", precision=BROWSE_GEOJSON_PRECISION))
+            .values("version_id", "_geometry_json")
         )
         for browse in annotated_browse_rows:
-            browse_by_version.setdefault(browse["version_id"], json.loads(browse["_geometry_json"]))
+            browse_by_version[browse["version_id"]] = json.loads(browse["_geometry_json"])
     else:
         for browse_geometry in browse_rows:
             browse_by_version.setdefault(browse_geometry.version_id, browse_geometry.geometry)
@@ -785,19 +810,25 @@ def _query_routes(
             for version in RouteVersion.objects.filter(pk__in=missing_version_ids)
         }
     rows: list[dict[str, Any]] = []
+    # On PostGIS the candidate query already required a stored browse line
+    # that intersects the viewport, so only the non-GIS path checks bounds.
+    check_bounds = not _use_postgis()
     for route in candidate_routes:
         version_id = route["current_approved_version_id"]
         geometry = browse_by_version.get(version_id)
         geometry = geometry or fallback_geometry_by_version.get(version_id)
-        points = _coordinates(geometry)
-        if (
-            not points
-            or max(p[0] for p in points) < west
-            or min(p[0] for p in points) > east
-            or max(p[1] for p in points) < south
-            or min(p[1] for p in points) > north
-        ):
+        if geometry is None:
             continue
+        if check_bounds:
+            points = _coordinates(geometry)
+            if (
+                not points
+                or max(p[0] for p in points) < west
+                or min(p[0] for p in points) > east
+                or max(p[1] for p in points) < south
+                or min(p[1] for p in points) > north
+            ):
+                continue
         rows.append(_route_values_dict(route, geometry))
         if len(rows) > limits.max_routes:
             break
