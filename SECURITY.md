@@ -93,6 +93,15 @@ documented false positive or accepted, time-bounded risk; record the reason
 and expiry next to the suppression and obtain maintainer review. Never
 baseline a real credential or hide a finding to make a workflow green.
 
+Dependency-audit exceptions live in `.github/audit-exceptions.json`, one entry
+per advisory with `id` (GHSA, CVE or PYSEC), `package`, `reason` and an
+`expires` date. `scripts/check_audit_exceptions.py` passes the active Python
+entries to `pip-audit` and filters `pnpm audit --json` against the frontend
+entries; an expired entry fails both audits until the finding is fixed or the
+exception is renewed with a new reason. When the weekly scheduled run fails,
+the workflow opens or comments on one `security-assurance` issue, and it
+closes that issue after the next passing scheduled run.
+
 ### Client-side discovery state
 
 The discovery UI stores filters, the selected public route ID, and the
