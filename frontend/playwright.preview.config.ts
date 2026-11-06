@@ -2,6 +2,11 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
+  // Retried tests are reported as flaky.
+  retries: process.env.CI ? 1 : 0,
+  reporter: process.env.CI
+    ? [['list'], ['html', { open: 'never', outputFolder: 'playwright-report-preview' }]]
+    : 'list',
   testMatch: 'preview-map.spec.ts',
   use: { baseURL: 'http://127.0.0.1:4174', ...devices['Desktop Chrome'] },
   webServer: {

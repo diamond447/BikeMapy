@@ -23,12 +23,7 @@ from .throttling import AnalyticsEventThrottle
 
 
 def origin_is_allowed(request: Request) -> bool:
-    """Accept configured browser origins, plus requests with no Origin header.
-
-    Same-origin beacon requests and non-browser operators may omit Origin. A
-    supplied Origin must match the configured CORS allow-list (including the
-    explicit preview regexes); this is origin separation, not authentication.
-    """
+    """Accept a missing Origin or one on the CORS allow-list; not authentication."""
 
     origin = request.headers.get("Origin")
     if not origin:
@@ -43,12 +38,7 @@ def origin_is_allowed(request: Request) -> bool:
 
 @method_decorator(csrf_exempt, name="dispatch")
 class AnalyticsEventView(APIView):
-    """Record one allow-listed event without retaining request identifiers.
-
-    This endpoint is CSRF-exempt because it has no authenticated session and
-    its only side effect is an anonymous product counter.  The dedicated
-    global non-IP throttle still bounds accidental or automated bursts.
-    """
+    """Count one allow-listed event; CSRF-exempt because it has no session."""
 
     throttle_classes = [AnalyticsEventThrottle]
 

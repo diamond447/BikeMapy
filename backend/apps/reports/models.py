@@ -10,11 +10,9 @@ from django.utils import timezone
 
 
 class Report(models.Model):
-    """A public report awaiting an explicit owner decision.
+    """A public report awaiting the owner's decision.
 
-    No network address or browser fingerprint is stored here.  The duplicate
-    fingerprint is a one-way digest of the submitted report text and route,
-    and is used only to suppress accidental repeated submissions.
+    ``fingerprint`` is a digest of the route and text, used to drop duplicates.
     """
 
     class Reason(models.TextChoices):
@@ -88,10 +86,3 @@ class ReportAudit(models.Model):
 
     def __str__(self) -> str:
         return f"{self.report_id}: {self.event}"
-
-
-# Public aliases keep the domain vocabulary convenient for API and admin
-# integrations without duplicating the choices in several modules.
-ReportReason = Report.Reason
-ReportStatus = Report.Status
-ReportDecision = Report.Decision

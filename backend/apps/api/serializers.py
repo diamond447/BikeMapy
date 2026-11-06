@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from django.conf import settings
 from django.urls import reverse
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
@@ -134,7 +133,9 @@ class ViewportResponseSerializer(serializers.Serializer):
     truncated = serializers.BooleanField()
 
 
-class RouteSerializer(serializers.ModelSerializer[Route]):
+class RouteSummarySerializer(serializers.ModelSerializer[Route]):
+    """Route fields rendered by the list; the heavy ones are detail-only."""
+
     title = serializers.CharField(source="effective_title", read_only=True)
     categories = serializers.SerializerMethodField()
     distance_m = serializers.DecimalField(
@@ -163,15 +164,11 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
     )
     source_status = serializers.SerializerMethodField()
     sources = serializers.SerializerMethodField()
-    variants = serializers.SerializerMethodField()
-    geometry = serializers.SerializerMethodField()
     reviewed = serializers.SerializerMethodField()
-    elevation_profile = serializers.SerializerMethodField()
-    gpx_download_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Route
-        fields = (
+        fields: tuple[str, ...] = (
             "id",
             "slug",
             "title",
@@ -182,11 +179,7 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
             "loop_status",
             "source_status",
             "sources",
-            "variants",
-            "geometry",
             "reviewed",
-            "elevation_profile",
-            "gpx_download_url",
             "created_at",
             "updated_at",
         )
@@ -223,24 +216,6 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
             for name in ("technical_validity", "source_context", "content_suitability")
         )
 
-    @extend_schema_field(ElevationProfilePointSerializer(many=True, allow_null=True))
-    def get_elevation_profile(self, route: Route) -> list[dict[str, float]] | None:
-        profile = getattr(route.current_approved_version, "elevation_profile", None)
-        return profile or None
-
-    @extend_schema_field(serializers.URLField(allow_null=True))
-    def get_gpx_download_url(self, route: Route) -> str | None:
-        """Never expose a download URL until legal redistribution is approved."""
-
-        if not getattr(settings, "GPX_REDISTRIBUTION_APPROVED", False):
-            return None
-        version = route.current_approved_version
-        if version is None or not version.original_gpx_storage_key:
-            return None
-        request = self.context.get("request")
-        path = reverse("public-route-gpx", kwargs={"route_id": route.pk})
-        return request.build_absolute_uri(path) if request else path
-
     def _route_sources(self, route: Route) -> list[RouteSource]:
         direct = list(getattr(route, "public_sources", route.sources.all()))
         merged = [link.source for link in getattr(route, "public_source_merges", []) if link.active]
@@ -258,6 +233,51 @@ class RouteSerializer(serializers.ModelSerializer[Route]):
             list[dict[str, Any]],
             SourceAttributionSerializer(self._route_sources(route), many=True).data,
         )
+
+
+class RouteSerializer(RouteSummarySerializer):
+    """Full public route detail."""
+
+    variants = serializers.SerializerMethodField()
+    geometry = serializers.SerializerMethodField()
+    elevation_profile = serializers.SerializerMethodField()
+    gpx_download_url = serializers.SerializerMethodField()
+
+    class Meta(RouteSummarySerializer.Meta):
+        fields = (
+            "id",
+            "slug",
+            "title",
+            "categories",
+            "distance_m",
+            "ascent_m",
+            "descent_m",
+            "loop_status",
+            "source_status",
+            "sources",
+            "variants",
+            "geometry",
+            "reviewed",
+            "elevation_profile",
+            "gpx_download_url",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+    @extend_schema_field(ElevationProfilePointSerializer(many=True, allow_null=True))
+    def get_elevation_profile(self, route: Route) -> list[dict[str, float]] | None:
+        profile = getattr(route.current_approved_version, "elevation_profile", None)
+        return profile or None
+
+    @extend_schema_field(serializers.URLField(allow_null=True))
+    def get_gpx_download_url(self, route: Route) -> str | None:
+        version = route.current_approved_version
+        if version is None or not version.original_gpx_storage_key:
+            return None
+        request = self.context.get("request")
+        path = reverse("public-route-gpx", kwargs={"route_id": route.pk})
+        return request.build_absolute_uri(path) if request else path
 
     @extend_schema_field(VariantSerializer(many=True))
     def get_variants(self, route: Route) -> list[dict[str, Any]]:

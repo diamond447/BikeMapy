@@ -103,16 +103,43 @@ def test_route_list_is_paginated_and_filters_public_metadata(public_route: Route
     assert item["id"] == str(public_route.pk)
     assert item["title"] == "Brno gravel loop"
     assert item["categories"][0]["slug"] == "gravel"
-    assert item["geometry"] is None
     assert item["sources"][0]["mapy_url"] == "https://mapy.com/s/public-route"
     assert "original_gpx_storage_key" not in item["sources"][0]
+    # Detail-only payloads stay out of the list: the profile alone dominated
+    # the size of a page.
+    for detail_field in ("geometry", "elevation_profile", "variants", "gpx_download_url"):
+        assert detail_field not in item
+
+
+def test_route_detail_loads_geometry_only_when_requested(public_route: Route) -> None:
+    with CaptureQueriesContext(connection) as queries:
+        payload = Client().get(f"/api/v1/routes/{public_route.pk}/").json()
+    assert payload["elevation_profile"]
+    route_sql = [query["sql"] for query in queries if 'FROM "catalogue_route"' in query["sql"]]
+    assert route_sql
+    assert all("normalized_geometry" not in sql for sql in route_sql)
+
+
+def test_route_list_does_not_load_heavy_version_columns(public_route: Route) -> None:
+    with CaptureQueriesContext(connection) as queries:
+        response = Client().get("/api/v1/routes/?author=route-author&category=gravel")
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    route_sql = [query["sql"] for query in queries if 'FROM "catalogue_route"' in query["sql"]]
+    assert route_sql
+    for sql in route_sql:
+        assert "elevation_profile" not in sql
+        assert "normalized_geometry" not in sql
+        assert "DISTINCT" not in sql.upper()
 
 
 def test_route_detail_resolves_stable_id_and_slug(public_route: Route) -> None:
     client = Client()
     response = client.get(f"/api/v1/routes/{public_route.pk}/")
     assert response.status_code == 200
-    assert response.json()["geometry"]["coordinates"][0] == [16.6, 49.2]
+    assert response.json()["geometry"] is None
+    with_geometry = client.get(f"/api/v1/routes/{public_route.pk}/?include=geometry")
+    assert with_geometry.json()["geometry"]["coordinates"][0] == [16.6, 49.2]
     by_slug = client.get(f"/api/v1/routes/by-slug/{public_route.slug}/")
     assert by_slug.status_code == 200
     assert by_slug.json()["id"] == str(public_route.pk)
@@ -133,17 +160,10 @@ def test_detail_exposes_profile_and_keeps_review_badge_narrow(public_route: Rout
     assert payload["reviewed"] is True
 
 
-def test_gpx_download_contract_is_closed_before_legal_approval(public_route: Route) -> None:
-    with override_settings(GPX_REDISTRIBUTION_APPROVED=False):
-        response = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
-    assert response.status_code == 404
-    assert Client().get(f"/api/v1/routes/{public_route.pk}/").json()["gpx_download_url"] is None
-
-
 def test_gpx_download_uses_backend_origin_and_serves_only_existing_payload(
     public_route: Route, tmp_path: Path
 ) -> None:
-    with override_settings(GPX_REDISTRIBUTION_APPROVED=True, MEDIA_ROOT=tmp_path):
+    with override_settings(MEDIA_ROOT=tmp_path):
         payload = Client().get(f"/api/v1/routes/{public_route.pk}/").json()
         assert payload["gpx_download_url"] == (
             f"http://testserver/api/v1/routes/{public_route.pk}/gpx/"
@@ -161,11 +181,7 @@ def test_gpx_download_uses_backend_origin_and_serves_only_existing_payload(
 
 
 def test_gpx_download_can_use_internal_proxy_handoff(public_route: Route, tmp_path: Path) -> None:
-    with override_settings(
-        GPX_REDISTRIBUTION_APPROVED=True,
-        GPX_INTERNAL_REDIRECT=True,
-        MEDIA_ROOT=tmp_path,
-    ):
+    with override_settings(GPX_INTERNAL_REDIRECT=True, MEDIA_ROOT=tmp_path):
         default_storage.save("gpx/public-api-route.gpx", ContentFile(b"<gpx />"))
         response = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
     assert response.status_code == 200
@@ -314,6 +330,10 @@ def test_postgres_route_search_uses_tsvector_match_not_rank_threshold(
     assert "ts_rank" in query
     where_clause = query[query.find("WHERE") : query.find("ORDER BY")]
     assert "ts_rank" not in where_clause
+    # Thread and author matches are uncorrelated IN subqueries, which
+    # PostgreSQL hashes once; a correlated EXISTS under the OR ran per route.
+    assert "EXISTS" not in where_clause
+    assert " IN (SELECT" in where_clause
 
 
 def test_openapi_contract_contains_versioned_read_endpoints(tmp_path: Path) -> None:
@@ -341,6 +361,37 @@ def test_viewport_endpoint_requires_bounds_and_returns_bounded_data(public_route
     assert truncated.status_code == 200
     assert truncated.json()["routes"] == []
     assert truncated.json()["truncated"] is True
+
+
+def test_viewport_responses_are_cacheable_and_revalidate(public_route: Route) -> None:
+    client = Client()
+    url = "/api/v1/routes/viewport/?west=16.5&south=49.1&east=16.8&north=49.3&zoom=12"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert first["Cache-Control"] == "public, max-age=60"
+    etag = first["ETag"]
+    assert etag.startswith('"') and etag.endswith('"')
+
+    not_modified = client.get(url, HTTP_IF_NONE_MATCH=f'W/"other", {etag}')
+    assert not_modified.status_code == 304
+    assert not_modified.content == b""
+    assert not_modified["ETag"] == etag
+
+    # A change to the catalogue changes the payload, so the old ETag misses.
+    public_route.display_title = "Renamed gravel loop"
+    public_route.save(update_fields=["display_title", "updated_at"])
+    cache.clear()
+    changed = client.get(url, HTTP_IF_NONE_MATCH=etag)
+    assert changed.status_code == 200
+    assert changed["ETag"] != etag
+
+
+@override_settings(SPATIAL_HTTP_MAX_AGE=15)
+def test_viewport_http_lifetime_is_configurable(public_route: Route) -> None:
+    response = Client().get(
+        "/api/v1/routes/viewport/?west=16.5&south=49.1&east=16.8&north=49.3&zoom=12"
+    )
+    assert response["Cache-Control"] == "public, max-age=15"
 
 
 def test_viewport_endpoint_applies_catalogue_filters(public_route: Route) -> None:

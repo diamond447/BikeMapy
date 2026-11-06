@@ -168,8 +168,6 @@ def main() -> None:
             page_number=1,
             last_successful_at=now,
         )
-        # Include durable ingestion state so the snapshot exercises more than
-        # the public catalogue tables.
         AnalyticsCounter.objects.create(
             day=now.date(), event=AnalyticsCounter.Event.ROUTE_DETAIL_VIEW, count=1
         )

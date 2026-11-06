@@ -13,13 +13,7 @@ export interface paths {
     }
     get?: never
     put?: never
-    /**
-     * @description Record one allow-listed event without retaining request identifiers.
-     *
-     *     This endpoint is CSRF-exempt because it has no authenticated session and
-     *     its only side effect is an anonymous product counter.  The dedicated
-     *     global non-IP throttle still bounds accidental or automated bursts.
-     */
+    /** @description Count one allow-listed event; CSRF-exempt because it has no session. */
     post: operations['v1_analytics_events_create']
     delete?: never
     options?: never
@@ -83,7 +77,7 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /** @description Serve a GPX payload only after the deployment's legal gate is enabled. */
+    /** @description Serve a route's GPX file. */
     get: operations['v1_routes_gpx_retrieve']
     put?: never
     post?: never
@@ -186,7 +180,7 @@ export interface components {
      * @enum {string}
      */
     ModeEnum: 'heatmap' | 'routes'
-    PaginatedRouteList: {
+    PaginatedRouteSummaryList: {
       /** @example 123 */
       count: number
       /**
@@ -199,7 +193,7 @@ export interface components {
        * @example http://api.example.org/accounts/?page=2
        */
       previous?: string | null
-      results: components['schemas']['Route'][]
+      results: components['schemas']['RouteSummary'][]
     }
     /**
      * @description * `incorrect_route` - Incorrect route
@@ -221,6 +215,7 @@ export interface components {
       turnstile_token: string
       website?: string
     }
+    /** @description Full public route detail. */
     Route: {
       /** Format: uuid */
       readonly id: string
@@ -246,6 +241,28 @@ export interface components {
       readonly elevation_profile: components['schemas']['ElevationProfilePoint'][] | null
       /** Format: uri */
       readonly gpx_download_url: string | null
+      /** Format: date-time */
+      readonly created_at: string
+      /** Format: date-time */
+      readonly updated_at: string
+    }
+    /** @description Route fields rendered by the list; the heavy ones are detail-only. */
+    RouteSummary: {
+      /** Format: uuid */
+      readonly id: string
+      readonly slug: string
+      readonly title: string
+      readonly categories: components['schemas']['Category'][]
+      /** Format: decimal */
+      readonly distance_m: string | null
+      /** Format: decimal */
+      readonly ascent_m: string | null
+      /** Format: decimal */
+      readonly descent_m: string | null
+      readonly loop_status: string
+      readonly source_status: string
+      readonly sources: components['schemas']['SourceAttribution'][]
+      readonly reviewed: boolean
       /** Format: date-time */
       readonly created_at: string
       /** Format: date-time */
@@ -365,14 +382,17 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['PaginatedRouteList']
+          'application/json': components['schemas']['PaginatedRouteSummaryList']
         }
       }
     }
   }
   v1_routes_retrieve: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description Set to `geometry` to embed the full normalized geometry. It is null otherwise; map clients read it from the geometry endpoint. */
+        include?: 'geometry'
+      }
       header?: never
       path: {
         route_id: string
@@ -432,7 +452,7 @@ export interface operations {
           'application/gpx+xml': string
         }
       }
-      /** @description GPX redistribution is unavailable. */
+      /** @description GPX download is unavailable. */
       404: {
         headers: {
           [name: string]: unknown
@@ -490,7 +510,10 @@ export interface operations {
   }
   v1_routes_by_slug_retrieve: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description Set to `geometry` to embed the full normalized geometry. It is null otherwise; map clients read it from the geometry endpoint. */
+        include?: 'geometry'
+      }
       header?: never
       path: {
         slug: string

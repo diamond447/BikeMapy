@@ -1,9 +1,7 @@
-"""Polite, resumable ingestion of server-rendered BikeForum pages.
+"""Polite, resumable crawling of BikeForum pages.
 
-The crawler deliberately has two replaceable seams: ``PageFetcher`` handles
-network policy and ``BikeForumParser`` handles forum markup.  Persistence is
-performed one page at a time, which makes a stopped Celery worker safe to
-resume from the last committed checkpoint.
+``PageFetcher`` handles the network and ``BikeForumParser`` the markup. Each
+page is committed on its own, so a stopped worker resumes where it left off.
 """
 
 from __future__ import annotations
@@ -113,11 +111,6 @@ class BikeForumParser(ABC):
     def parse(self, body: str, url: str) -> ParsedThread:
         raise NotImplementedError
 
-    # Named alias keeps the contract convenient for adapters that use the
-    # forum-specific term "thread".
-    def parse_thread(self, body: str, url: str) -> ParsedThread:
-        return self.parse(body, url)
-
 
 def _text(node: Any) -> str:
     return " ".join(node.get_text(" ", strip=True).split()) if node else ""
@@ -174,8 +167,7 @@ def _configured_origin(url: str) -> tuple[str, str, int | None]:
         parsed = urlparse(url)
     except ValueError as exc:
         raise CrawlError(f"Unsafe crawl URL: {url}") from exc
-    # Reject userinfo even when it is empty (``https://@host``).  Empty
-    # parsed.username is otherwise indistinguishable from no userinfo.
+    # Also rejects empty userinfo (``https://@host``).
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or "@" in parsed.netloc:
         raise CrawlError(f"Unsafe crawl URL: {url}")
     try:
@@ -219,12 +211,7 @@ def _posted_at(value: str) -> datetime | None:
 
 
 class BeautifulSoupBikeForumParser(BikeForumParser):
-    """Parse Bike-Forum's server-rendered listings and comment-based threads.
-
-    The ``span.title``/``li.clearfix`` listing and ``div.comment`` post
-    selectors mirror the current public HTML while the generic selectors keep
-    the adapter useful for compatible forum snapshots.
-    """
+    """Parse Bike-Forum's listings and comment-based threads."""
 
     def parse(self, body: str, url: str) -> ParsedThread:
         soup = BeautifulSoup(body, "lxml")
@@ -246,11 +233,11 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             if not post_id and raw_node_id:
                 post_id = re.sub(r"^(?:post|p|comment)[-_]", "", raw_node_id)
             anchor = node.select_one("a.permalink, a[href*='#'], a[data-post-url]")
-            post_url = (
-                _absolute(url, str(anchor.get("href", "")))
-                if anchor
-                else f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
-            )
+            fallback_post_url = f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
+            post_url = _absolute(url, str(anchor.get("href", ""))) if anchor else ""
+            # A link written inside a post must not become its attribution URL.
+            if not post_url or not _same_origin(url, post_url):
+                post_url = fallback_post_url
             author_node = node.select_one("[data-author], .author, .username, .user")
             author = _text(author_node)
             author_id = str(author_node.get("data-author-id", "")) if author_node else ""
@@ -264,6 +251,8 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             author_url = (
                 _absolute(url, str(author_url_node.get("href", ""))) if author_url_node else ""
             )
+            if author_url and not _same_origin(url, author_url):
+                author_url = ""
             time_node = node.select_one("time[datetime], time, [data-posted-at]")
             posted_value = str(time_node.get("datetime", "")) if time_node else ""
             posted_value = posted_value or (
@@ -486,8 +475,7 @@ class HttpxPageFetcher(PageFetcher):
             return False
         expiry = cached.body_expires_at
         if expiry is None:
-            # This fallback keeps rows created before the expiry migration safe
-            # until the migration or the next model save supplies the deadline.
+            # Rows created before body_expires_at existed.
             retention = configured_body_retention_seconds()
             expiry = cached.fetched_at + timedelta(seconds=retention)
         return expiry > now
@@ -558,9 +546,7 @@ class HttpxPageFetcher(PageFetcher):
         for _redirect in range(4):
             for attempt in range(self.retries + 1):
                 try:
-                    # DNS is resolved and pacing is enforced immediately
-                    # before every network attempt, including retries.  A
-                    # DNS answer can change while a retry is pending.
+                    # Check DNS again before every attempt; it can change.
                     self._validate_url(current)
                     self._wait()
                     response = _bounded_http_response(
@@ -583,9 +569,7 @@ class HttpxPageFetcher(PageFetcher):
                                 status_code=200,
                                 from_cache=True,
                             )
-                        # Retention deliberately leaves validators behind. A
-                        # metadata-only 304 cannot be parsed, so retry without
-                        # validators to obtain a fresh body.
+                        # The body was cleared but its validators kept: refetch.
                         if "If-None-Match" in headers or "If-Modified-Since" in headers:
                             headers.pop("If-None-Match", None)
                             headers.pop("If-Modified-Since", None)
@@ -807,6 +791,14 @@ def import_thread(
         )
         thread.save(update_fields=["title", "external_id", "locality"])
     result.threads = int(thread_created)
+    # Batch the denylist lookup and the authors' last-seen update per page.
+    page_source_urls = {url for post_data in thread_data.posts for url in post_data.source_urls}
+    denied_source_urls = set(
+        SourceDenylistEntry.objects.filter(
+            source_url__in=page_source_urls, active=True
+        ).values_list("source_url", flat=True)
+    )
+    seen_author_ids: set[int] = set()
     for post_data in thread_data.posts:
         author = None
         if post_data.author:
@@ -819,10 +811,10 @@ def import_thread(
                 **lookup,
                 defaults={"username": post_data.author, "profile_url": post_data.author_url},
             )
-            author.last_seen_at = timezone.now()
             if post_data.author_url and author.profile_url != post_data.author_url:
                 author.profile_url = post_data.author_url
-            author.save(update_fields=["last_seen_at", "profile_url"])
+                author.save(update_fields=["profile_url"])
+            seen_author_ids.add(author.pk)
             result.authors += int(author_created)
         post, post_created = ForumPost.objects.get_or_create(
             url=post_data.url,
@@ -849,13 +841,15 @@ def import_thread(
                 setattr(post, name, value)
                 changed.append(name)
         if post_data.content:
-            post.content_hash = hashlib.sha256(post_data.content.encode()).hexdigest()
-            changed.append("content_hash")
+            content_hash = hashlib.sha256(post_data.content.encode()).hexdigest()
+            if post.content_hash != content_hash:
+                post.content_hash = content_hash
+                changed.append("content_hash")
         if changed:
             post.save(update_fields=changed)
         result.posts += int(post_created)
         for source_url in post_data.source_urls:
-            if SourceDenylistEntry.objects.filter(source_url=source_url, active=True).exists():
+            if source_url in denied_source_urls:
                 result.denied += 1
                 continue
             source = RouteSource.objects.select_related("route").filter(mapy_url=source_url).first()
@@ -889,6 +883,8 @@ def import_thread(
                 result.errors.append(f"Could not attach source {source_url}: {exc}")
                 if route_created and not route.sources.exists():
                     route.delete()
+    if seen_author_ids:
+        ForumAuthor.objects.filter(pk__in=seen_author_ids).update(last_seen_at=timezone.now())
     thread.last_crawled_at = timezone.now()
     thread.save(update_fields=["last_crawled_at"])
     return result
@@ -902,8 +898,7 @@ def _enqueue(task: CrawlTask, urls: list[str]) -> None:
     for url in urls:
         if not url:
             continue
-        # URL validation happens before network access; this also prevents an
-        # untrusted page from growing a frontier outside the configured host.
+        # Keep the frontier on the configured origins.
         _configured_origin(url)
         host = urlparse(url).hostname or ""
         try:
@@ -924,9 +919,7 @@ def _claim_page(
     task: CrawlTask, *, lease_until: datetime, max_attempts: int
 ) -> CrawlPageWork | None:
     now = timezone.now()
-    # A worker can disappear after claiming its final allowed attempt.  Make
-    # that durable state terminal before selecting more work so a takeover
-    # never grants the same page an implicit extra retry.
+    # A worker that died on the last attempt must not earn the page an extra one.
     over_limit = list(
         CrawlPageWork.objects.select_for_update().filter(
             task=task,
@@ -941,8 +934,7 @@ def _claim_page(
         item.last_error = item.last_error or "Page retry limit exhausted"
         item.save(update_fields=["status", "finished_at", "lease_until", "last_error"])
     work = None
-    # Freshly discovered siblings always run before retries of an older
-    # failure; a poison page therefore cannot starve the frontier.
+    # New pages first, so one failing page cannot starve the frontier.
     for query in (
         models.Q(status=CrawlPageStatus.QUEUED, attempts__lt=max_attempts),
         models.Q(
@@ -1293,8 +1285,3 @@ def run_crawl(
         "frontier_remaining": remaining,
         "extractions_queued": total_extractions_queued,
     }
-
-
-# Stable adapter names for callers that do not need the implementation detail.
-HttpxFetcher = HttpxPageFetcher
-BeautifulSoupParser = BeautifulSoupBikeForumParser

@@ -57,6 +57,17 @@ describe('Pages metadata functions', () => {
     expect(html).not.toContain('content="generic"')
   })
 
+  it('does not expand replacement patterns from route titles', () => {
+    const html = renderRouteDocument(
+      '<html><head><title>BikeMapy</title></head><body><script src="/app.js"></script></body></html>',
+      { id: routeId, slug: 'south-ridge', title: "Ridge $' $` $& $$" },
+      'https://rides.example.test',
+    )
+    expect(html).toContain('<title>Ridge $&#39; $` $&amp; $$ · BikeMapy</title>')
+    expect(html.match(/<script/g)).toHaveLength(1)
+    expect(html.match(/<body>/g)).toHaveLength(1)
+  })
+
   it('serves route metadata through the Pages request handler', async () => {
     const next = vi
       .fn()
@@ -80,6 +91,44 @@ describe('Pages metadata functions', () => {
       next,
     })
     expect(await response.text()).toContain('<title>South Ridge · BikeMapy</title>')
+    expect(next).toHaveBeenCalledOnce()
+  })
+
+  it('requests the shell while the route metadata is still loading', async () => {
+    let resolveFetch: (response: Response) => void = () => undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve
+          }),
+      ),
+    )
+    const next = vi
+      .fn()
+      .mockResolvedValue(new Response('<html><head><title>BikeMapy</title></head></html>'))
+    const pending = onRouteRequest({
+      request: new Request(`https://rides.example.test/?route=${routeId}`),
+      env: { PUBLIC_API_ORIGIN: 'https://api.example.test' },
+      next,
+    })
+    await vi.waitFor(() => expect(next).toHaveBeenCalledOnce())
+    resolveFetch(new Response(JSON.stringify({ id: routeId, slug: 'south-ridge', title: 'Ridge' })))
+    expect(await (await pending).text()).toContain('<title>Ridge · BikeMapy</title>')
+    expect(next).toHaveBeenCalledOnce()
+  })
+
+  it('serves the shell once when the metadata request fails', async () => {
+    const fallbackBody = '<html><head><title>BikeMapy</title></head></html>'
+    const next = vi.fn().mockResolvedValue(new Response(fallbackBody))
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new TypeError('offline')))
+    const response = await onRouteRequest({
+      request: new Request(`https://rides.example.test/?route=${routeId}`),
+      env: { PUBLIC_API_ORIGIN: 'https://api.example.test' },
+      next,
+    })
+    expect(await response.text()).toBe(fallbackBody)
     expect(next).toHaveBeenCalledOnce()
   })
 

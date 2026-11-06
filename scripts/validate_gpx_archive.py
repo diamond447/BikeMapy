@@ -30,9 +30,7 @@ def main(argv: list[str]) -> int:
     archive = argv[1]
     try:
         with open(archive, "rb") as raw_archive:
-            # Keep the gzip layer explicit: tarfile can finish after the last
-            # member without consuming the gzip trailer. Reading to EOF makes
-            # truncated data and a bad CRC fail before restore mutates storage.
+            # Read the gzip stream to EOF so a truncated archive or bad CRC fails.
             with gzip.GzipFile(fileobj=raw_archive, mode="rb") as compressed:
                 with tarfile.open(fileobj=compressed, mode="r:") as stream:
                     for member in stream:

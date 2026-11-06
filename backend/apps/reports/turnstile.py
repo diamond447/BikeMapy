@@ -27,7 +27,6 @@ class TurnstileVerifier:
             response.raise_for_status()
             payload: Any = response.json()
         except Exception:
-            # Verification is security-critical: provider/network failures
-            # must reject the submission rather than degrade to an allow.
+            # Fail closed.
             return False
         return bool(isinstance(payload, dict) and payload.get("success") is True)

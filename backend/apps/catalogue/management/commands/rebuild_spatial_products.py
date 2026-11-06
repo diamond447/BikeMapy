@@ -1,9 +1,26 @@
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connection
 
-from apps.catalogue.models import Route
+from apps.catalogue.models import (
+    Route,
+    RouteBrowseGeometry,
+    RouteHeatmapCell,
+    RouteHeatmapMembership,
+)
 from apps.catalogue.spatial import generate_browse_geometries, refresh_route_heatmap
+
+# Analysed after a rebuild: stale statistics made viewport queries ~95x slower.
+ANALYZED_MODELS = (Route, RouteBrowseGeometry, RouteHeatmapCell, RouteHeatmapMembership)
+
+
+def analyze_spatial_tables() -> None:
+    if connection.vendor != "postgresql":
+        return
+    tables = ", ".join(connection.ops.quote_name(model._meta.db_table) for model in ANALYZED_MODELS)
+    with connection.cursor() as cursor:
+        cursor.execute(f"ANALYZE {tables}")
 
 
 class Command(BaseCommand):
@@ -33,6 +50,7 @@ class Command(BaseCommand):
                     rebuilt_versions += 1
                 refresh_route_heatmap(route)
                 rebuilt_routes += 1
+        analyze_spatial_tables()
         self.stdout.write(
             self.style.SUCCESS(
                 f"Rebuilt spatial products for {rebuilt_routes} routes and "

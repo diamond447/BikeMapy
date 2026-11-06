@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { GeoJSONSource, Map as MapLibreMap } from 'maplibre-gl'
 import { MAP_PROVIDER } from '../mapProvider'
+import { loadMapLibre } from '../mapLibreLoader'
 import { setMapLibreWorker } from '../maplibreWorker'
 import { geometryBounds } from './geometry'
 import type { Geometry, ViewState, SpatialRoute, ViewportResponse } from './types'
@@ -86,7 +87,7 @@ export function useMapStage({
     let map: MapLibreMap | null = null
     let mapResizeObserver: ResizeObserver | undefined
     let disposed = false
-    import('maplibre-gl')
+    loadMapLibre()
       .then(async (maplibregl) => {
         if (disposed || !mapNode.current) return
         if (disposed || !mapNode.current) return

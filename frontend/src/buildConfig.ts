@@ -17,9 +17,7 @@ function isInvalidApiHostname(hostname: string): boolean {
     return true
   }
 
-  // URL canonicalization turns IPv4, IPv6, and IPv4-mapped IPv6 literals into
-  // stable forms. Reject every literal instead of maintaining an incomplete
-  // list of private and special-use ranges.
+  // Reject every IP literal rather than list the private ranges.
   if (dnsName.includes(':') || /^(?:\d{1,3}\.){3}\d{1,3}$/.test(dnsName)) {
     return true
   }

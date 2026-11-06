@@ -6,12 +6,7 @@ from django.db import models
 
 
 class AnalyticsCounter(models.Model):
-    """A count of one allow-listed event for one local calendar day.
-
-    The model deliberately has no route, session, user, IP address, user agent,
-    or arbitrary metadata field.  It is therefore useful for aggregate product
-    signals while remaining unable to reconstruct an individual visit.
-    """
+    """A daily count of one allow-listed event, with nothing about the visitor."""
 
     class Event(models.TextChoices):
         ROUTE_DETAIL_VIEW = "route_detail_view", "Route-detail view"

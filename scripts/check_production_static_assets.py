@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test Django Admin static assets through the production proxy.
-
-The script builds the current backend image, runs the production Compose file
-with disposable PostGIS/Redis services, and requests the assets from Nginx.
-It is intentionally independent of a registry image so CI tests the image
-that was just built, including its collectstatic layer.
-"""
+"""Build the backend image and fetch Django Admin static files through Nginx."""
 
 from __future__ import annotations
 
@@ -80,7 +74,6 @@ def write_runtime_env(path: Path, image: str) -> None:
         "CELERY_BROKER_URL": "redis://redis:6379/0",
         "CELERY_RESULT_BACKEND": "redis://redis:6379/0",
         "GITHUB_OWNER_IDS": "",
-        "GPX_REDISTRIBUTION_APPROVED": "false",
         "GPX_INTERNAL_REDIRECT": "false",
     }
     path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
@@ -139,10 +132,6 @@ def main() -> int:
                 "run",
                 "--rm",
                 "backend",
-                "uv",
-                "run",
-                "--locked",
-                "--no-dev",
                 "python",
                 "backend/manage.py",
                 "migrate",

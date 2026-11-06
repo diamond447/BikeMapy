@@ -8,18 +8,14 @@ COMPOSE="${COMPOSE:-$(dirname "$0")/compose.sh}"
 GPX_VOLUME="${GPX_VOLUME:-bikemapy_gpx_data}"
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
-# Lean mode (compose.lean.yml) has no worker, beat or Redis. Act only on the
-# services present in the active Compose model so a backup or restore never
-# starts them.
+# Only the services of the active model; lean mode has no worker, beat or Redis.
 active_services() { $COMPOSE config --services | grep -xE "$1" | tr '\n' ' '; }
 writers="$(active_services 'backend|worker|beat')"
 mkdir -p "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
 failure_marker="$BACKUP_DIR/backup-failed-${BACKUP_ID}"
 services_stopped=0
-# Capture the exact image reference before stopping writers. The environment
-# may already select a release candidate, but a backup failure must bring the
-# version that was serving traffic back instead of starting that candidate.
+# On failure, restart the image that was serving, not a selected candidate.
 previous_backend_image=""
 backend_container="$($COMPOSE ps -q backend 2>/dev/null || true)"
 if [[ -n "$backend_container" ]]; then

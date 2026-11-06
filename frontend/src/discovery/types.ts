@@ -1,6 +1,9 @@
 import type { components } from '../api/generated/schema'
 
-export type Route = components['schemas']['Route']
+export type RouteRecord = components['schemas']['Route']
+export type RouteSummary = components['schemas']['RouteSummary']
+/** The list summary, plus the detail fields once the selected route's detail loads. */
+export type Route = RouteSummary & Partial<Omit<RouteRecord, keyof RouteSummary>>
 export type SpatialRoute = components['schemas']['SpatialRoute']
 export type ViewportResponse = components['schemas']['ViewportResponse']
 export type Geometry = NonNullable<SpatialRoute['geometry']>

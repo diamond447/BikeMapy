@@ -11,9 +11,7 @@ trap cleanup EXIT INT TERM
 mkfifo "$error_pipe"
 awk '
   function escape(value) {
-    # Nginx native diagnostics may contain client addresses, request queries,
-    # bearer/token values, and upstream URLs. Keep only the path and redact
-    # those fields before serializing the diagnostic line.
+    # Redact addresses, queries, tokens and upstream URLs from Nginx errors.
     gsub(/\?[^ ]*/, "", value)
     gsub(/[Tt][Oo][Kk][Ee][Nn][=:][^ ,]*/, "token=[REDACTED]", value)
     gsub(/[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[^ ,]*/, "authorization:[REDACTED]", value)

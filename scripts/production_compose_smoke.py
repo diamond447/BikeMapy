@@ -87,16 +87,12 @@ def trigger_unexpected_exit(container: str, service: str) -> None:
         "            continue\n"
         f"        if {marker!r} in command: targets.append(int(pid))\n"
         "if not targets: raise SystemExit('service process not found')\n"
-        "os.kill(targets[0], signal.SIGKILL)"
+        "os.kill(min(targets), signal.SIGKILL)"
     )
     command = [
         "docker",
         "exec",
         container,
-        "uv",
-        "run",
-        "--locked",
-        "--no-dev",
         "python",
         "-c",
         python,
@@ -120,9 +116,7 @@ def verify_restart_after_failure(compose: list[str], service: str, timeout: floa
         ],
         capture=True,
     )
-    # A direct `docker kill` is treated as an operator stop by the daemon and
-    # intentionally suppresses an `unless-stopped` restart. Stop the service
-    # process from inside its container to model an unexpected failure.
+    # `docker kill` counts as an operator stop and skips the restart policy.
     trigger_unexpected_exit(container, service)
     deadline = time.monotonic() + timeout
     last_state = ""
@@ -259,10 +253,6 @@ def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> Non
                 "run",
                 "--rm",
                 "backend",
-                "uv",
-                "run",
-                "--locked",
-                "--no-dev",
                 "python",
                 "backend/manage.py",
                 "migrate",
@@ -366,10 +356,6 @@ def wait_for_nested_proxy(compose: list[str], docker: str, daemon: str, image: s
                     "--network",
                     f"container:{proxy}",
                     image,
-                    "uv",
-                    "run",
-                    "--locked",
-                    "--no-dev",
                     "python",
                     "-c",
                     probe,
@@ -422,7 +408,6 @@ def main() -> None:
                     f"PUBLIC_HOST={PUBLIC_HOST}",
                     "USE_X_FORWARDED_HOST=false",
                     "CORS_ALLOWED_ORIGINS=https://compose-smoke.example.invalid",
-                    "GPX_REDISTRIBUTION_APPROVED=false",
                     "GPX_INTERNAL_REDIRECT=false",
                     "BIKEFORUM_DNS_CHECK=false",
                     "BIKEFORUM_CHECK_SOURCES=false",
@@ -464,10 +449,6 @@ def main() -> None:
                     "run",
                     "--rm",
                     "backend",
-                    "uv",
-                    "run",
-                    "--locked",
-                    "--no-dev",
                     "python",
                     "backend/manage.py",
                     "migrate",

@@ -48,11 +48,12 @@ def owner(github_id: str = "12345") -> Any:
     return user
 
 
-def oauth_session(client: Client, uid: str = "12345") -> None:
+def oauth_session(client: Client, user: Any, uid: str = "12345") -> None:
+    # allauth >= 65.21 only records authentications bound to a signed-in user.
     session = client.session
     record_authentication(
         type("Request", (), {"session": session})(),
-        None,
+        user,
         "socialaccount",
         provider="github",
         uid=uid,
@@ -167,7 +168,7 @@ def test_workflow_models_are_not_directly_mutable_or_deletable() -> None:
     user = owner()
     request = Client().get("/").wsgi_request
     request.user = user
-    oauth_session(Client(), "12345")
+    oauth_session(Client(), user, "12345")
     for model in (
         RouteSource,
         RouteVersion,
@@ -343,7 +344,7 @@ def test_admin_denylist_restore_post_uses_actor_and_reason() -> None:
         )
         client = Client()
         client.force_login(user)
-        oauth_session(client)
+        oauth_session(client, user)
         response = client.post(
             f"/admin/catalogue/sourcedenylistentry/{entry.pk}/restore/",
             {"reason": "reviewed takedown"},
@@ -354,3 +355,24 @@ def test_admin_denylist_restore_post_uses_actor_and_reason() -> None:
     assert ModerationDecision.objects.filter(
         action="denylist_restore", actor=user, reason="reviewed takedown"
     ).exists()
+
+
+@pytest.mark.parametrize(
+    ("background_jobs", "mode", "cache"), [(True, "Full", "Redis"), (False, "Lean", "PostgreSQL")]
+)
+def test_admin_index_shows_the_deployment_mode(
+    background_jobs: bool, mode: str, cache: str
+) -> None:
+    user = owner()
+    with override_settings(
+        GITHUB_OWNER_IDS=frozenset({"12345"}), BACKGROUND_JOBS_ENABLED=background_jobs
+    ):
+        client = Client()
+        client.force_login(user)
+        oauth_session(client, user)
+        response = client.get("/admin/")
+    assert response.status_code == 200
+    panel = response.content.decode().split('id="deployment-mode"', 1)[1].split("</div>", 1)[0]
+    assert f"<td>{mode}</td>" in panel
+    assert f"<td>{cache}</td>" in panel
+    assert ("Periodic tasks last run" in panel) is not background_jobs

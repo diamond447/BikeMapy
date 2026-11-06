@@ -134,8 +134,6 @@ class Route(models.Model):
     lifecycle = models.CharField(
         max_length=20, choices=RouteLifecycle.choices, default=RouteLifecycle.PUBLISHED
     )
-    # These four fields are deliberately separate: generated text is never
-    # confused with source content or an administrator's override.
     original_source_title = models.CharField(max_length=500, blank=True)
     thread_title = models.CharField(max_length=500, blank=True)
     generated_title = models.CharField(max_length=500, blank=True)
@@ -327,9 +325,7 @@ class RouteVersion(models.Model):
     distance_m = models.DecimalField(max_digits=12, decimal_places=2, blank=True, null=True)
     ascent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     descent_m = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
-    # A compact, derived profile is safe to publish alongside the route shape.
-    # Keep it separate from the original GPX payload so payload removal still
-    # removes the source file while preserving useful public metrics.
+    # Derived from the GPX, so it survives removal of the original file.
     elevation_profile = models.JSONField(default=list, blank=True)
     loop_status = models.CharField(
         max_length=20, choices=LoopStatus.choices, default=LoopStatus.UNKNOWN
@@ -376,15 +372,6 @@ class RouteVersion(models.Model):
     @property
     def route_id(self) -> uuid.UUID:
         return self.source.route_id
-
-    # Compatibility alias used by storage/import adapters.
-    @property
-    def gpx_storage_key(self) -> str:
-        return self.original_gpx_storage_key
-
-    @gpx_storage_key.setter
-    def gpx_storage_key(self, value: str) -> None:
-        self.original_gpx_storage_key = value
 
     def clean(self) -> None:
         super().clean()
@@ -456,11 +443,7 @@ class RouteVersion(models.Model):
 
 
 class RouteBrowseGeometry(models.Model):
-    """A zoom-specific, lossy geometry used by map browsing.
-
-    Browse geometries are derived data.  The immutable route version remains
-    the source of truth and can always be regenerated if tolerances change.
-    """
+    """A simplified line for one zoom, regenerated from the route version."""
 
     version = models.ForeignKey(
         RouteVersion, on_delete=models.CASCADE, related_name="browse_geometries"
@@ -533,12 +516,7 @@ class RouteHeatmapMembership(models.Model):
 
 
 class PayloadDeletionRequest(models.Model):
-    """Durable work item for removing an original payload from storage.
-
-    The storage key is a snapshot: a retry must never delete a newer payload
-    that happens to be written under a different key.  Completion is recorded
-    only after the version metadata has been atomically finalized.
-    """
+    """Durable work item for removing an original payload from storage."""
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
@@ -646,13 +624,9 @@ class SimilarityRelationship(models.Model):
 
 
 class RouteSourceMerge(models.Model):
-    """A durable provenance alias created when two route identities are merged.
+    """Shows a source under the surviving route after a merge.
 
-    ``RouteSource.route`` remains immutable: it is the route identity under
-    which the URL was first discovered.  This explicit alias lets a
-    moderation action expose that source under the surviving canonical route
-    without rewriting historical provenance or violating source identity
-    guards.
+    ``RouteSource.route`` itself never changes.
     """
 
     canonical_route = models.ForeignKey(
@@ -786,12 +760,3 @@ class ModerationDecision(models.Model):
 
     def __str__(self) -> str:
         return f"{self.action}: {self.route}"
-
-
-# Explicit aliases make the BikeForum terminology available to callers while
-# keeping concise model names for Django admin and query code.
-BikeForumAuthor = ForumAuthor
-BikeForumThread = ForumThread
-BikeForumPost = ForumPost
-RouteProvenance = RouteSource
-DenylistEntry = SourceDenylistEntry

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 
 import { apiClient } from '../api/client'
-import type { Route, SpatialRoute } from './types'
+import type { RouteRecord, SpatialRoute } from './types'
 
 export type SelectedRouteCopy = {
   detailsUnavailable: string
@@ -11,7 +11,7 @@ export type SelectedRouteCopy = {
 
 export type SelectedRouteState = {
   geometry: SpatialRoute | null
-  record: Route | null
+  record: RouteRecord | null
   metadataError: string | null
   geometryError: string | null
   metadataLoading: boolean
@@ -26,7 +26,8 @@ export function useSelectedRoute(
   copy: SelectedRouteCopy,
 ): SelectedRouteState {
   const [geometry, setGeometry] = useState<SpatialRoute | null>(null)
-  const [record, setRecord] = useState<Route | null>(null)
+  // Keyed by route ID so a late response never shows for the next selection.
+  const [loaded, setLoaded] = useState<{ id: string; record: RouteRecord } | null>(null)
   const [metadataError, setMetadataError] = useState<string | null>(null)
   const [geometryError, setGeometryError] = useState<string | null>(null)
   const [metadataLoading, setMetadataLoading] = useState(false)
@@ -35,14 +36,14 @@ export function useSelectedRoute(
   useEffect(() => {
     if (!selectedId) {
       setGeometry(null)
-      setRecord(null)
+      setLoaded(null)
       setMetadataError(null)
       setGeometryError(null)
       setMetadataLoading(false)
       setGeometryLoading(false)
       return
     }
-    setRecord(null)
+    setLoaded(null)
     setMetadataError(null)
     setGeometryError(null)
     setMetadataLoading(true)
@@ -60,7 +61,7 @@ export function useSelectedRoute(
         if (!active) return
         if (error || !data) setMetadataError(copy.detailsUnavailable)
         else {
-          setRecord(data)
+          setLoaded({ id: selectedId, record: data })
           setMetadataError(null)
         }
         setMetadataLoading(false)
@@ -109,7 +110,7 @@ export function useSelectedRoute(
 
   return {
     geometry,
-    record,
+    record: loaded && loaded.id === selectedId ? loaded.record : null,
     metadataError,
     geometryError,
     metadataLoading,

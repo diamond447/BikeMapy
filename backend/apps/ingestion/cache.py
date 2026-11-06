@@ -17,13 +17,9 @@ logger = logging.getLogger(__name__)
 def cleanup_expired_crawl_response_bodies(
     *, now: datetime | None = None, limit: int | None = None
 ) -> dict[str, int]:
-    """Clear expired HTML bodies while retaining conditional-request metadata.
+    """Clear one batch of expired HTML bodies and report how many remain.
 
-    IDs are selected and updated in one bounded batch using the partial expiry
-    index. The second body and expiry predicates make the update safe when a
-    fetch or another cleanup worker changes a row between the two queries.
-    ``remaining`` uses the same indexed eligibility predicate, making cleanup
-    backlog observable without scanning an unbounded metadata table.
+    The update repeats the expiry filter in case a fetch changed the row since.
     """
 
     retention_seconds = configured_body_retention_seconds()

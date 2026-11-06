@@ -7,8 +7,7 @@ import os
 import re
 from pathlib import Path
 
-# These names are intentionally broader than the current settings so adding a
-# secret setting cannot accidentally make it into a public Vite bundle.
+# Broader than today's settings so a new secret is caught too.
 FORBIDDEN_MARKERS = (
     "DJANGO_SECRET_KEY",
     "POSTGRES_PASSWORD",

@@ -1,8 +1,5 @@
 #!/usr/bin/env sh
-# Run Docker Compose for the production stack from the repository root.
-#
-# BIKEMAPY_LEAN=true in the env file adds compose.lean.yml, so release
-# commands, backup/restore scripts and cron jobs all see the same topology.
+# Docker Compose for the production stack; BIKEMAPY_LEAN=true adds compose.lean.yml.
 set -eu
 deploy_dir="$(dirname "$0")"
 env_file="${BIKEMAPY_COMPOSE_ENV_FILE:-$deploy_dir/.env.production}"

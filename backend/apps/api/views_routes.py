@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath
 from typing import Any
@@ -29,6 +31,7 @@ from rest_framework.views import APIView
 
 from apps.catalogue.models import (
     ForumAuthor,
+    ForumPost,
     ForumThread,
     ModerationDecision,
     Route,
@@ -48,6 +51,7 @@ from apps.catalogue.spatial import (
 from .pagination import RoutePagination
 from .serializers import (
     RouteSerializer,
+    RouteSummarySerializer,
     SpatialRouteSerializer,
     ViewportResponseSerializer,
 )
@@ -93,21 +97,22 @@ def _source_queryset() -> QuerySet[RouteSource]:
     return RouteSource.objects.prefetch_related("posts__thread", "posts__author").order_by("pk")
 
 
-def public_route_queryset() -> QuerySet[Route]:
-    """Return only published routes with a technically approved version.
+# The widest columns of a route row, which no list renders.
+_HEAVY_VERSION_FIELDS = (
+    "current_approved_version__normalized_geometry",
+    "current_approved_version__simplified_geometry",
+    "current_approved_version__elevation_profile",
+)
 
-    All relationships rendered by the public serializers are prefetched here,
-    keeping list responses bounded in query count as the catalogue grows.
+
+def public_route_queryset(*, detail: bool = False, geometry: bool = False) -> QuerySet[Route]:
+    """Return published routes with an approved version, prefetched for the API.
+
+    ``detail`` adds variants and the elevation profile; geometries are loaded
+    only with ``geometry``.
     """
 
-    public_variant = SimilarityRelationship.objects.filter(
-        relationship_type=SimilarityRelationship.RelationshipType.VARIANT,
-        route_a__lifecycle=RouteLifecycle.PUBLISHED,
-        route_a__current_approved_version__isnull=False,
-        route_b__lifecycle=RouteLifecycle.PUBLISHED,
-        route_b__current_approved_version__isnull=False,
-    ).select_related("route_a", "route_b")
-    return (
+    queryset = (
         Route.objects.filter(
             lifecycle=RouteLifecycle.PUBLISHED,
             current_approved_version__isnull=False,
@@ -134,16 +139,6 @@ def public_route_queryset() -> QuerySet[Route]:
                 to_attr="public_source_merges",
             ),
             Prefetch(
-                "similarity_a",
-                queryset=public_variant,
-                to_attr="public_variant_relationships_a",
-            ),
-            Prefetch(
-                "similarity_b",
-                queryset=public_variant,
-                to_attr="public_variant_relationships_b",
-            ),
-            Prefetch(
                 "moderation_decisions",
                 queryset=ModerationDecision.objects.filter(
                     action=ModerationDecision.Action.REVIEW
@@ -151,8 +146,62 @@ def public_route_queryset() -> QuerySet[Route]:
                 to_attr="public_review_decisions",
             ),
         )
-        .distinct()
     )
+    if not detail:
+        return queryset.defer(*_HEAVY_VERSION_FIELDS)
+    if not geometry:
+        queryset = queryset.defer(*_HEAVY_VERSION_FIELDS[:2])
+    public_variant = SimilarityRelationship.objects.filter(
+        relationship_type=SimilarityRelationship.RelationshipType.VARIANT,
+        route_a__lifecycle=RouteLifecycle.PUBLISHED,
+        route_a__current_approved_version__isnull=False,
+        route_b__lifecycle=RouteLifecycle.PUBLISHED,
+        route_b__current_approved_version__isnull=False,
+    ).select_related("route_a", "route_b")
+    return queryset.prefetch_related(
+        Prefetch(
+            "similarity_a",
+            queryset=public_variant,
+            to_attr="public_variant_relationships_a",
+        ),
+        Prefetch(
+            "similarity_b",
+            queryset=public_variant,
+            to_attr="public_variant_relationships_b",
+        ),
+    )
+
+
+def _source_exists(source_filter: Q) -> Exists | Q:
+    """Match routes whose direct or actively merged sources satisfy a filter.
+
+    ``EXISTS`` instead of a join, which would repeat route rows.
+    """
+
+    direct = RouteSource.objects.filter(source_filter, route=OuterRef("pk"))
+    merged = RouteSource.objects.filter(
+        source_filter,
+        canonical_route_links__canonical_route=OuterRef("pk"),
+        canonical_route_links__active=True,
+    )
+    return Exists(direct) | Exists(merged)
+
+
+def _routes_with_posts(post_filter: Q) -> QuerySet[RouteSource, Any]:
+    """Route ids whose direct sources cite a post matching ``post_filter``."""
+
+    return RouteSource.objects.filter(
+        post_links__post__in=ForumPost.objects.filter(post_filter)
+    ).values("route_id")
+
+
+def _merged_routes_with_posts(post_filter: Q) -> QuerySet[RouteSourceMerge, Any]:
+    """Canonical route ids whose actively merged sources cite a matching post."""
+
+    return RouteSourceMerge.objects.filter(
+        active=True,
+        source__post_links__post__in=ForumPost.objects.filter(post_filter),
+    ).values("canonical_route_id")
 
 
 def _decimal(value: str, name: str) -> Decimal:
@@ -184,83 +233,52 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
                 + SearchVector("thread_title", config="simple")
             )
             query = SearchQuery(search, search_type="websearch", config="simple")
-            source_threads = ForumThread.objects.filter(
-                Q(posts__source_links__source__route=OuterRef("pk"))
-                | Q(
-                    posts__source_links__source__canonical_route_links__canonical_route=OuterRef(
-                        "pk"
-                    ),
-                    posts__source_links__source__canonical_route_links__active=True,
-                )
-            )
-            source_authors = ForumAuthor.objects.filter(
-                Q(posts__source_links__source__route=OuterRef("pk"))
-                | Q(
-                    posts__source_links__source__canonical_route_links__canonical_route=OuterRef(
-                        "pk"
-                    ),
-                    posts__source_links__source__canonical_route_links__active=True,
-                )
-            )
-            thread_fts = source_threads.annotate(
+            # Match threads and authors first, then routes through ``IN``
+            # subqueries: a correlated EXISTS with OR could not use the indexes.
+            matching_threads = ForumThread.objects.annotate(
                 _text=SearchVector("title", config="simple")
                 + SearchVector("locality", config="simple")
-            ).filter(_text=query)
-            author_fts = source_authors.annotate(
-                _text=SearchVector("username", config="simple")
-            ).filter(_text=query)
-            # ``__trigram_similar`` emits the `%` operator, allowing the GIN
-            # trigram indexes to serve typo-tolerant searches.
-            thread_trigram = source_threads.filter(
-                Q(title__trigram_similar=search) | Q(locality__trigram_similar=search)
+            ).filter(
+                Q(_text=query)
+                | Q(title__trigram_similar=search)
+                | Q(locality__trigram_similar=search)
             )
-            author_trigram = source_authors.filter(username__trigram_similar=search)
+            matching_authors = ForumAuthor.objects.annotate(
+                _text=SearchVector("username", config="simple")
+            ).filter(Q(_text=query) | Q(username__trigram_similar=search))
             queryset = queryset.annotate(
                 _search_vector=vector,
                 _search_rank=SearchRank(F("_search_vector"), query),
             ).filter(
                 Q(_search_vector=query)
-                | Exists(thread_fts)
-                | Exists(author_fts)
                 | Q(display_title__trigram_similar=search)
                 | Q(generated_title__trigram_similar=search)
-                | Exists(thread_trigram)
-                | Exists(author_trigram)
+                | Q(pk__in=_routes_with_posts(Q(thread__in=matching_threads)))
+                | Q(pk__in=_routes_with_posts(Q(author__in=matching_authors)))
+                | Q(pk__in=_merged_routes_with_posts(Q(thread__in=matching_threads)))
+                | Q(pk__in=_merged_routes_with_posts(Q(author__in=matching_authors)))
             )
         else:
+            post_text = (
+                Q(posts__thread__title__icontains=search)
+                | Q(posts__thread__locality__icontains=search)
+                | Q(posts__author__username__icontains=search)
+            )
             queryset = queryset.filter(
                 Q(display_title__icontains=search)
                 | Q(generated_title__icontains=search)
                 | Q(thread_title__icontains=search)
-                | Q(sources__posts__thread__title__icontains=search)
-                | Q(sources__posts__thread__locality__icontains=search)
-                | Q(sources__posts__author__username__icontains=search)
-                | Q(
-                    merged_source_links__active=True,
-                    merged_source_links__source__posts__thread__title__icontains=search,
-                )
-                | Q(
-                    merged_source_links__active=True,
-                    merged_source_links__source__posts__thread__locality__icontains=search,
-                )
-                | Q(
-                    merged_source_links__active=True,
-                    merged_source_links__source__posts__author__username__icontains=search,
-                )
+                | _source_exists(post_text)
             )
 
     author = params.get("author", "").strip()
     if author:
-        queryset = queryset.filter(
-            Q(sources__posts__author__username__iexact=author)
-            | Q(
-                merged_source_links__active=True,
-                merged_source_links__source__posts__author__username__iexact=author,
-            )
-        )
+        queryset = queryset.filter(_source_exists(Q(posts__author__username__iexact=author)))
     category = params.get("category", "").strip()
     if category:
-        queryset = queryset.filter(category_links__category__slug=category)
+        queryset = queryset.filter(
+            Exists(RouteCategory.objects.filter(route=OuterRef("pk"), category__slug=category))
+        )
 
     numeric_filters = {
         "min_distance": ("current_approved_version__distance_m__gte", "distance"),
@@ -271,8 +289,6 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
         "max_elevation": ("current_approved_version__ascent_m__lte", "elevation"),
         "min_ascent_m": ("current_approved_version__ascent_m__gte", "min_ascent_m"),
         "max_ascent_m": ("current_approved_version__ascent_m__lte", "max_ascent_m"),
-        # Explicit aliases make the contract pleasant for clients that use
-        # the model field names rather than the shorter filter names.
         "distance_min": ("current_approved_version__distance_m__gte", "distance_min"),
         "distance_max": ("current_approved_version__distance_m__lte", "distance_max"),
         "elevation_min": ("current_approved_version__ascent_m__gte", "elevation_min"),
@@ -308,12 +324,12 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
                 current_approved_version__simplified_geometry__intersects=viewport,
             )
         )
-    return queryset.distinct()
+    return queryset
 
 
 @extend_schema(parameters=ROUTE_FILTER_PARAMETERS)
 class RouteListView(ListAPIView):
-    serializer_class = RouteSerializer
+    serializer_class = RouteSummarySerializer
     pagination_class = RoutePagination
 
     def get_queryset(self) -> QuerySet[Route]:
@@ -325,18 +341,34 @@ class RouteListView(ListAPIView):
             return queryset.order_by("-_search_rank", "-updated_at", "id")
         return queryset.order_by("-updated_at", "id")
 
-    def get_serializer_context(self) -> dict[str, Any]:
-        return {**super().get_serializer_context(), "include_geometry": False}
 
-
-@extend_schema(responses=RouteSerializer)
+@extend_schema(
+    parameters=[
+        OpenApiParameter(
+            "include",
+            OpenApiTypes.STR,
+            enum=["geometry"],
+            description=(
+                "Set to `geometry` to embed the full normalized geometry. It is null "
+                "otherwise; map clients read it from the geometry endpoint."
+            ),
+        )
+    ],
+    responses=RouteSerializer,
+)
 class RouteDetailView(APIView):
     """Resolve by stable UUID; a slug is only a readable alternate lookup."""
 
     def get(
         self, request: Request, route_id: UUID | None = None, slug: str | None = None
     ) -> Response:
-        queryset = public_route_queryset()
+        include = {
+            item.strip()
+            for value in request.query_params.getlist("include")
+            for item in value.split(",")
+        }
+        include_geometry = "geometry" in include
+        queryset = public_route_queryset(detail=True, geometry=include_geometry)
         if route_id is not None:
             route = get_object_or_404(queryset, pk=route_id)
         else:
@@ -344,7 +376,7 @@ class RouteDetailView(APIView):
         return Response(
             RouteSerializer(
                 route,
-                context={"include_geometry": True, "request": request},
+                context={"include_geometry": include_geometry, "request": request},
             ).data
         )
 
@@ -355,16 +387,14 @@ class RouteDetailView(APIView):
             response=OpenApiTypes.BINARY,
             description="The approved GPX file.",
         ),
-        404: OpenApiResponse(description="GPX redistribution is unavailable."),
+        404: OpenApiResponse(description="GPX download is unavailable."),
     }
 )
 class RouteGpxDownloadView(APIView):
-    """Serve a GPX payload only after the deployment's legal gate is enabled."""
+    """Serve a route's GPX file."""
 
     def get(self, request: Request, route_id: UUID) -> Response:
         del request
-        if not getattr(settings, "GPX_REDISTRIBUTION_APPROVED", False):
-            return Response({"detail": "GPX redistribution is not approved."}, status=404)
         route = get_object_or_404(public_route_queryset(), pk=route_id)
         version = route.current_approved_version
         if version is None or not version.original_gpx_storage_key:
@@ -374,9 +404,7 @@ class RouteGpxDownloadView(APIView):
         if path.is_absolute() or ".." in path.parts or not default_storage.exists(storage_key):
             return Response({"detail": "GPX download is unavailable."}, status=404)
         if getattr(settings, "GPX_INTERNAL_REDIRECT", False):
-            # Nginx authorizes this endpoint in Django, then serves the private
-            # volume through an internal location. Gunicorn does not hold a
-            # file descriptor or stream bytes for the duration of the download.
+            # Django authorizes, Nginx serves the file from an internal location.
             response = HttpResponse(status=status.HTTP_200_OK, content_type="application/gpx+xml")
             response["X-Accel-Redirect"] = "/_protected_gpx/" + quote(storage_key, safe="/")
             response["Content-Disposition"] = f'attachment; filename="{route.slug}.gpx"'
@@ -451,4 +479,19 @@ class ViewportRouteView(APIView):
             )
         except ValidationError as exc:
             raise ParseError(str(exc)) from exc
-        return Response(result)
+        return _cacheable_response(request, result)
+
+
+def _cacheable_response(request: Request, result: dict[str, Any]) -> Response:
+    """Let browsers and the CDN reuse a viewport briefly; the ETag is a payload digest."""
+
+    digest = hashlib.sha256(
+        json.dumps(result, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    etag = f'"{digest[:32]}"'
+    max_age = int(getattr(settings, "SPATIAL_HTTP_MAX_AGE", 60))
+    headers = {"ETag": etag, "Cache-Control": f"public, max-age={max_age}"}
+    if_none_match = request.headers.get("If-None-Match", "")
+    if etag in {value.strip().removeprefix("W/") for value in if_none_match.split(",")}:
+        return Response(status=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return Response(result, headers=headers)

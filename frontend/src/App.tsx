@@ -1,6 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- state helpers are exported for interaction tests. */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { trackProductEvent } from './analytics'
 import { normalizePublicSiteUrl, routeUrl } from './siteMetadata'
@@ -32,8 +31,7 @@ export { categoriesEnabled, normalizeFilters, parseState, writeUrl } from './dis
 
 const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_URL)
 const LANGUAGE_KEY = 'bikemapy:language'
-// Cloudflare preview builds set this to false. Keeping the guard at build time
-// means a preview contains only the public read API and has no report action.
+// Off in preview builds, which are read-only.
 const REPORTS_ENABLED = reportsEnabled(import.meta.env.VITE_ENABLE_REPORTS)
 
 function initialLanguage(): Language {
@@ -127,7 +125,13 @@ function App() {
     metadataLoading: selectedMetadataLoading,
     geometryLoading: selectedGeometryLoading,
   } = selectedState
-  const selectedRoute = routes.find((route) => route.id === selectedId) ?? selectedRecord
+  const listedRoute = routes.find((route) => route.id === selectedId)
+  // The detail adds its own fields to the list summary, or stands in for a
+  // route outside the loaded list.
+  const selectedRoute = useMemo(
+    () => (listedRoute ? { ...selectedRecord, ...listedRoute } : selectedRecord),
+    [listedRoute, selectedRecord],
+  )
   const report = useReport(selectedRoute, copy, REPORTS_ENABLED)
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
   const selectionVisible = Boolean(

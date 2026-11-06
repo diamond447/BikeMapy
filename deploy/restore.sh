@@ -3,6 +3,11 @@
 set -Eeuo pipefail
 : "${1:?Usage: restore.sh BACKUP_ID}"
 BACKUP_ID="$1"
+# The identifier is interpolated into file names and container shell commands.
+if [[ ! "$BACKUP_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
+  echo "BACKUP_ID must be 1-64 characters of letters, digits, '.', '_' or '-'" >&2
+  exit 2
+fi
 BACKUP_DIR="${BACKUP_DIR:-$(pwd)/backup}"
 test -d "$BACKUP_DIR"
 BACKUP_DIR="$(cd "$BACKUP_DIR" && pwd -P)"
@@ -10,9 +15,7 @@ COMPOSE="${COMPOSE:-$(dirname "$0")/compose.sh}"
 GPX_VOLUME="${GPX_VOLUME:-bikemapy_gpx_data}"
 POSTGRES_DB="${POSTGRES_DB:-bikemapy}"
 POSTGRES_USER="${POSTGRES_USER:-bikemapy}"
-# Lean mode (compose.lean.yml) has no worker, beat or Redis. Act only on the
-# services present in the active Compose model so a backup or restore never
-# starts them.
+# Only the services of the active model; lean mode has no worker, beat or Redis.
 active_services() { $COMPOSE config --services | grep -xE "$1" | tr '\n' ' '; }
 writers="$(active_services 'backend|worker|beat')"
 stores="$(active_services 'db|redis')"

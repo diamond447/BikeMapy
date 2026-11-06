@@ -5,18 +5,18 @@ from __future__ import annotations
 from typing import Any
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
 
+from apps.accounts.admin import PERIODIC_TASKS_LAST_RUN_KEY
 from config.celery import app
 
 CRAWL_TASK = "bikemapy.ingestion.incremental_bikeforum_crawl"
 
 
 class Command(BaseCommand):
-    help = (
-        "Run every scheduled maintenance task once without a Celery worker. "
-        "Intended for host cron when BACKGROUND_JOBS_ENABLED=false."
-    )
+    help = "Run every scheduled task once without a Celery worker (lean mode, from cron)."
 
     def add_arguments(self, parser: Any) -> None:
         parser.add_argument(
@@ -40,3 +40,4 @@ class Command(BaseCommand):
                 self.stdout.write(f"{name}: ok")
         if failed:
             raise CommandError(f"{len(failed)} periodic task(s) failed")
+        cache.set(PERIODIC_TASKS_LAST_RUN_KEY, timezone.now(), timeout=None)

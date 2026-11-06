@@ -9,12 +9,7 @@ from rest_framework.throttling import SimpleRateThrottle
 
 
 class AnalyticsEventThrottle(SimpleRateThrottle):
-    """Use one deliberately coarse bucket instead of a request-IP key.
-
-    The counters are intentionally directional and spoofable. This throttle
-    only protects the write path from a burst; it is not an identity or
-    uniqueness mechanism.
-    """
+    """One global bucket instead of a per-IP key; it only limits bursts."""
 
     scope = "analytics_events"
 

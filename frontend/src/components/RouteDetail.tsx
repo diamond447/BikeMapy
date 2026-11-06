@@ -215,7 +215,9 @@ export function RouteDetail({
               </button>
             )}
           </div>
-          {!selectedRoute.gpx_download_url && <p className="gpx-notice">{copy.gpxUnavailable}</p>}
+          {selectedRoute.gpx_download_url === null && (
+            <p className="gpx-notice">{copy.gpxUnavailable}</p>
+          )}
           {reportsEnabled && (
             <button
               type="button"

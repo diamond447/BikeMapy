@@ -32,13 +32,7 @@ _PolygonBase = _GeoPolygonField or models.TextField
 
 
 class RouteGeometryField(_GeometryBase):  # type: ignore[misc, type-arg]
-    """WGS84 LineString field.
-
-    In the PostGIS service this is a real GeoDjango ``LineStringField`` with
-    SRID 4326, enabling spatial lookups and GeoDjango geometry adaptation. The
-    SQLite quality suite uses a text representation because GDAL is not part of
-    the lightweight host environment.
-    """
+    """WGS84 LineString: a GeoDjango field on PostGIS, GeoJSON text elsewhere."""
 
     description = "WGS84 route LineString"
 

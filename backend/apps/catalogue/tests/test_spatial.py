@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
@@ -19,6 +20,7 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
 from apps.catalogue.fields import _GIS_AVAILABLE
+from apps.catalogue.management.commands.rebuild_spatial_products import analyze_spatial_tables
 from apps.catalogue.models import (
     Category,
     ForumAuthor,
@@ -37,6 +39,7 @@ from apps.catalogue.services import approve_version, record_route_version, regis
 from apps.catalogue.spatial import (
     SpatialQueryLimits,
     _cell_geometry,
+    _coordinates,
     _line_simplify,
     _tile_xy,
     generate_browse_geometries,
@@ -75,6 +78,24 @@ def published_route() -> Route:
     return Route.objects.get(pk=route.pk)
 
 
+def _publish_without_geometry(*routes: Route) -> None:
+    """Approve a geometry-less version so a bare test route becomes public.
+
+    Without geometry the approval adds no browse rows or heatmap memberships,
+    leaving the hand-built heatmap of a test unchanged.
+    """
+
+    for route in routes:
+        key = str(route.pk)
+        thread = ForumThread.objects.create(url=f"https://example.test/{key}", title=key)
+        post = ForumPost.objects.create(thread=thread, url=f"https://example.test/{key}#1")
+        source, _ = register_source(route=route, post=post, mapy_url=f"https://mapy.com/s/{key}")
+        version, _ = record_route_version(
+            source=source, checksum=f"public-{key}", technical_status=ProcessingStatus.VALID
+        )
+        approve_version(version)
+
+
 @override_settings(SPATIAL_BROWSE_ZOOMS="8,12", SPATIAL_HEATMAP_ZOOMS="5,6")
 def test_browse_geometries_are_zoom_specific_and_selected_route_is_full(
     published_route: Route,
@@ -89,6 +110,37 @@ def test_browse_geometries_are_zoom_specific_and_selected_route_is_full(
     assert selected["geometry"]["coordinates"] == [[16.0, 49.0], [16.1, 49.001], [16.2, 49.0]]
     viewport = query_viewport(west=15.9, south=48.9, east=16.3, north=49.1, zoom=8)
     assert viewport["routes"][0]["geometry"]["coordinates"] == [[16.0, 49.0], [16.2, 49.0]]
+
+
+@override_settings(SPATIAL_BROWSE_ZOOMS="8,12")
+def test_rebuilding_browse_geometries_drops_zooms_that_are_no_longer_configured(
+    published_route: Route,
+) -> None:
+    version = published_route.current_approved_version
+    assert version is not None
+    generate_browse_geometries(version, zooms=(16, 18))
+    generate_browse_geometries(version)
+    rows = RouteBrowseGeometry.objects.filter(version=version).order_by("zoom")
+    assert list(rows.values_list("zoom", flat=True)) == [8, 12]
+
+
+@override_settings(SPATIAL_BROWSE_ZOOMS="8,12")
+def test_viewport_above_the_highest_browse_zoom_serves_that_line_once(
+    published_route: Route,
+) -> None:
+    version = published_route.current_approved_version
+    assert version is not None
+    generate_browse_geometries(version)
+    # A stale row from an earlier configuration must not be served.
+    generate_browse_geometries(version, zooms=(16,))
+    cache.clear()
+    with CaptureQueriesContext(connection) as queries:
+        result = query_viewport(west=15.9, south=48.9, east=16.3, north=49.1, zoom=18)
+    assert [route["id"] for route in result["routes"]] == [str(published_route.pk)]
+    stored = RouteBrowseGeometry.objects.get(version=version, zoom=12)
+    assert len(result["routes"][0]["geometry"]["coordinates"]) == len(_coordinates(stored.geometry))
+    if connection.vendor == "postgresql":
+        assert any("DISTINCT ON" in query["sql"] for query in queries)
 
 
 @override_settings(SPATIAL_BROWSE_ZOOMS="12", SPATIAL_HEATMAP_ZOOMS="5,6")
@@ -108,6 +160,7 @@ def test_filtered_heatmap_limits_after_filtered_count_ordering(published_route: 
     other_route = Route.objects.create()
     another_other_route = Route.objects.create()
     matching_route = Route.objects.create()
+    _publish_without_geometry(matching_route)
     RouteHeatmapCell.objects.filter(zoom=5).delete()
     x, y = _tile_xy(16.0, 49.0, 5)
     stronger_unfiltered = RouteHeatmapCell.objects.create(
@@ -139,7 +192,7 @@ def test_filtered_heatmap_limits_after_filtered_count_ordering(published_route: 
             north=60,
             zoom=2,
             limits=SpatialQueryLimits(max_cells=1),
-            route_ids={published_route.pk, matching_route.pk},
+            candidate_queryset=Route.objects.filter(pk__in=[published_route.pk, matching_route.pk]),
         )
 
     assert result["mode"] == "heatmap"
@@ -176,6 +229,7 @@ def test_filtered_heatmap_limits_after_viewport_relevance_and_reports_overflow()
     first_match = Route.objects.create(id=UUID(int=100))
     second_match = Route.objects.create(id=UUID(int=101))
     third_match = Route.objects.create(id=UUID(int=102))
+    _publish_without_geometry(*off_view_routes, first_match, second_match, third_match)
     RouteHeatmapMembership.objects.bulk_create(
         [
             *(RouteHeatmapMembership(cell=off_view_cell, route=route) for route in off_view_routes),
@@ -193,7 +247,9 @@ def test_filtered_heatmap_limits_after_viewport_relevance_and_reports_overflow()
         north=49.1,
         zoom=2,
         limits=SpatialQueryLimits(max_routes=1, max_cells=1),
-        route_ids=set(route.pk for route in [*off_view_routes, first_match]),
+        candidate_queryset=Route.objects.filter(
+            pk__in=[route.pk for route in [*off_view_routes, first_match]]
+        ),
     )
     assert result["cells"][0]["x"] == in_view_x
     assert result["cells"][0]["count"] == 1
@@ -206,8 +262,10 @@ def test_filtered_heatmap_limits_after_viewport_relevance_and_reports_overflow()
         north=49.1,
         zoom=2,
         limits=SpatialQueryLimits(max_routes=1, max_cells=1),
-        route_ids=set(
-            route.pk for route in [*off_view_routes, first_match, second_match, third_match]
+        candidate_queryset=Route.objects.filter(
+            pk__in=[
+                route.pk for route in [*off_view_routes, first_match, second_match, third_match]
+            ]
         ),
     )
     assert overflow["cells"][0]["count"] == 2
@@ -229,6 +287,7 @@ def test_viewport_and_selected_queries_are_bounded(published_route: Route) -> No
     assert result["routes"] == []
 
 
+@pytest.mark.sqlite
 @pytest.mark.skipif(
     connection.vendor == "postgresql", reason="covers the non-GIS Python bbox fallback"
 )
@@ -446,8 +505,15 @@ def test_spatial_products_can_be_rebuilt_for_existing_routes(published_route: Ro
     version = published_route.current_approved_version
     assert version is not None
     RouteBrowseGeometry.objects.filter(version=version).delete()
-    call_command("rebuild_spatial_products", route_id=str(published_route.pk))
+    with CaptureQueriesContext(connection) as queries:
+        call_command("rebuild_spatial_products", route_id=str(published_route.pk))
     assert RouteBrowseGeometry.objects.filter(version=version).exists()
+    analyzed = [query["sql"] for query in queries if query["sql"].startswith("ANALYZE")]
+    if connection.vendor == "postgresql":
+        assert len(analyzed) == 1
+        assert '"catalogue_routebrowsegeometry"' in analyzed[0]
+    else:
+        assert analyzed == []
 
 
 @pytest.mark.django_db(transaction=True)
@@ -509,25 +575,30 @@ def test_concurrent_route_refreshes_preserve_shared_cell_count(published_route: 
     reason="opt-in benchmark; run against the Compose PostGIS database",
 )
 def test_representative_route_viewport_benchmark(published_route: Route) -> None:
-    """Keep a repeatable query measurement next to the spatial contract."""
+    """Keep a repeatable query measurement next to the spatial contract.
 
-    source_version = published_route.current_approved_version
-    assert source_version is not None
+    The synthetic catalogue resembles real GPX imports: 2,000 routes of
+    300-1,500 vertices spread over Czechia, with browse lines for every
+    configured zoom. Statistics are refreshed before measuring; rows created
+    inside the test transaction are invisible to autovacuum, and without them
+    the planner chose a per-route nested loop that measured the missing
+    statistics rather than the query.
+    """
+
+    rng = random.Random(2026)
     geometries: list[Any] = []
     simplified_geometries: list[Any] = []
-    for index in range(1, 2_000):
-        longitude = 14.0 + (index % 40) * 0.1
-        latitude = 47.5 + (index % 30) * 0.1
-        vertex_count = 4 + index % 40
-        coordinates = [
-            [longitude + step * 0.002, latitude + math.sin(step / 3) * 0.01]
-            for step in range(vertex_count)
-        ]
+    for _index in range(1, 2_000):
+        longitude, latitude = rng.uniform(12.6, 18.4), rng.uniform(48.8, 50.8)
+        heading = rng.uniform(0, 2 * math.pi)
+        coordinates = []
+        for _step in range(rng.randint(300, 1_500)):
+            heading += rng.gauss(0, 0.25)
+            longitude += 0.0004 * math.cos(heading)
+            latitude += 0.00027 * math.sin(heading)
+            coordinates.append([longitude, latitude])
         payload = {"type": "LineString", "coordinates": coordinates}
-        simplified_payload = {
-            "type": "LineString",
-            "coordinates": [coordinates[0], coordinates[-1]],
-        }
+        simplified_payload = {"type": "LineString", "coordinates": coordinates[::10]}
         if _GIS_AVAILABLE:
             from django.contrib.gis.geos import GEOSGeometry
 
@@ -561,17 +632,8 @@ def test_representative_route_viewport_benchmark(published_route: Route) -> None
     for route, version in zip(routes, versions, strict=True):
         route.current_approved_version = version
     Route.objects.bulk_update(routes, ["current_approved_version"])
-    RouteBrowseGeometry.objects.bulk_create(
-        [
-            RouteBrowseGeometry(
-                version=version,
-                zoom=12,
-                geometry=simplified_geometries[index],
-                tolerance_m=10,
-            )
-            for index, version in enumerate(versions)
-        ]
-    )
+    for version in versions:
+        generate_browse_geometries(version)
     heatmap_cells = [
         RouteHeatmapCell.objects.get_or_create(
             zoom=6,
@@ -590,6 +652,7 @@ def test_representative_route_viewport_benchmark(published_route: Route) -> None
     for index, cell in enumerate(heatmap_cells):
         cell.route_count = sum(1 for item in range(len(routes)) if item % 3 == index)
         cell.save(update_fields=["route_count", "updated_at"])
+    analyze_spatial_tables()
 
     def measure(call: Any) -> list[float]:
         samples = []
@@ -619,6 +682,33 @@ def test_representative_route_viewport_benchmark(published_route: Route) -> None
         limits=SpatialQueryLimits(max_routes=500, max_cells=10_000),
     )
     print(f"route_viewport_returned={len(route_result['routes'])}")
+    if connection.vendor == "postgresql":
+        captured: list[tuple[float, str, Any]] = []
+
+        def capture(execute: Any, sql: str, params: Any, many: bool, context: Any) -> Any:
+            started = time.perf_counter()
+            try:
+                return execute(sql, params, many, context)
+            finally:
+                captured.append((time.perf_counter() - started, sql, params))
+
+        cache.clear()
+        with connection.execute_wrapper(capture):
+            query_viewport(
+                west=14.5,
+                south=47.5,
+                east=17.5,
+                north=50.2,
+                zoom=12,
+                limits=SpatialQueryLimits(max_routes=500, max_cells=10_000),
+            )
+        _elapsed, slowest_sql, slowest_params = max(captured, key=lambda item: item[0])
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT postgis_full_version()")
+            print(f"postgis={cursor.fetchone()[0]}")
+            cursor.execute("EXPLAIN (ANALYZE, BUFFERS) " + slowest_sql, slowest_params)
+            print("slowest_route_viewport_query_plan:")
+            print("\n".join(row[0] for row in cursor.fetchall()))
     heatmap_samples = measure(
         lambda: query_viewport(
             west=14.5,

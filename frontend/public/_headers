@@ -1,0 +1,15 @@
+# Cloudflare Pages response headers for the static application shell.
+# A full Content-Security-Policy still needs a deliberate allowlist for the
+# API origin, map tiles and MapLibre workers; these headers are safe defaults
+# that do not restrict any resource loading.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+# Vite names every build asset after a hash of its content, so an asset URL
+# never changes meaning and can be cached for a year without revalidation.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

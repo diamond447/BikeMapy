@@ -21,8 +21,6 @@ urlpatterns = [
     path("routes/<uuid:route_id>/gpx/", RouteGpxDownloadView.as_view(), name="public-route-gpx"),
     path("routes/<uuid:route_id>/reports/", RouteReportView.as_view(), name="public-route-report"),
     path("routes/by-slug/<slug:slug>/", RouteDetailView.as_view(), name="public-route-by-slug"),
-    # This explicit name documents that geometry is only returned for a
-    # selected route, never as a bulk payload.
     path(
         "routes/<uuid:route_id>/geometry/",
         SelectedRouteView.as_view(),

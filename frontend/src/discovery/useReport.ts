@@ -6,8 +6,7 @@ import { useReportEnabled } from './useReportEnabled'
 export type { ReportController } from './useReportEnabled'
 import type { ReportController } from './useReportEnabled'
 
-// Vite replaces this environment access with a build-time constant. Rollup
-// can therefore remove the report implementation from preview bundles.
+// A build-time constant, so preview bundles drop the report code.
 const reportImplementation =
   import.meta.env.VITE_ENABLE_REPORTS === 'false' ? useReportDisabled : useReportEnabled
 

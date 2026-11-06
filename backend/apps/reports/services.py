@@ -92,8 +92,7 @@ def check_rate_limits(
         hour_count = _increment(f"reports:rate:v1:{identifier}:hour", 3600, backend)
         day_count = _increment(f"reports:rate:v1:{identifier}:day", 86400, backend)
     except Exception as exc:
-        # An unavailable limiter must fail closed.  Do not accept an
-        # unprotected report merely because Redis is temporarily unavailable.
+        # Fail closed when Redis is unavailable.
         raise RateLimited(300) from exc
     if hour_count > hourly_limit:
         return RateLimitResult(False, 3600)
@@ -129,9 +128,7 @@ def submit_report(
     limits = check_rate_limits(client_ip(request))
     if not limits.allowed:
         raise RateLimited(limits.retry_after)
-    # Serialize duplicate checks for one route without changing any route
-    # content or lifecycle state.  This closes the race between two identical
-    # submissions arriving at the same time.
+    # Lock the route so two identical reports cannot both pass the duplicate check.
     route = Route.objects.select_for_update().get(pk=route.pk)
     fingerprint = report_fingerprint(route, reason, message)
     since = timezone.now() - timedelta(
