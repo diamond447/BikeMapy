@@ -19,7 +19,7 @@ services:
         python backend/manage.py migrate --check --noinput &&
         exec gunicorn config.wsgi:application
         --logger-class config.gunicorn.JsonGunicornLogger --bind 0.0.0.0:8000
-        --workers ${WEB_WORKERS:-3} --error-logfile - --no-control-socket
+        --workers ${WEB_WORKERS:-3} --error-logfile -
     volumes:
       - gpx_data:/app/storage
     networks:

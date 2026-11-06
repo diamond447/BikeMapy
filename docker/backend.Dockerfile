@@ -19,6 +19,8 @@ FROM python:3.13-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/backend \
   PATH="/app/.venv/bin:$PATH"
+# Set in the image, not in Compose: an older image's gunicorn rejects the flag.
+ENV GUNICORN_CMD_ARGS="--no-control-socket"
 WORKDIR /app
 
 # libgdal brings GEOS and PROJ as dependencies. GeoDjango finds the shared
