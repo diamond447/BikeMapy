@@ -31,8 +31,7 @@ export { categoriesEnabled, normalizeFilters, parseState, writeUrl } from './dis
 
 const PUBLIC_SITE_URL = normalizePublicSiteUrl(import.meta.env.VITE_PUBLIC_SITE_URL)
 const LANGUAGE_KEY = 'bikemapy:language'
-// Cloudflare preview builds set this to false. Keeping the guard at build time
-// means a preview contains only the public read API and has no report action.
+// Off in preview builds, which are read-only.
 const REPORTS_ENABLED = reportsEnabled(import.meta.env.VITE_ENABLE_REPORTS)
 
 function initialLanguage(): Language {
@@ -127,9 +126,8 @@ function App() {
     geometryLoading: selectedGeometryLoading,
   } = selectedState
   const listedRoute = routes.find((route) => route.id === selectedId)
-  // The list summary keeps its precedence; the detail record of the same
-  // selection adds the fields only it carries (elevation profile, GPX link,
-  // variants) and fills the panel for a route outside the loaded list.
+  // The detail adds its own fields to the list summary, or stands in for a
+  // route outside the loaded list.
   const selectedRoute = useMemo(
     () => (listedRoute ? { ...selectedRecord, ...listedRoute } : selectedRecord),
     [listedRoute, selectedRecord],

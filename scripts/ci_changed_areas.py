@@ -1,16 +1,9 @@
 """Tell GitHub Actions which parts of the project a pull request changes.
 
-Jobs use the outputs to skip work that a change cannot affect: a frontend-only
-dependency bump does not need the PostGIS suite or the Compose smoke tests,
-and a workflow-only change does not need the browser suites. A skipped job
-still reports success, so required checks keep working.
-
-Outside pull requests every area is reported as changed. Run it after a
-checkout with enough history to reach the merge base::
+Outside pull requests every area counts as changed. Results are printed and
+appended to ``$GITHUB_OUTPUT``::
 
     python scripts/ci_changed_areas.py --base "$BASE_SHA" --head "$HEAD_SHA"
-
-The outputs are appended to ``$GITHUB_OUTPUT`` when it is set and printed.
 """
 
 from __future__ import annotations
@@ -38,9 +31,7 @@ def classify(paths: Iterable[str]) -> dict[str, bool]:
     return {
         "backend": backend or workflows,
         "frontend": frontend or workflows,
-        # The browser suites exercise the frontend only; workflow-only
-        # changes (such as action bumps) still run the frontend job up to the
-        # build but skip Playwright.
+        # Workflow-only changes skip Playwright.
         "e2e": frontend,
         "api_contract": backend or frontend or workflows,
     }

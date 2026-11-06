@@ -11,10 +11,7 @@ from apps.catalogue.models import (
 )
 from apps.catalogue.spatial import generate_browse_geometries, refresh_route_heatmap
 
-# Tables whose statistics the viewport plans depend on. Without fresh
-# statistics after a bulk rebuild, PostgreSQL has chosen a per-route nested
-# loop that was about 95 times slower than the hash semi-join it picks once
-# the tables are analysed.
+# Analysed after a rebuild: stale statistics made viewport queries ~95x slower.
 ANALYZED_MODELS = (Route, RouteBrowseGeometry, RouteHeatmapCell, RouteHeatmapMembership)
 
 

@@ -65,7 +65,7 @@ def test_fixture_parser_contract_uses_stable_post_and_source_fields() -> None:
     assert parsed.posts[0].author == "rider"
     assert parsed.posts[0].source_urls == ("https://mapy.com/s/demo",)
     assert parsed.posts[0].posted_at == datetime(2025, 4, 12, 10, tzinfo=UTC)
-    assert LxmlBikeForumParser().parse_thread(FIXTURE.read_text(), THREAD_URL).title == parsed.title
+    assert LxmlBikeForumParser().parse(FIXTURE.read_text(), THREAD_URL).title == parsed.title
 
 
 @pytest.mark.parametrize(
@@ -728,14 +728,13 @@ def test_cache_body_retention_setting_must_be_positive() -> None:
         configured_body_retention_seconds()
 
 
-def test_cache_cleanup_is_scheduled_and_real_crawl_is_disabled_by_default() -> None:
-    from apps.ingestion.tasks import cleanup_crawl_response_cache, crawl_bikeforum
+def test_cache_cleanup_is_scheduled() -> None:
+    from apps.ingestion.tasks import cleanup_crawl_response_cache
 
     assert settings.CELERY_BEAT_SCHEDULE["cleanup-crawler-response-cache"] == {
         "task": "bikemapy.ingestion.cleanup_crawl_response_cache",
         "schedule": 3600,
     }
-    assert crawl_bikeforum()["status"] == "disabled"
 
     old = CrawlResponseCache.objects.create(
         url="https://bikeforum.example/scheduled-cleanup",

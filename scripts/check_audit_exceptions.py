@@ -1,25 +1,8 @@
-"""Apply the documented, expiring dependency-audit exceptions.
+"""Apply the expiring dependency-audit exceptions in ``.github/audit-exceptions.json``.
 
-The exceptions live in ``.github/audit-exceptions.json``::
-
-    {
-      "python": [{"id": "GHSA-...", "package": "name", "reason": "...", "expires": "2026-12-31"}],
-      "frontend": [...]
-    }
-
-Every exception needs a reason and an expiry date. An expired exception fails
-the audit, so an accepted finding is reviewed again instead of being ignored
-forever.
-
-Commands:
-
-``validate``
-    Check the file and fail on a malformed or expired exception.
-``pip-audit-args``
-    Print ``--ignore-vuln`` arguments for the active Python exceptions.
-``pnpm``
-    Read ``pnpm audit --json`` from stdin and fail on a high or critical
-    advisory without an active frontend exception.
+``validate`` fails on a malformed or expired entry, ``pip-audit-args`` prints
+``--ignore-vuln`` arguments, and ``pnpm`` reads ``pnpm audit --json`` from
+stdin and fails on a high or critical advisory without an exception.
 """
 
 from __future__ import annotations

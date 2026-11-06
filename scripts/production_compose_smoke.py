@@ -116,9 +116,7 @@ def verify_restart_after_failure(compose: list[str], service: str, timeout: floa
         ],
         capture=True,
     )
-    # A direct `docker kill` is treated as an operator stop by the daemon and
-    # intentionally suppresses an `unless-stopped` restart. Stop the service
-    # process from inside its container to model an unexpected failure.
+    # `docker kill` counts as an operator stop and skips the restart policy.
     trigger_unexpected_exit(container, service)
     deadline = time.monotonic() + timeout
     last_state = ""
@@ -410,7 +408,6 @@ def main() -> None:
                     f"PUBLIC_HOST={PUBLIC_HOST}",
                     "USE_X_FORWARDED_HOST=false",
                     "CORS_ALLOWED_ORIGINS=https://compose-smoke.example.invalid",
-                    "GPX_REDISTRIBUTION_APPROVED=false",
                     "GPX_INTERNAL_REDIRECT=false",
                     "BIKEFORUM_DNS_CHECK=false",
                     "BIKEFORUM_CHECK_SOURCES=false",

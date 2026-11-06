@@ -19,14 +19,10 @@ def _parse_ip(value: Any) -> str | None:
 
 
 def client_ip(request: Any) -> str:
-    """Return the client address from the configured trusted boundary.
+    """Return the client address, never from an ``X-Forwarded-For`` chain.
 
-    The application never walks an ``X-Forwarded-For`` chain. In the direct
-    deployment mode, ``REMOTE_ADDR`` is the client. In the Cloudflare Tunnel
-    mode, only the direct Nginx peer may supply one single valid
-    ``CF-Connecting-IP`` value. This makes the policy independent of proxy
-    depth and prevents an arbitrary forwarded prefix from becoming an
-    identity.
+    In Cloudflare Tunnel mode only a trusted Nginx peer may set a single
+    ``CF-Connecting-IP``; otherwise ``REMOTE_ADDR`` is the client.
     """
 
     meta = getattr(request, "META", {})

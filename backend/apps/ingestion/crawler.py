@@ -1,9 +1,7 @@
-"""Polite, resumable ingestion of server-rendered BikeForum pages.
+"""Polite, resumable crawling of BikeForum pages.
 
-The crawler deliberately has two replaceable seams: ``PageFetcher`` handles
-network policy and ``BikeForumParser`` handles forum markup.  Persistence is
-performed one page at a time, which makes a stopped Celery worker safe to
-resume from the last committed checkpoint.
+``PageFetcher`` handles the network and ``BikeForumParser`` the markup. Each
+page is committed on its own, so a stopped worker resumes where it left off.
 """
 
 from __future__ import annotations
@@ -113,11 +111,6 @@ class BikeForumParser(ABC):
     def parse(self, body: str, url: str) -> ParsedThread:
         raise NotImplementedError
 
-    # Named alias keeps the contract convenient for adapters that use the
-    # forum-specific term "thread".
-    def parse_thread(self, body: str, url: str) -> ParsedThread:
-        return self.parse(body, url)
-
 
 def _text(node: Any) -> str:
     return " ".join(node.get_text(" ", strip=True).split()) if node else ""
@@ -174,8 +167,7 @@ def _configured_origin(url: str) -> tuple[str, str, int | None]:
         parsed = urlparse(url)
     except ValueError as exc:
         raise CrawlError(f"Unsafe crawl URL: {url}") from exc
-    # Reject userinfo even when it is empty (``https://@host``).  Empty
-    # parsed.username is otherwise indistinguishable from no userinfo.
+    # Also rejects empty userinfo (``https://@host``).
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or "@" in parsed.netloc:
         raise CrawlError(f"Unsafe crawl URL: {url}")
     try:
@@ -219,12 +211,7 @@ def _posted_at(value: str) -> datetime | None:
 
 
 class BeautifulSoupBikeForumParser(BikeForumParser):
-    """Parse Bike-Forum's server-rendered listings and comment-based threads.
-
-    The ``span.title``/``li.clearfix`` listing and ``div.comment`` post
-    selectors mirror the current public HTML while the generic selectors keep
-    the adapter useful for compatible forum snapshots.
-    """
+    """Parse Bike-Forum's listings and comment-based threads."""
 
     def parse(self, body: str, url: str) -> ParsedThread:
         soup = BeautifulSoup(body, "lxml")
@@ -248,9 +235,7 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             anchor = node.select_one("a.permalink, a[href*='#'], a[data-post-url]")
             fallback_post_url = f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
             post_url = _absolute(url, str(anchor.get("href", ""))) if anchor else ""
-            # Post bodies are user-controlled. A link written inside a post
-            # (for example ``javascript:...#`` or an external phishing page)
-            # must never become the public attribution URL for that post.
+            # A link written inside a post must not become its attribution URL.
             if not post_url or not _same_origin(url, post_url):
                 post_url = fallback_post_url
             author_node = node.select_one("[data-author], .author, .username, .user")
@@ -490,8 +475,7 @@ class HttpxPageFetcher(PageFetcher):
             return False
         expiry = cached.body_expires_at
         if expiry is None:
-            # This fallback keeps rows created before the expiry migration safe
-            # until the migration or the next model save supplies the deadline.
+            # Rows created before body_expires_at existed.
             retention = configured_body_retention_seconds()
             expiry = cached.fetched_at + timedelta(seconds=retention)
         return expiry > now
@@ -562,9 +546,7 @@ class HttpxPageFetcher(PageFetcher):
         for _redirect in range(4):
             for attempt in range(self.retries + 1):
                 try:
-                    # DNS is resolved and pacing is enforced immediately
-                    # before every network attempt, including retries.  A
-                    # DNS answer can change while a retry is pending.
+                    # Check DNS again before every attempt; it can change.
                     self._validate_url(current)
                     self._wait()
                     response = _bounded_http_response(
@@ -587,9 +569,7 @@ class HttpxPageFetcher(PageFetcher):
                                 status_code=200,
                                 from_cache=True,
                             )
-                        # Retention deliberately leaves validators behind. A
-                        # metadata-only 304 cannot be parsed, so retry without
-                        # validators to obtain a fresh body.
+                        # The body was cleared but its validators kept: refetch.
                         if "If-None-Match" in headers or "If-Modified-Since" in headers:
                             headers.pop("If-None-Match", None)
                             headers.pop("If-Modified-Since", None)
@@ -811,9 +791,7 @@ def import_thread(
         )
         thread.save(update_fields=["title", "external_id", "locality"])
     result.threads = int(thread_created)
-    # One query answers the denylist for every link on the page, and one
-    # UPDATE at the end marks all of the page's authors as seen; re-crawling
-    # an unchanged page then writes only these freshness timestamps.
+    # Batch the denylist lookup and the authors' last-seen update per page.
     page_source_urls = {url for post_data in thread_data.posts for url in post_data.source_urls}
     denied_source_urls = set(
         SourceDenylistEntry.objects.filter(
@@ -920,8 +898,7 @@ def _enqueue(task: CrawlTask, urls: list[str]) -> None:
     for url in urls:
         if not url:
             continue
-        # URL validation happens before network access; this also prevents an
-        # untrusted page from growing a frontier outside the configured host.
+        # Keep the frontier on the configured origins.
         _configured_origin(url)
         host = urlparse(url).hostname or ""
         try:
@@ -942,9 +919,7 @@ def _claim_page(
     task: CrawlTask, *, lease_until: datetime, max_attempts: int
 ) -> CrawlPageWork | None:
     now = timezone.now()
-    # A worker can disappear after claiming its final allowed attempt.  Make
-    # that durable state terminal before selecting more work so a takeover
-    # never grants the same page an implicit extra retry.
+    # A worker that died on the last attempt must not earn the page an extra one.
     over_limit = list(
         CrawlPageWork.objects.select_for_update().filter(
             task=task,
@@ -959,8 +934,7 @@ def _claim_page(
         item.last_error = item.last_error or "Page retry limit exhausted"
         item.save(update_fields=["status", "finished_at", "lease_until", "last_error"])
     work = None
-    # Freshly discovered siblings always run before retries of an older
-    # failure; a poison page therefore cannot starve the frontier.
+    # New pages first, so one failing page cannot starve the frontier.
     for query in (
         models.Q(status=CrawlPageStatus.QUEUED, attempts__lt=max_attempts),
         models.Q(
@@ -1311,8 +1285,3 @@ def run_crawl(
         "frontier_remaining": remaining,
         "extractions_queued": total_extractions_queued,
     }
-
-
-# Stable adapter names for callers that do not need the implementation detail.
-HttpxFetcher = HttpxPageFetcher
-BeautifulSoupParser = BeautifulSoupBikeForumParser

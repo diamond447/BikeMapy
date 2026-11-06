@@ -24,8 +24,6 @@ class OwnerSocialAccountAdapter(DefaultSocialAccountAdapter):
     """Keep staff status aligned with the immutable GitHub allowlist."""
 
     def is_open_for_signup(self, request: Any, sociallogin: Any) -> bool:
-        # Only the allowlisted owner needs an account; other GitHub identities
-        # must not create local users through the OAuth callback.
         return is_owner_github_id(sociallogin_github_id(sociallogin))
 
     def pre_social_login(self, request: Any, sociallogin: Any) -> None:

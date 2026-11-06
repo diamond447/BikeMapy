@@ -1,7 +1,5 @@
-# The builder resolves the locked runtime environment with uv; the runtime
-# image receives only that environment and the application source. Neither
-# uv nor the GDAL command-line tools (which pull in a system Python and NumPy)
-# nor the PROJ headers are needed to run Django: GeoDjango loads libgdal.
+# The runtime image gets only the virtualenv and the source; GeoDjango needs
+# libgdal, not uv or the GDAL command-line tools.
 FROM python:3.13-slim-trixie AS builder
 
 # Copy the official uv binary without running an unpinned installer script.
@@ -34,12 +32,7 @@ RUN apt-get update \
 COPY --from=builder /app/.venv /app/.venv
 COPY pyproject.toml uv.lock ./
 
-# Keep the image boundary explicit. Deployment configuration, operational
-# data, and local review material are intentionally not part of the backend
-# image even though the build context is the repository root.
 COPY backend ./backend
 COPY scripts ./scripts
-# Build the immutable static asset set into the release image. Production
-# settings enable the manifest storage; local Compose overrides DEBUG=true.
 RUN DJANGO_DEBUG=false python backend/manage.py collectstatic --noinput
 EXPOSE 8000

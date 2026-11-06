@@ -1,6 +1,4 @@
-# Disposable override used by scripts/rehearse_launch.py. It intentionally
-# allocates host ports dynamically and never changes the production Compose
-# contract.
+# Override for scripts/rehearse_launch.py.
 services:
   db:
     ports:

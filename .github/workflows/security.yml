@@ -86,9 +86,6 @@ jobs:
       - name: Check the documented audit exceptions
         run: python scripts/check_audit_exceptions.py validate
       - name: Audit locked runtime dependencies
-        # Pin the audit tool itself so a registry update cannot silently
-        # change the assurance job. Only unexpired exceptions from
-        # .github/audit-exceptions.json are ignored.
         run: |
           read -r -a ignores <<< "$(python scripts/check_audit_exceptions.py pip-audit-args)"
           uv tool run --from "pip-audit==2.9.0" pip-audit --strict "${ignores[@]}" \
@@ -117,18 +114,13 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Audit locked dependencies
         working-directory: frontend
-        # pnpm exits non-zero whenever it reports a finding; the script fails
-        # on high and critical advisories without an unexpired exception and
-        # on a report that is not valid JSON, such as a registry error.
+        # pnpm exits non-zero on any finding; the script decides.
         run: |
           pnpm audit --json > /tmp/pnpm-audit.json || true
           python ../scripts/check_audit_exceptions.py pnpm < /tmp/pnpm-audit.json
 
   report-scheduled-result:
     name: Track the scheduled result in an issue
-    # A red scheduled run nobody reads stops being a signal. Open (or update)
-    # one tracking issue when the weekly run fails and close it once a
-    # scheduled run passes again.
     if: always() && github.event_name == 'schedule'
     needs: [codeql, gitleaks, python-audit, frontend-audit]
     runs-on: ubuntu-latest

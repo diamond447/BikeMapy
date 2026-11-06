@@ -67,17 +67,13 @@ migration_count="$(docker exec "$CONTAINER" psql --username="$POSTGRES_USER" --d
 migration_count="${migration_count//[[:space:]]/}"
 test "$migration_count" -gt 0
 
-# Restore the archive into a new volume, matching the production
-# /app/storage/media root. The archive validator has already rejected paths
-# outside media/ and traversal entries.
+# Restore the archive into a fresh volume.
 archive_name="$(basename "$gpx_file")"
 docker run --rm -v "$GPX_VOLUME:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
   sh -c 'set -eu; find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar xzf "/backup/$1" -C /data' \
   sh "$archive_name"
 
-# Read every live storage reference and validate it against the restored
-# volume. A missing, corrupt, checksum-mismatched, or semantically invalid
-# payload must fail the drill rather than produce partial evidence.
+# Every stored GPX reference must match the restored files.
 reference_rows="$(docker run --rm --network "$NETWORK" \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
@@ -86,9 +82,7 @@ test "$(jq -er 'length' <<< "$reference_rows")" -gt 0
 printf '%s' "$reference_rows" | docker run --rm -i -v "$GPX_VOLUME:/app/storage:ro" \
   "$APP_IMAGE" python scripts/validate_restore_gpx_references.py --storage-root /app/storage/media
 
-# Endpoint checks must exercise a currently approved version. Historical
-# versions remain part of the exhaustive validation above, but are not the
-# payload selected by the public route endpoint.
+# The endpoint checks use the approved versions.
 approved_references="$(docker run --rm --network "$NETWORK" \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
@@ -99,13 +93,11 @@ gpx_storage_key_json="$(jq -ec '.[1]' <<< "$approved_references")"
 expected_gpx_sha="$(jq -er '.[2]' <<< "$approved_references")"
 restored_gpx_sha="$expected_gpx_sha"
 
-# Start the real application image against the restored targets. These checks
-# cover startup, database/cache readiness, representative catalogue reads,
-# and the GPX endpoint serving the exact restored bytes.
+# Start the application against the restored data and check that it serves it.
 docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
-  -e DJANGO_DEBUG=true -e GPX_REDISTRIBUTION_APPROVED=true \
+  -e DJANGO_DEBUG=true \
   -e DJANGO_MEDIA_ROOT=/app/storage/media -v "$GPX_VOLUME:/app/storage" "$APP_IMAGE" \
   python backend/manage.py runserver 0.0.0.0:8000 --noreload >/dev/null
 application_ready=0

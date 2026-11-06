@@ -63,8 +63,7 @@ async function installFixtures(page: Page, requests: string[], abortedRequests: 
   let observeCancellations = false
   page.on('requestfailed', (request) => {
     const requestUrl = new URL(request.url())
-    // Let only the matching intercepted handler finish after the browser has cancelled it.
-    // Releasing another same-type request can leak a stale response into the final list.
+    // Release only the cancelled request's own handler.
     const heldList = releaseInitialLists.get(request)
     releaseInitialLists.delete(request)
     const heldViewport = releaseInitialViewports.get(request)

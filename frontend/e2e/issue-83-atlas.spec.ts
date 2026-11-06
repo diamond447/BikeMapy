@@ -102,7 +102,7 @@ test('desktop atlas keeps one 360px working sidebar and captures evidence', asyn
   }
   expect(Math.abs(projected.x - projected.width / 2)).toBeLessThan(projected.width * 0.15)
   await page.screenshot({
-    path: '../docs/screenshots/issue-83-desktop.png',
+    path: 'test-results/screenshots/catalogue-desktop.png',
     animations: 'disabled',
   })
 })
@@ -120,7 +120,10 @@ test('mobile atlas keeps the map visible while the sheet has three reachable pos
     'data-position',
     'collapsed',
   )
-  await page.screenshot({ path: '../docs/screenshots/issue-83-mobile.png', animations: 'disabled' })
+  await page.screenshot({
+    path: 'test-results/screenshots/catalogue-mobile.png',
+    animations: 'disabled',
+  })
   await sheetToggle.click()
   await expect(page.locator('[data-testid="sheet-position"]')).toHaveAttribute(
     'data-position',
@@ -155,7 +158,7 @@ test('mobile atlas keeps the map visible while the sheet has three reachable pos
     )
     .toBeGreaterThanOrEqual(12)
   await page.screenshot({
-    path: '../docs/screenshots/issue-83-mobile-detail.png',
+    path: 'test-results/screenshots/catalogue-mobile-detail.png',
     animations: 'disabled',
   })
 })

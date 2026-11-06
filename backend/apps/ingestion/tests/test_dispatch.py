@@ -21,7 +21,6 @@ from apps.ingestion.crawler import (
 from apps.ingestion.dispatch import dispatch_source_extraction, reconcile_extraction_queue
 from apps.ingestion.gpx import extract_gpx
 from apps.ingestion.models import ExtractionAttempt, ExtractionStatus
-from apps.ingestion.tasks import extract_gpx_route
 
 pytestmark = pytest.mark.django_db
 
@@ -40,11 +39,6 @@ def make_source() -> RouteSource:
     return source
 
 
-@override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
-)
 def test_dispatch_is_created_after_commit_and_repeated_calls_are_idempotent(
     django_capture_on_commit_callbacks: Any,
 ) -> None:
@@ -65,11 +59,6 @@ def test_dispatch_is_created_after_commit_and_repeated_calls_are_idempotent(
     assert first.__class__.objects.get(pk=first.pk).dispatched_at is not None
 
 
-@override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
-)
 def test_rollback_cannot_leave_a_dispatched_attempt() -> None:
     source = make_source()
     with patch("apps.ingestion.tasks.extract_gpx_route.delay") as delay:
@@ -82,11 +71,6 @@ def test_rollback_cannot_leave_a_dispatched_attempt() -> None:
     delay.assert_not_called()
 
 
-@override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
-)
 def test_reconciliation_dispatches_an_undispatched_attempt_once() -> None:
     source = make_source()
     with patch("apps.ingestion.tasks.extract_gpx_route.delay") as delay:
@@ -105,9 +89,6 @@ def test_reconciliation_dispatches_an_undispatched_attempt_once() -> None:
 
 
 @override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
     GPX_DISPATCH_TIMEOUT=60,
 )
 def test_dispatch_claim_prevents_a_concurrent_sender_from_publishing_twice() -> None:
@@ -143,9 +124,6 @@ class SyntheticSourceChecker(SourceChecker):
 
 
 @override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
     BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"],
     BIKEFORUM_DNS_CHECK=False,
 )
@@ -183,11 +161,6 @@ def test_synthetic_crawl_extracts_and_publishes_a_public_api_route(
     assert response.json()["results"][0]["id"] == str(route_source.route_id)
 
 
-@override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
-)
 def test_queued_attempt_reuses_extraction_retry_history() -> None:
     source = make_source()
     attempt = ExtractionAttempt.objects.create(
@@ -206,35 +179,9 @@ def test_queued_attempt_reuses_extraction_retry_history() -> None:
 
 
 @override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=False,
-    GPX_LEGAL_APPROVED=True,
-)
-def test_execution_gate_blocks_queued_celery_work_without_provider_access() -> None:
-    source = make_source()
-    attempt = ExtractionAttempt.objects.create(
-        source=source,
-        source_url=source.mapy_url,
-        status=ExtractionStatus.QUEUED,
-    )
-    with patch("apps.ingestion.gpx._export") as export:
-        result = extract_gpx_route.apply(args=[source.pk, attempt.pk]).get()
-
-    attempt.refresh_from_db()
-    source.refresh_from_db()
-    assert result["status"] == ExtractionStatus.BLOCKED
-    assert attempt.status == ExtractionStatus.BLOCKED
-    assert source.processing_status == "blocked"
-    export.assert_not_called()
-
-
-@override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
     GPX_MAX_ATTEMPTS=1,
 )
-def test_reenabled_gate_does_not_spend_retry_budget_on_blocked_history(
+def test_blocked_history_does_not_spend_the_retry_budget(
     django_capture_on_commit_callbacks: Any,
 ) -> None:
     source = make_source()
@@ -245,7 +192,7 @@ def test_reenabled_gate_does_not_spend_retry_budget_on_blocked_history(
         source_url=source.mapy_url,
         status=ExtractionStatus.BLOCKED,
         attempt_number=7,
-        error="provider authorization was disabled",
+        error="route extraction was disabled",
         finished_at=timezone.now(),
     )
     with patch("apps.ingestion.tasks.extract_gpx_route.delay") as delay:
@@ -259,11 +206,6 @@ def test_reenabled_gate_does_not_spend_retry_budget_on_blocked_history(
     delay.assert_called_once_with(source.pk, retry.pk)
 
 
-@override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
-)
 def test_failed_extraction_is_reconciled_as_a_new_retry(
     django_capture_on_commit_callbacks: Any,
 ) -> None:
@@ -290,9 +232,6 @@ def test_failed_extraction_is_reconciled_as_a_new_retry(
 
 
 @override_settings(
-    GPX_EXTRACTION_ENABLED=True,
-    GPX_PROVIDER_AUTHORIZED=True,
-    GPX_LEGAL_APPROVED=True,
     GPX_PROCESSING_TIMEOUT=1,
 )
 def test_stale_expiration_fences_late_completion() -> None:

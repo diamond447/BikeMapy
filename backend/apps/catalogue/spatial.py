@@ -1,8 +1,6 @@
-"""Derived spatial products and bounded map browse queries.
+"""Derived browse lines, heatmap cells and bounded viewport queries.
 
-The canonical normalized route geometry is deliberately kept separate from
-these products.  Browse geometries and heatmap memberships can be rebuilt
-after a tolerance or grid-policy change without touching route history.
+These are rebuilt from the normalized route geometry and never change it.
 """
 
 from __future__ import annotations
@@ -41,19 +39,12 @@ def _setting(name: str, default: Any) -> Any:
     return getattr(settings, name, default)
 
 
-# GeoJSON coordinate decimals for browse lines: six decimals of a degree are
-# about 0.1 m, well below the half-pixel simplification tolerance at any
-# stored browse zoom.
+# Six decimals are about 0.1 m, below the simplification tolerance.
 BROWSE_GEOJSON_PRECISION = 6
 
 
 def browse_zooms() -> tuple[int, ...]:
-    """Zooms that store a simplified browse line.
-
-    Above the highest one the viewport serves that line; at z16 and z18 the
-    simplification kept nearly every vertex, so those rows mostly duplicated
-    the normalized geometry that a selected route already loads.
-    """
+    """Zooms that store a simplified browse line; higher zooms reuse the last."""
 
     value = _setting("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14")
     if isinstance(value, str):
@@ -107,12 +98,7 @@ def _geojson(value: Any) -> dict[str, Any] | None:
 def _line_simplify(
     points: list[tuple[float, float]], tolerance_m: float
 ) -> list[tuple[float, float]]:
-    """Douglas-Peucker fallback for the SQLite quality suite.
-
-    Production PostGIS uses the same tolerance policy through GEOS-backed
-    geometry simplification; converting metres to latitude degrees keeps the
-    fallback deterministic and intentionally conservative.
-    """
+    """Douglas-Peucker fallback for tests without PostGIS."""
 
     if len(points) <= 2:
         return points
@@ -132,8 +118,7 @@ def _line_simplify(
         )
         return math.hypot(point[0] - (start[0] + t * dx), point[1] - (start[1] + t * dy))
 
-    # An explicit stack avoids RecursionError on long GPX tracks and keeps the
-    # fallback's work bounded by the number of vertices retained by DP.
+    # A stack instead of recursion: long tracks would hit the recursion limit.
     keep = [False] * len(points)
     keep[0] = keep[-1] = True
     pending = [(0, len(points) - 1)]
@@ -155,19 +140,14 @@ def _line_simplify(
 def simplification_tolerance_m(zoom: int) -> float:
     if zoom < 0 or zoom > 22:
         raise ValidationError("zoom must be between 0 and 22")
-    # Half a Web-Mercator pixel at the equator.  The floor avoids storing
-    # pointless sub-millimetre vertices at close zooms.
+    # Half a Web-Mercator pixel at the equator.
     return float(max(0.5, 156543.03392804097 / (2**zoom) * 0.5))
 
 
 def generate_browse_geometries(
     version: RouteVersion, *, zooms: tuple[int, ...] | None = None
 ) -> list[RouteBrowseGeometry]:
-    """Generate or replace derived geometries for a route version.
-
-    Without explicit ``zooms`` the configured set is rebuilt and rows for
-    zooms that are no longer configured are removed.
-    """
+    """Rebuild a version's browse lines; without ``zooms``, drop unconfigured ones."""
 
     source = version.normalized_geometry or version.simplified_geometry
     points = _coordinates(source)
@@ -180,10 +160,7 @@ def generate_browse_geometries(
     if _GIS_AVAILABLE:
         from django.contrib.gis.geos import GEOSGeometry
 
-        # Simplify in EPSG:3857 so the tolerance is metres.  Transforming
-        # through GEOS uses the same robust implementation as PostGIS and
-        # preserves topology for route lines at realistic GPX sizes.  The
-        # line is projected once and each simplified copy projected back.
+        # Simplify in EPSG:3857 so the tolerance is in metres.
         projected = GEOSGeometry(
             json.dumps({"type": "LineString", "coordinates": points}), srid=4326
         )
@@ -332,8 +309,6 @@ def refresh_route_heatmap(
         for zoom in heatmap_zooms():
             crossing_tiles = _crossing_tiles(points, zoom)
             if _GIS_AVAILABLE and connection.vendor == "postgresql" and crossing_tiles:
-                # The Python bbox pass bounds the candidate set; PostGIS is
-                # the authority for the final line/cell intersection test.
                 existing_cells = RouteHeatmapCell.objects.filter(
                     zoom=zoom,
                     x__in=[x for x, _ in crossing_tiles],
@@ -346,10 +321,8 @@ def refresh_route_heatmap(
                         crossing_cells.values_list("x", "y")
                     )
             new_tiles_by_zoom[zoom] = crossing_tiles
-    # Membership writes do not touch the shared counter row. This lets
-    # competing refreshes overlap; the stable cell lock below serializes their
-    # read/replace of route_count. Empty cells are retained to avoid a delete
-    # racing a concurrent membership insert.
+    # Concurrent refreshes serialize on the cell lock below. Empty cells are
+    # kept: deleting one could race a concurrent membership insert.
     new_cells: dict[tuple[int, int, int], RouteHeatmapCell] = {}
     for zoom, tiles in new_tiles_by_zoom.items():
         for x, y in sorted(tiles):
@@ -439,9 +412,8 @@ class _FilterEpochCallback:
         if not self._batch.bumped:
             self._batch.bumped = True
             bump_viewport_filter_cache_epoch()
-        # ``captureOnCommitCallbacks(execute=True)`` executes callbacks while
-        # leaving them queued. Treat all callbacks from this batch as handled
-        # so a later capture in the same test transaction can start a batch.
+        # captureOnCommitCallbacks(execute=True) runs callbacks but leaves them
+        # queued, so mark this batch handled.
         if any(callback is self for _, callback, _ in db_connection.run_on_commit):
             for _, callback, _ in db_connection.run_on_commit:
                 if getattr(callback, "_batch", None) is self._batch:
@@ -599,12 +571,7 @@ def _viewport_cache_key(
     candidate_queryset: QuerySet[Route] | None,
     filter_inputs: Mapping[str, Any] | None,
 ) -> str | None:
-    """Return the cache key, or ``None`` for a candidate set without filter inputs.
-
-    A caller-supplied queryset is only cacheable together with the normalized
-    filter inputs it was built from; its compiled SQL makes the key specific
-    to the candidate definition.
-    """
+    """Return the cache key, or ``None`` for a queryset without its filter inputs."""
 
     if candidate_queryset is not None and filter_inputs is None:
         return None
@@ -762,9 +729,7 @@ def _query_routes(
             zoom__in=browse_zooms(),
         ).values("pk")
         candidates = candidates.filter(Exists(relevant_browse_geometry))
-    # The SQLite/non-GIS path must retain the configured scan before Python
-    # bbox filtering, otherwise off-screen rows can hide later in-view rows
-    # within the supported candidate bound.
+    # Without PostGIS the bounds are checked in Python, so scan the full limit.
     candidate_scan_limit = _candidate_scan_limit(limits, bounded_by_limit=_use_postgis())
     candidate_overflow = (
         candidates.order_by("pk")
@@ -796,8 +761,7 @@ def _query_routes(
     if _use_postgis():
         from django.contrib.gis.db.models.functions import AsGeoJSON
 
-        # DISTINCT ON keeps only the closest stored zoom of each version; the
-        # lower-zoom rows used to be read and then discarded in Python.
+        # DISTINCT ON keeps only the closest stored zoom of each version.
         annotated_browse_rows = (
             browse_rows.distinct("version_id")
             .annotate(_geometry_json=AsGeoJSON("geometry", precision=BROWSE_GEOJSON_PRECISION))
@@ -812,14 +776,11 @@ def _query_routes(
     fallback_geometry_by_version: dict[Any, Any] = {}
     if missing_version_ids:
         fallback_geometry_by_version = {
-            # A viewport must never fall back to the full normalized
-            # payload; selected-route queries are the full-geometry boundary.
+            # Never the full normalized geometry in a viewport.
             version.pk: version.simplified_geometry
             for version in RouteVersion.objects.filter(pk__in=missing_version_ids)
         }
     rows: list[dict[str, Any]] = []
-    # On PostGIS the candidate query already required a stored browse line
-    # that intersects the viewport, so only the non-GIS path checks bounds.
     check_bounds = not _use_postgis()
     for route in candidate_routes:
         version_id = route["current_approved_version_id"]
@@ -845,8 +806,6 @@ def _query_routes(
         "zoom": zoom,
         "cells": [],
         "routes": rows[: limits.max_routes],
-        # A full candidate scan is intentionally bounded; reaching that
-        # bound means there may be qualifying simplified lines beyond it.
         "truncated": len(rows) > limits.max_routes or candidate_overflow,
     }
 
@@ -864,8 +823,8 @@ def query_viewport(
 ) -> dict[str, Any]:
     """Return heatmap cells or simplified lines for a bounded viewport.
 
-    ``candidate_queryset`` restricts the result to matching public routes.
-    Pass the ``filter_inputs`` it was built from to make the result cacheable.
+    Pass the ``filter_inputs`` a ``candidate_queryset`` was built from to make
+    the result cacheable.
     """
 
     _validate_bounds(west, south, east, north)

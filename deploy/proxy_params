@@ -3,9 +3,7 @@ proxy_set_header Host $host;
 # the host Django uses for absolute URLs (password-reset and OAuth links).
 proxy_set_header X-Forwarded-Host $host;
 proxy_set_header X-Real-IP $remote_addr;
-# Never pass a user-controlled forwarded chain to Django. The application
-# derives the public client identity from CF-Connecting-IP only after checking
-# that this direct Nginx peer is trusted.
+# Never pass a client-supplied forwarded chain to Django.
 proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Forwarded-Proto https;
 proxy_set_header CF-Connecting-IP $http_cf_connecting_ip;

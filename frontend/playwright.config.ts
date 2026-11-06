@@ -2,9 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  // A single CI retry keeps a transient browser or network hiccup from
-  // failing the run; the report lists every retried test as flaky, so a
-  // pattern stays visible instead of being retried away silently.
+  // Retried tests are reported as flaky.
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI
     ? [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]]

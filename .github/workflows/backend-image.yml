@@ -10,9 +10,7 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/backend-image.yml"
-  # Publish only after the complete quality workflow, including the PostGIS
-  # suite, has passed for a push to main. This replaces a third, SQLite-only
-  # test run that this workflow used to repeat before packaging.
+  # Publish only after CI has passed for a push to main.
   workflow_run:
     workflows: ["Quality checks"]
     types: [completed]
@@ -46,9 +44,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # The token can publish only in the trusted-event condition below. Pull
-      # requests from forks receive a read-only token from GitHub regardless of
-      # this declaration.
       packages: write
     steps:
       - name: Check out source

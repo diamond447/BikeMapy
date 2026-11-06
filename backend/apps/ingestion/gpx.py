@@ -1,9 +1,4 @@
-"""Safe GPX extraction, validation, and immutable catalogue import.
-
-The exporter is intentionally hidden behind :class:`GpxExporter`.  Importing
-this module therefore does not make the third-party client part of the
-catalogue API, and tests can use a small in-memory exporter.
-"""
+"""Safe GPX extraction, validation and import into the catalogue."""
 
 from __future__ import annotations
 
@@ -142,12 +137,7 @@ def _public_addresses(hostname: str, port: int) -> tuple[str, ...]:
 
 
 def validate_gpx_url(url: str, *, check_dns: bool | None = None) -> str:
-    """Validate a Mapy URL before any network request is made.
-
-    Only HTTPS Mapy hosts are accepted.  DNS answers are checked as well so a
-    compromised/overridden Mapy hostname cannot be used to reach local cloud
-    metadata or private network services.
-    """
+    """Accept only HTTPS Mapy hosts that resolve to public addresses."""
 
     try:
         parsed = urlparse(url)
@@ -210,10 +200,8 @@ class MapyGpxExporterAdapter:
         last_error: Exception | None = None
         for attempt in range(self.retries):
             try:
-                # Use the dependency's public resolver/exporter functions,
-                # passing our guarded client into every FRPC, redirect, POI,
-                # altitude, and GPX request.  The convenience client cannot
-                # expose those transport controls.
+                # Call the resolver and exporter directly so every request goes
+                # through the guarded client.
                 from mapy_gpx_exporter.exporter import export_gpx  # type: ignore[import-untyped]
                 from mapy_gpx_exporter.resolver import (  # type: ignore[import-untyped]
                     resolve_short_link,
@@ -233,9 +221,7 @@ class MapyGpxExporterAdapter:
                 if not isinstance(content, bytes):
                     raise GpxExtractionError("The exporter returned a non-byte GPX payload")
                 if route.resolution_method in {"local_decode", "local_waypoint"}:
-                    # The dependency generated this XML locally from resolved
-                    # route data; a preceding FRPC response is not the GPX
-                    # response and its content type must not be reused.
+                    # Generated locally: no HTTP response belongs to this GPX.
                     return ExportedGpx(content=content)
                 if client.request_count == requests_before_export:
                     raise GpxExtractionError("The exporter produced no GPX network response")
@@ -262,13 +248,10 @@ class MapyGpxExporterAdapter:
 
 
 class _GuardedHttpClient:
-    """Small ``httpx.Client``-compatible transport facade for the exporter.
+    """``httpx.Client`` stand-in that validates every URL and caps response size.
 
-    Upstream calls ``get`` and ``post`` and expects a buffered response.  We
-    retain that API while reading each response in bounded chunks, rejecting
-    every request URL immediately before connection and disabling automatic
-    redirects.  The upstream resolver then explicitly follows redirects,
-    causing this same guard to run for each hop.
+    Redirects are not followed automatically; the exporter follows them itself,
+    so each hop is validated again.
     """
 
     def __init__(self, *, timeout: float, max_bytes: int) -> None:
@@ -310,8 +293,7 @@ class _GuardedHttpClient:
                 response.status_code,
                 headers=response.headers,
                 content=b"".join(chunks),
-                # The transport connects to an IP, but callers must observe
-                # the validated logical URL (including query parameters).
+                # Report the hostname, not the pinned IP the transport used.
                 request=httpx.Request(
                     response.request.method,
                     response.request.url.copy_with(host=urlparse(str(url)).hostname),
@@ -333,8 +315,7 @@ class PinnedMapyTransport(httpx.BaseTransport):
         original_host = request.url.host
         validate_gpx_url(str(request.url))
         addresses = _public_addresses(original_host, request.url.port or 443)
-        # The address is resolved immediately before the underlying transport
-        # connects.  HTTPX therefore cannot perform another hostname lookup.
+        # Connect to the checked address so DNS cannot change in between.
         pinned_url = request.url.copy_with(host=addresses[0])
         headers = request.headers.copy()
         headers["host"] = original_host
@@ -475,8 +456,7 @@ def parse_gpx(
         ):
             raise GpxValidationError("A route point is outside the GPX namespace")
     if not tracks and not tracks_containers and not routes_containers:
-        # Standalone waypoints are accepted in document order, which is a
-        # deterministic LineString source for point-to-point place exports.
+        # Place exports have only waypoints; use them in document order.
         tracks = [element for element in containers if _gpx_element(element, "wpt", namespace)]
         if any(
             _local_name(element) == "wpt" and not _gpx_element(element, "wpt", namespace)
@@ -655,13 +635,6 @@ def extract_gpx(
 
     from apps.catalogue.models import Route, RouteSource, SourceDenylistEntry
 
-    if attempt_id is not None:
-        from .dispatch import block_extraction_attempt, extraction_gate_reason
-
-        gate_reason = extraction_gate_reason()
-        if gate_reason is not None:
-            return block_extraction_attempt(source_id, attempt_id=attempt_id, reason=gate_reason)
-
     with transaction.atomic():
         source = RouteSource.objects.get(pk=source_id)
         route = Route.objects.select_for_update().get(pk=source.route_id)
@@ -748,9 +721,8 @@ def extract_gpx(
             existing = RouteVersion.objects.filter(source=source, checksum=checksum).first()
             storage_key = ""
             if existing is None and route.lifecycle == RouteLifecycle.PUBLISHED:
-                # Keep the checksum visible for diagnostics, but include the
-                # immutable extraction attempt identity so a stale orphan can
-                # never delete a future import that reuses the same checksum.
+                # The attempt ID keeps a stale orphan from deleting a later
+                # import with the same checksum.
                 filename = PurePosixPath(
                     "gpx",
                     "routes",
@@ -777,10 +749,8 @@ def extract_gpx(
             explicit_decision = False
             similarity_id: int | None = None
             similarity_evidence: dict[str, Any] = {}
-            # Only a new route identity is automatically classified.  A
-            # re-import of an existing source must never undo a prior human
-            # decision or quarantine a route merely because its history now
-            # has another similar version.
+            # Only new routes are classified, so a re-import never overrides a
+            # moderation decision.
             if created and route.current_approved_version_id is None:
                 relationship, similarity = classify_version(version)
                 if relationship is not None and similarity is not None:
@@ -1000,16 +970,9 @@ def cleanup_orphan_payload(orphan_id: int, *, respect_backoff: bool = False) -> 
         return result
     assert token is not None and storage_key is not None
     try:
-        # RouteVersion rows are immutable, so an orphan must never remove a
-        # key that has since become a live payload.  This check also handles a
-        # worker crash after claiming the orphan and before its retry runs.
+        # Never delete a key that a route version now uses.
         if RouteVersion.objects.filter(original_gpx_storage_key=storage_key).exists():
             return _complete_orphan_payload(orphan_id, token, protected=True)
-        # Storage deletion is intentionally idempotent.  Most Django storage
-        # backends already treat a missing key as success; a backend that
-        # raises FileNotFoundError gets the same treatment here.  The key is
-        # always the durable snapshot from the failed import, so a retry can
-        # never target a newer payload.
         default_storage.delete(storage_key)
     except FileNotFoundError:
         return _complete_orphan_payload(orphan_id, token)
@@ -1080,12 +1043,7 @@ def _select_orphan_reconciliation_candidates(*, limit: int, now: Any) -> list[Or
 
 
 def reconcile_orphan_payloads(*, limit: int = 100) -> dict[str, int]:
-    """Process a bounded batch of pending and retryable orphan payloads.
-
-    Candidate IDs are selected before external storage I/O.  Each item is
-    finalized independently, so one temporary storage outage cannot prevent
-    the rest of the batch from being attempted.
-    """
+    """Process a bounded batch of orphan payloads, each one independently."""
 
     limit = max(1, int(limit))
     now = timezone.now()
@@ -1096,8 +1054,7 @@ def reconcile_orphan_payloads(*, limit: int = 100) -> dict[str, int]:
         try:
             result = cleanup_orphan_payload(candidate.pk, respect_backoff=True)
         except OrphanPayloadCleanup.DoesNotExist:
-            # Another reconciler may have finalized and removed an operational
-            # record between selection and processing.
+            # Finished by another reconciler meanwhile.
             skipped += 1
             continue
         if result.get("claimed") or result.get("deferred"):
@@ -1126,8 +1083,3 @@ def reconcile_orphan_payloads(*, limit: int = 100) -> dict[str, int]:
         "retried": retried,
         "skipped": skipped,
     }
-
-
-# Descriptive aliases keep the service easy to discover for callers.
-extract_route = extract_gpx
-parse_route_gpx = parse_gpx

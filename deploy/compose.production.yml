@@ -4,19 +4,13 @@ services:
   backend:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
     restart: unless-stopped
-    # Docker's init runs as PID 1, forwards stop signals and reaps orphans.
-    # The service process is its child, so a crash of the service ends the
-    # container and the restart policy recovers it (the image runs gunicorn
-    # and celery directly, without a uv process in front of them).
+    # Not PID 1, so a crash of the service ends the container and it restarts.
     init: true
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
       DJANGO_DEBUG: ${DJANGO_DEBUG:?Set DJANGO_DEBUG=false in the production environment}
-    # A release must run migrations as a one-shot job before this service is
-    # started. Keep the guard in the long-running command as a second safety
-    # boundary so an accidentally started candidate cannot serve against an
-    # older schema.
+    # Refuse to start against an unmigrated schema.
     command:
       - /bin/sh
       - -c
@@ -40,10 +34,7 @@ services:
         condition: service_healthy
         restart: true
     healthcheck:
-      # Keep `backend` in DJANGO_ALLOWED_HOSTS: DEBUG=False rejects this
-      # internal service hostname even though the public host is configured.
-      # The request bypasses Nginx, so preserve the HTTPS scheme that the
-      # trusted proxy supplies before Django's production redirect runs.
+      # Needs `backend` in DJANGO_ALLOWED_HOSTS; the header skips the HTTPS redirect.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://backend:8000/health/ready/', headers={'X-Forwarded-Proto': 'https'}), timeout=2)"]
       interval: 10s
       timeout: 5s
