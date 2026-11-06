@@ -8,7 +8,6 @@ import { MAP_PROVIDER } from './mapProvider'
 import { loadMapLibre } from './mapLibreLoader'
 import './styles.css'
 
-
 setupCloudflareWebAnalytics()
 
 /** Open the connections the first view needs while the bundle still runs. */
