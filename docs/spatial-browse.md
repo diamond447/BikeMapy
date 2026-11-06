@@ -23,6 +23,16 @@ The response is cached for 60 seconds; lifecycle changes advance a cache epoch
 so stale map results are naturally bypassed.  These are service boundaries,
 not an HTTP bulk-export contract.
 
+The frontend snaps each viewport request outward to the tile grid one level
+below the map zoom, so small pans reuse the same URL and therefore the same
+server-side cache entry.  The viewport endpoint answers with
+`Cache-Control: public, max-age=60` (`SPATIAL_HTTP_MAX_AGE`) and an `ETag`
+derived from the payload; a matching `If-None-Match` receives `304` without a
+body.  A client that already holds a response can therefore see a change up
+to that many seconds late.  To share responses between visitors at the edge,
+add a Cloudflare cache rule for `/api/v1/routes/viewport/` that respects the
+origin's cache headers; Cloudflare does not cache JSON by default.
+
 The derived tables are intentionally not rebuilt inside the schema migration:
 large catalogues must not hold a deployment transaction while doing GEOS work.
 After applying migrations, run the resumable, route-by-route rebuild command

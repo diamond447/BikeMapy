@@ -374,6 +374,37 @@ def test_viewport_endpoint_requires_bounds_and_returns_bounded_data(public_route
     assert truncated.json()["truncated"] is True
 
 
+def test_viewport_responses_are_cacheable_and_revalidate(public_route: Route) -> None:
+    client = Client()
+    url = "/api/v1/routes/viewport/?west=16.5&south=49.1&east=16.8&north=49.3&zoom=12"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert first["Cache-Control"] == "public, max-age=60"
+    etag = first["ETag"]
+    assert etag.startswith('"') and etag.endswith('"')
+
+    not_modified = client.get(url, HTTP_IF_NONE_MATCH=f'W/"other", {etag}')
+    assert not_modified.status_code == 304
+    assert not_modified.content == b""
+    assert not_modified["ETag"] == etag
+
+    # A change to the catalogue changes the payload, so the old ETag misses.
+    public_route.display_title = "Renamed gravel loop"
+    public_route.save(update_fields=["display_title", "updated_at"])
+    cache.clear()
+    changed = client.get(url, HTTP_IF_NONE_MATCH=etag)
+    assert changed.status_code == 200
+    assert changed["ETag"] != etag
+
+
+@override_settings(SPATIAL_HTTP_MAX_AGE=15)
+def test_viewport_http_lifetime_is_configurable(public_route: Route) -> None:
+    response = Client().get(
+        "/api/v1/routes/viewport/?west=16.5&south=49.1&east=16.8&north=49.3&zoom=12"
+    )
+    assert response["Cache-Control"] == "public, max-age=15"
+
+
 def test_viewport_endpoint_applies_catalogue_filters(public_route: Route) -> None:
     client = Client()
     base = "west=16.5&south=49.1&east=16.8&north=49.3&zoom=12"

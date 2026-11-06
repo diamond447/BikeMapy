@@ -743,6 +743,10 @@ ROUTE_DEDUPLICATION_BATCH_SIZE = int(os.getenv("ROUTE_DEDUPLICATION_BATCH_SIZE",
 # route lines take over at closer zooms.  Every public query has an explicit
 # bound so a large viewport cannot accidentally become a catalogue dump.
 SPATIAL_BROWSE_ZOOMS = os.getenv("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14")
+# Browser and CDN lifetime of a public viewport response. The server-side
+# viewport cache is invalidated by epochs; this adds at most this many seconds
+# of staleness for a client that already holds the response.
+SPATIAL_HTTP_MAX_AGE = env_int("SPATIAL_HTTP_MAX_AGE", 60)
 SPATIAL_HEATMAP_ZOOMS = os.getenv("SPATIAL_HEATMAP_ZOOMS", "3,4,5,6,7,8")
 SPATIAL_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_MAX_ROUTES_PER_QUERY", "500"))
 SPATIAL_MAX_CELLS_PER_QUERY = int(os.getenv("SPATIAL_MAX_CELLS_PER_QUERY", "10000"))

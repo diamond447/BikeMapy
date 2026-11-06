@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath
 from typing import Any
@@ -497,4 +499,25 @@ class ViewportRouteView(APIView):
             )
         except ValidationError as exc:
             raise ParseError(str(exc)) from exc
-        return Response(result)
+        return _cacheable_response(request, result)
+
+
+def _cacheable_response(request: Request, result: dict[str, Any]) -> Response:
+    """Let browsers and the CDN reuse a public viewport for a short time.
+
+    The frontend snaps its viewport to a tile grid, so neighbouring map
+    positions share a URL. The ETag is a digest of the payload, which keeps
+    revalidation correct across deployments and data changes; a matching
+    If-None-Match is answered with 304 and no body.
+    """
+
+    digest = hashlib.sha256(
+        json.dumps(result, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    etag = f'"{digest[:32]}"'
+    max_age = int(getattr(settings, "SPATIAL_HTTP_MAX_AGE", 60))
+    headers = {"ETag": etag, "Cache-Control": f"public, max-age={max_age}"}
+    if_none_match = request.headers.get("If-None-Match", "")
+    if etag in {value.strip().removeprefix("W/") for value in if_none_match.split(",")}:
+        return Response(status=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return Response(result, headers=headers)

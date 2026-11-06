@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { apiClient } from '../api/client'
 import type { Filters, ViewState, ViewportResponse } from './types'
 import { useDebouncedFilters } from './useDebouncedFilters'
+import { snapToTileGrid } from './viewportGrid'
 
 export type ViewportCopy = { mapUnavailable: string }
 
@@ -47,12 +48,15 @@ export function useViewport(
     requestControllerRef.current = controller
     let active = true
     const span = Math.max(0.05, 35 / 2 ** view.zoom)
-    const [west, south, east, north] = view.bounds ?? [
-      view.longitude - span * 1.4,
-      view.latitude - span,
-      view.longitude + span * 1.4,
-      view.latitude + span,
-    ]
+    const [west, south, east, north] = snapToTileGrid(
+      view.bounds ?? [
+        view.longitude - span * 1.4,
+        view.latitude - span,
+        view.longitude + span * 1.4,
+        view.latitude + span,
+      ],
+      view.zoom,
+    )
     const query = {
       west,
       south,
