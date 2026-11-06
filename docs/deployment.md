@@ -62,7 +62,7 @@ Docker's init and check `migrate --check` before starting.
 ## Release
 
 ```sh
-export COMPOSE="docker compose --env-file deploy/.env.production -f deploy/compose.production.yml"
+export COMPOSE=./deploy/compose.sh
 export BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)" BACKUP_DIR="$PWD/backup"
 
 # Back up while the previous image is still selected.
@@ -89,12 +89,35 @@ application failure, select the previous digest and run
 If data must be restored, use `deploy/restore.sh` (below) with the previous
 image selected. CI rehearses the image rollback on every pull request.
 
+## Lean mode
+
+A home server that only serves the catalogue can run without Redis and Celery.
+Set `BIKEMAPY_LEAN=true` in `deploy/.env.production`; `deploy/compose.sh`, which
+the commands above and the backup scripts use, then adds
+`deploy/compose.lean.yml` (Docker Compose 2.24.4 or newer). Only `db`,
+`backend` and `proxy` start, and the admin index shows the active mode.
+
+In lean mode tasks run inline in the request that triggers them, and the
+cache used for throttles, report limits and viewport epochs is the
+`bikemapy_cache` table in PostgreSQL. Its increments are not atomic, so
+simultaneous reports can slightly exceed the report limit. There is no beat:
+install [`maintenance.cron.example`](../deploy/maintenance.cron.example), which
+runs `manage.py run_periodic_tasks` hourly and with `--with-crawl` once a day.
+Use the full topology for heavy ingestion, because a crawl then runs inside
+the cron process.
+
+Switching a running host to lean mode: stop and remove `worker`, `beat` and
+`redis` first, since Compose leaves running containers of services that became
+profile-gated, then set the flag and run `$COMPOSE up -d`. In the release and
+rollback commands, list `backend proxy` instead of `backend worker beat proxy`.
+To go back, remove the flag and run `$COMPOSE up -d`.
+
 ## Health checks
 
 | Endpoint | Meaning |
 | --- | --- |
 | `/health/live/` | The web process answers. |
-| `/health/ready/` | PostgreSQL and Redis respond. |
+| `/health/ready/` | PostgreSQL and the cache (Redis, or PostgreSQL in lean mode) respond. |
 | `/health/crawler/` | The incremental crawl succeeded within `CRAWLER_FRESHNESS_MAX_AGE` (36 h). |
 
 Check them from outside the host and alert after two consecutive failures.

@@ -355,3 +355,24 @@ def test_admin_denylist_restore_post_uses_actor_and_reason() -> None:
     assert ModerationDecision.objects.filter(
         action="denylist_restore", actor=user, reason="reviewed takedown"
     ).exists()
+
+
+@pytest.mark.parametrize(
+    ("background_jobs", "mode", "cache"), [(True, "Full", "Redis"), (False, "Lean", "PostgreSQL")]
+)
+def test_admin_index_shows_the_deployment_mode(
+    background_jobs: bool, mode: str, cache: str
+) -> None:
+    user = owner()
+    with override_settings(
+        GITHUB_OWNER_IDS=frozenset({"12345"}), BACKGROUND_JOBS_ENABLED=background_jobs
+    ):
+        client = Client()
+        client.force_login(user)
+        oauth_session(client, user)
+        response = client.get("/admin/")
+    assert response.status_code == 200
+    panel = response.content.decode().split('id="deployment-mode"', 1)[1].split("</div>", 1)[0]
+    assert f"<td>{mode}</td>" in panel
+    assert f"<td>{cache}</td>" in panel
+    assert ("Periodic tasks last run" in panel) is not background_jobs

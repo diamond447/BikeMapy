@@ -1,0 +1,19 @@
+# Lean mode: only PostgreSQL, the API and Nginx. Added by deploy/compose.sh
+# when deploy/.env.production sets BIKEMAPY_LEAN=true (Compose 2.24.4+).
+services:
+  backend:
+    environment:
+      BACKGROUND_JOBS_ENABLED: "false"
+    depends_on: !override
+      db:
+        condition: service_healthy
+        restart: true
+
+  worker:
+    profiles: [jobs]
+
+  beat:
+    profiles: [jobs]
+
+  redis:
+    profiles: [jobs]

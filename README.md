@@ -19,8 +19,8 @@ The source is public; the service is not publicly launched yet.
   schema and a generated TypeScript client.
 - Route catalogue with immutable route versions, source provenance,
   duplicate and variant detection, and an audited moderation history.
-- A resumable, rate-limited BikeForum crawler and GPX import, each behind
-  deployment flags.
+- A resumable, rate-limited BikeForum crawler and GPX import.
+- A lean single-host mode that runs only PostgreSQL, the API and Nginx.
 - Owner-only administration through GitHub OAuth, and anonymous route reports
   protected by Turnstile and rate limits.
 
