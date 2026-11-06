@@ -28,7 +28,7 @@ The source is public; the service is not publicly launched yet.
 
 - **Frontend:** React 19, TypeScript, Vite, MapLibre GL JS, `openapi-fetch`,
   pnpm; Cloudflare Pages.
-- **Backend:** Python 3.13, Django 5.2, Django REST Framework, GeoDjango,
+- **Backend:** Python 3.13, Django 6.1, Django REST Framework, GeoDjango,
   Celery, `django-allauth`.
 - **Data:** PostgreSQL with PostGIS, Redis.
 - **Delivery:** Docker Compose, Nginx, Cloudflare Tunnel, commit-tagged images
