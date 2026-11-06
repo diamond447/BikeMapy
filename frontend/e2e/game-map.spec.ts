@@ -205,6 +205,23 @@ test('game map has no automated accessibility violations and honors reduced moti
 })
 
 test('capture mode keeps global ranks while member visibility changes', async ({ page }) => {
+  // The leaderboard shows the current Prague month's change and the fixture
+  // describes September 2026. Only Date is shifted: Playwright's clock also
+  // replaces the performance timeline that this test measures.
+  await page.addInitScript(() => {
+    const RealDate = Date
+    const offset = RealDate.UTC(2026, 8, 22, 12) - RealDate.now()
+    class FixtureDate extends RealDate {
+      constructor(...args: ConstructorParameters<typeof Date>) {
+        if (args.length) super(...args)
+        else super(RealDate.now() + offset)
+      }
+      static now() {
+        return RealDate.now() + offset
+      }
+    }
+    window.Date = FixtureDate as DateConstructor
+  })
   await page.goto('/game')
   await page.getByRole('tab', { name: 'Capture' }).click()
   await expect(page.getByRole('heading', { name: 'See what the rides claim.' })).toBeVisible()
