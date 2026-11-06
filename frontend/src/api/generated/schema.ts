@@ -208,9 +208,7 @@ export interface components {
     ReportSubmission: {
       reason: components['schemas']['ReasonEnum']
       message: string
-      /** Format: email */
       contact_email?: string
-      /** Format: email */
       email?: string
       turnstile_token: string
       website?: string

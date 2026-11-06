@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "A map-first catalogue of cycling routes shared in BikeForum discussions."
 requires-python = ">=3.13,<3.14"
 dependencies = [
-  "Django>=5.2,<5.3",
-  "gunicorn>=23,<24",
+  "Django>=6.1,<6.2",
+  "gunicorn>=26.2,<27",
   "django-allauth[socialaccount]>=65,<66",
   "djangorestframework>=3.17.2,<3.19",
   "django-cors-headers>=4.7,<5",
@@ -18,7 +18,7 @@ dependencies = [
   "beautifulsoup4>=4.13,<5",
   "lxml>=6.1,<7",
   "psycopg[binary]>=3.2,<4",
-  "drf-spectacular>=0.28,<0.30",
+  "drf-spectacular>=0.28,<0.31",
   "defusedxml>=0.7.1,<1",
   "mapy-gpx-exporter[frpc]>=0.2.1,<0.3",
   "sentry-sdk[django]>=2,<3",
@@ -33,7 +33,7 @@ dev = [
   "pytest>=8.3,<10",
   "pytest-cov>=6,<8",
   "pytest-django>=4.11,<5",
-  "ruff>=0.11,<0.17",
+  "ruff>=0.11,<0.18",
 ]
 
 [tool.setuptools.packages.find]

@@ -10,17 +10,18 @@ export function SidebarFooter({
   onToggleLanguage: () => void
 }) {
   const legalDocumentsUrl = 'https://github.com/diamond447/BikeMapy/blob/main/docs'
+  const languageLabel = language === 'en' ? 'EN / CZ' : 'CZ / EN'
   return (
     <footer className="app-footer" aria-label={copy.footer}>
       <div className="app-footer-language">
         <button
           type="button"
           className="language-switcher"
-          aria-label={copy.changeLanguage}
+          aria-label={`${languageLabel}: ${copy.changeLanguage}`}
           aria-pressed={language === 'cs'}
           onClick={onToggleLanguage}
         >
-          {language === 'en' ? 'EN / CZ' : 'CZ / EN'}
+          {languageLabel}
         </button>
       </div>
       <span>{copy.independentProject}</span>
