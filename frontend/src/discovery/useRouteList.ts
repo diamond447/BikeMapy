@@ -223,11 +223,10 @@ export function useRouteList(
           return true
         })
         let next = data.next ?? null
-        let responseNextRequest: RouteNextRequest | null = null
         let structuralError = appended.length === 0 && Boolean(next)
         if (next) {
           try {
-            responseNextRequest = nextRouteRequest(next)
+            const responseNextRequest = nextRouteRequest(next)
             structuralError ||= pagination.requested.has(responseNextRequest.key)
             structuralError ||= pagination.visited.has(responseNextRequest.key)
           } catch {
