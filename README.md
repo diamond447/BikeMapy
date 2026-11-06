@@ -1,155 +1,79 @@
 # BikeMapy
 
 BikeMapy is a map-first catalogue of cycling routes shared in BikeForum
-discussions. It combines a searchable route archive with source attribution,
-route geometry, and the context needed to revisit the original post.
+discussions. Each route keeps its geometry, its source post and author, and a
+link back to the original discussion.
 
-This is a public repository containing a working application and its
-engineering documentation. The source is public; the production service is
-not being claimed as publicly launched. Product, privacy, and legal gates for
-an eventual launch remain documented and explicit.
+The source is public; the service is not publicly launched yet.
 
-## What is implemented
+![BikeMapy desktop route map](docs/screenshots/catalogue-desktop.png)
 
-- A responsive React and TypeScript interface with a MapLibre map, route list,
-  synchronized selection, URL-addressable filters and viewport state, Czech
-  and English translations, route details, sharing, and source links.
-- A versioned Django REST API with paginated route search, bounded viewport
-  queries, selected-route geometry, OpenAPI documentation, health endpoints,
-  and a generated TypeScript client contract.
-- A modular Django backend for route metadata, immutable route versions,
-  BikeForum source provenance, validation, conservative similarity detection,
-  variants, source availability, and moderation audit history.
-- A resumable, rate-limited BikeForum ingestion pipeline with checkpointed
-  Celery work, safe HTML/GPX boundaries, and a replaceable Mapy GPX adapter.
-  Extraction and publication remain controlled by independent deployment
-  gates.
-- Owner-only administration using GitHub OAuth and an immutable GitHub ID
-  allowlist, including route review, metadata, duplicate decisions, source
-  removal, anonymous report review, and aggregate product counters.
-- Anonymous route reports protected by Turnstile, a honeypot, rate limits,
-  bounded retention, and append-only audit events. Public GPX redistribution
-  is disabled until its legal gate is approved.
-- Docker Compose development and production-like topologies with PostGIS,
-  Redis, Celery, Nginx, health checks, immutable backend image builds,
-  backups, restore drills, and rollback rehearsal scripts.
+![BikeMapy mobile route detail](docs/screenshots/catalogue-mobile-detail.png)
 
-## Screenshots
+## Features
 
-The checked-in screenshots show the implemented map-first interaction on
-desktop and mobile:
+- React and TypeScript interface with a MapLibre map, a route list, shareable
+  URL state, route details and Czech and English translations.
+- Versioned Django REST API: paginated search, bounded viewport queries
+  (heatmap at low zooms, simplified lines above), route geometry, OpenAPI
+  schema and a generated TypeScript client.
+- Route catalogue with immutable route versions, source provenance,
+  duplicate and variant detection, and an audited moderation history.
+- A resumable, rate-limited BikeForum crawler and GPX import, each behind
+  deployment flags.
+- Owner-only administration through GitHub OAuth, and anonymous route reports
+  protected by Turnstile and rate limits.
 
-![BikeMapy desktop route map](docs/screenshots/issue-83-desktop.png)
+## Stack
 
-![BikeMapy mobile route detail](docs/screenshots/issue-83-mobile-detail.png)
-
-Additional accessibility and responsive evidence is available in
-[`docs/screenshots/`](docs/screenshots/) and the related end-to-end tests.
-
-## Architecture and technology
-
-BikeMapy is a modular monolith with a separate frontend:
-
-- **Frontend:** React 19, TypeScript, Vite, MapLibre GL JS,
-  `openapi-fetch`, and pnpm.
+- **Frontend:** React 19, TypeScript, Vite, MapLibre GL JS, `openapi-fetch`,
+  pnpm; Cloudflare Pages.
 - **Backend:** Python 3.13, Django 5.2, Django REST Framework, GeoDjango,
-  Celery, and `django-allauth`.
-- **Data and jobs:** PostgreSQL/PostGIS is the source of truth; Redis backs
-  Celery and bounded rate limiting; GPX payloads use Django storage behind a
-  private volume.
-- **Ingestion:** `httpx`, Beautiful Soup, `lxml`, strict URL and DNS checks,
-  bounded requests, and `mapy-gpx-exporter[frpc]` behind an adapter.
-- **Delivery:** Docker Compose, Nginx, Cloudflare Pages/Tunnel integration,
-  and commit-addressable images in GitHub Container Registry.
-
-The public API is deliberately bounded: it serves published routes and
-selected geometry, not a bulk GPX or database export. PostGIS simplified
-geometries and heatmap products support map browsing without exposing internal
-storage.
+  Celery, `django-allauth`.
+- **Data:** PostgreSQL with PostGIS, Redis.
+- **Delivery:** Docker Compose, Nginx, Cloudflare Tunnel, commit-tagged images
+  in GitHub Container Registry.
 
 ## Run locally
 
-Requirements are Docker Engine or Docker Desktop with Compose v2, Python 3.13
-with [uv](https://docs.astral.sh/uv/), and Node.js 22 with Corepack for
-optional host-side frontend checks.
+Requirements: Docker with Compose v2, Python 3.13 with
+[uv](https://docs.astral.sh/uv/), and Node.js 22 with Corepack.
 
 ```sh
 cp .env.example .env
 docker compose up --build
+docker compose exec backend python backend/manage.py migrate
 ```
 
-Open the frontend at <http://localhost:5173>, the backend at
-<http://localhost:8000>, and the API explorer at
-<http://localhost:8000/api/docs/>. Apply migrations in another terminal:
+The frontend runs at <http://localhost:5173>, the API at
+<http://localhost:8000> and its documentation at
+<http://localhost:8000/api/docs/>.
 
 ```sh
-docker compose exec backend uv run --locked --no-dev \
-  python backend/manage.py migrate
+make install    # locked backend and frontend dependencies
+make check      # lint, type checks, tests and frontend build
 ```
 
-The complete local development workflow, crawler safety boundaries, worker
-smoke test, integration setup, and configuration reference are in the
-[local development guide](docs/local-development.md).
-
-## Quality and security
-
-Install the locked development dependencies with `make install`. The normal
-checks are:
-
-```sh
-make lint       # Ruff, ESLint, and Prettier
-make typecheck  # mypy and TypeScript
-make test       # pytest and Vitest with coverage
-make check      # lint, type-check, test, and frontend build
-```
-
-CI additionally runs PostGIS/Redis integration tests, disposable production
-Compose smoke tests, browser accessibility and interaction tests, CodeQL,
-Gitleaks, dependency audits, backup restore drills, and launch rehearsals.
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue-scoped change;
-the [security policy](SECURITY.md) explains private vulnerability reporting
-and the main trust boundaries.
+CI also runs the PostGIS suite, browser tests, Compose smoke tests, a rollback
+rehearsal, a restore drill, CodeQL, Gitleaks and dependency audits.
 
 ## Documentation
 
-- [Product specification](docs/product-spec.md) — requirements, architecture,
-  quality direction, and future boundaries.
-- [Local development guide](docs/local-development.md) — Compose setup,
-  crawler controls, commands, and secrets.
-- [Deployment runbook](docs/deployment.md) — image promotion, Cloudflare
-  integration, backups, rollback, and production safeguards.
-- [Owner administration](docs/administration.md) — moderation, reports, and
-  analytics workflows.
-- [Privacy notice](docs/privacy.md), [Terms of Use](docs/terms.md), and
-  [Removal Policy](docs/removal-policy.md) — launch-draft public notices.
-- [Legal review](docs/legal-review.md) and
-  [launch verification](docs/launch-verification.md) — unresolved gates and
-  evidence requirements.
+- [Local development](docs/local-development.md)
+- [Architecture](docs/architecture.md)
+- [Deployment and operations](docs/deployment.md)
+- [Security policy](SECURITY.md) and [contributing](CONTRIBUTING.md)
+- Public notices: [privacy](docs/privacy.md), [terms](docs/terms.md),
+  [removal policy](docs/removal-policy.md)
 
 ## Project history
 
-Between September 2026 and October 2026 this repository also contained an
-experimental, disabled-by-default private module: Strava and provider-neutral
-player accounts, invite-only competitions, official reference-route completion
-and capture maps. It was removed from `main` to keep the project focused on
-the public route catalogue. Development of the module, including its
-specification, legal reviews and tests, continues in a separate private
-repository, as does an experimental local bike-fitting video analysis. Both
-are intended to be served next to the catalogue under `bikemapy.cz/game` and
-`bikemapy.cz/bike-fitting`. The removal itself is an ordinary, reviewable
-commit in this history.
+Until October 2026 this repository also contained an experimental private
+game built on Strava activities. It was removed to keep BikeMapy focused on
+the route catalogue and continues, together with a bike-fitting prototype, in
+separate private repositories.
 
-## Project status and launch boundary
+## License
 
-Core catalogue, map browsing, API, ingestion, moderation, reporting, and
-quality automation are implemented and continuously verified on `main`. Some
-capabilities remain deliberately gated or future-facing: category filtering
-in the frontend, GPX extraction in ordinary local/preview environments, and
-production deployment.
-
-Publishing this repository does not publish a live service or grant rights to
-third-party content. Before a production launch, the owner must complete the
-legal, privacy, attribution, operator-contact, retention, provider, and
-operational gates in [the legal review](docs/legal-review.md). In particular,
-do not enable crawling against production sources or public GPX downloads
-until the documented approvals and deployment flags are in place.
+The source code is MIT licensed (see [LICENSE](LICENSE)). The licence does
+not cover third-party maps, routes, GPX files or forum content.

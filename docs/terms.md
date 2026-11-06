@@ -1,66 +1,42 @@
 # BikeMapy Terms of Use
 
-**Last reviewed:** 2026-09-06  
-**Status:** launch draft — operator identity and legal review are still
-required
+**Status:** draft; it takes effect when the service launches and the operator,
+contact and governing law are named here.
 
-These terms describe the intended use of the BikeMapy route catalogue. They
-are not legal advice. They are not active launch terms until the maintainer
-adds the operator's legal identity, contact details, governing law, and an
-effective date after legal review.
+## The service
 
-## Service
+BikeMapy is an independent, read-only catalogue of cycling routes found in
+public BikeForum discussions. The catalogue, map and API may change or be
+unavailable without notice. A `Reviewed` badge means only that the owner
+checked the catalogue entry; it says nothing about safety, condition, legal
+access or suitability.
 
-BikeMapy is an independent, read-only catalogue of cycling routes discovered
-from public BikeForum discussions and linked source pages. The catalogue,
-search, map, source links, and public API may change or be unavailable without
-notice. A route's `Reviewed` badge means only that the owner checked catalogue
-criteria; it does not certify safety, passability, legality of access, route
-condition, or suitability for a person or bicycle.
+BikeMapy is not affiliated with Mapy.com, Seznam.cz, Bike-forum.cz, MTBIKER,
+OpenFreeMap or OpenStreetMap.
 
-BikeMapy is not affiliated with, sponsored by, or endorsed by Mapy.com,
-Seznam.cz, Bike-forum.cz, MTBIKER, OpenFreeMap, or OpenStreetMap. Mapy.com is
-identified as an independent source provider where a route links there.
+## Third-party content
 
-## Sources and external rights
+Source links, post URLs, author names, dates, titles and derived geometry are
+shown for attribution and discovery. Forum posts, maps, tiles, GPX files,
+names and logos are not covered by BikeMapy's MIT licence; use them only under
+their own terms or with the rights holder's permission. Public GPX downloads
+are disabled. Do not remove the map attribution.
 
-Source URLs, forum post URLs, author names, dates, route titles, and derived
-geometry are presented for provenance and discovery. Third-party posts, maps,
-tiles, GPX files, names, logos, trademarks, and other materials are not
-licensed by BikeMapy's MIT source-code licence. Use them only under their own
-terms or with permission from the relevant rights holder. Do not infer a
-licence from indexing, linking, or public availability.
+## Acceptable use
 
-Public GPX redistribution is disabled. A download link may not be enabled by a
-client or user; it requires a recorded legal decision and an explicit
-deployment change. The map provider's attribution must not be removed.
+Do not overload BikeMapy or its sources, bypass access controls, use the
+catalogue to infringe rights, or misrepresent BikeMapy or a source provider.
+Report problems through the route's report form or the
+[Removal Policy](removal-policy.md); reports are reviewed by the owner and do
+not change a route automatically.
 
-## Acceptable use and reports
+## No warranty
 
-Do not overload source services, bypass access controls, use the catalogue to
-infringe rights, or misrepresent BikeMapy or a source provider. Report an
-incorrect route, attribution issue, author-removal request, or rights-holder
-concern through the route report form or the [Removal Policy](removal-policy.md).
-Reports are reviewed by the owner and do not automatically hide or change a
-route.
-
-## Availability and liability
-
-The service and its route information are provided on an “as is” and
-“as available” basis to the extent permitted by applicable law. Do not rely on
-the catalogue as navigation, emergency, safety, access, or legal advice.
-The maintainer does not promise that a source, geometry, elevation, or map is
-complete, current, accurate, safe, or available.
+The service is provided "as is" and "as available" to the extent the law
+allows. Do not rely on it for navigation, safety or legal access. Routes,
+geometry, elevation and maps may be incomplete, outdated or wrong.
 
 ## Changes
 
-The maintainer may update these terms as the product changes. The effective
-date and review status will be updated with each material revision.
-
-## Contact and launch status
-
-For a route, rights, or attribution concern, use the repository's [public issue
-tracker](https://github.com/diamond447/BikeMapy/issues) and select a removal or
-legal report. Do not include private personal data in a public issue. The
-operator identity and a private legal contact are a launch blocker and will be
-published before activation.
+These terms may change with the product; the date and status above are
+updated with each material change.

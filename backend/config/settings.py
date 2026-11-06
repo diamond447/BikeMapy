@@ -415,8 +415,7 @@ BIKEFORUM_ALLOWED_ORIGINS = [
 # URLs must never trigger requests to real Mapy hosts. Production must retain
 # the default and run the bounded source availability checks.
 BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
-# Real-source crawling remains off until the provider and operator decisions
-# recorded in docs/legal-review.md have been completed.
+# Real-source crawling stays off until the provider and the operator approve it.
 BIKEFORUM_CRAWL_ENABLED = env_bool("BIKEFORUM_CRAWL_ENABLED", False)
 BIKEFORUM_PROVIDER_AUTHORIZED = env_bool("BIKEFORUM_PROVIDER_AUTHORIZED", False)
 BIKEFORUM_OPERATOR_APPROVED = env_bool("BIKEFORUM_OPERATOR_APPROVED", False)

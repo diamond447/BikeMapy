@@ -23,7 +23,7 @@ from scripts.ci_changed_areas import all_changed, changed_paths, classify, main
             {"backend": True, "frontend": True, "e2e": False, "api_contract": True},
         ),
         (
-            ["docs/spatial-browse.md", "README.md"],
+            ["docs/architecture.md", "README.md"],
             {"backend": False, "frontend": False, "e2e": False, "api_contract": False},
         ),
         (
