@@ -7,8 +7,9 @@ from urllib.robotparser import RobotFileParser
 import httpx
 import pytest
 from django.conf import settings
-from django.db import models
+from django.db import connection, models
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.catalogue.models import (
@@ -135,6 +136,25 @@ def test_sanitized_bike_forum_structure_parses_forum_threads_and_comments() -> N
     assert thread.posts[0].url.endswith("#comment-123")
     assert thread.posts[0].author == "cyklista"
     assert thread.posts[0].source_urls == ("https://mapy.com/s/sanitized-route",)
+
+
+def test_reimporting_an_unchanged_page_writes_only_freshness_timestamps() -> None:
+    parsed = BeautifulSoupBikeForumParser().parse(FIXTURE.read_text(), THREAD_URL)
+    import_thread(parsed)
+    with CaptureQueriesContext(connection) as queries:
+        import_thread(parsed)
+    updates = [query["sql"] for query in queries if query["sql"].startswith("UPDATE")]
+    assert len(updates) == 2
+    assert any('"catalogue_forumauthor"' in sql and "last_seen_at" in sql for sql in updates)
+    assert any('"catalogue_forumthread"' in sql and "last_crawled_at" in sql for sql in updates)
+    assert not any('"catalogue_forumpost"' in sql for sql in updates)
+    denylist = [
+        query["sql"] for query in queries if '"catalogue_sourcedenylistentry"' in query["sql"]
+    ]
+    # The crawler checks the page's links in one IN query; register_source
+    # keeps its own authoritative check per attached source.
+    assert len([sql for sql in denylist if " IN (" in sql]) == 1
+    assert len(denylist) == 1 + RouteSource.objects.count()
 
 
 def test_import_is_idempotent_and_keeps_source_provenance() -> None:
