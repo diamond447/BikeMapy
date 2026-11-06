@@ -10,10 +10,12 @@ documented in [operations.md](operations.md).
 
 ## Backend image
 
-The `Backend image` workflow builds the tested `docker/backend.Dockerfile` on
-pull requests and on pushes to `main`. Only a push to `main` or an explicitly
-started `workflow_dispatch` can publish to GitHub Container Registry. The
-published reference is commit-addressable:
+The `Backend image` workflow builds `docker/backend.Dockerfile` on pull
+requests that touch the backend, without publishing. For `main` it runs after
+the `Quality checks` workflow, including the PostGIS suite, has passed for a
+push, and builds and publishes the commit that run checked. An explicitly
+started `workflow_dispatch` can also publish. The published reference is
+commit-addressable:
 
 ```text
 ghcr.io/diamond447/bikemapy-backend:sha-<full-commit-sha>
@@ -26,7 +28,13 @@ deployment; do not deploy a floating tag such as `latest`. The provenance
 artifact and OCI revision label make the selected build auditable.
 
 The image contains application code, locked runtime dependencies, and the
-collected Django static assets under `/app/staticfiles`. In production,
+collected Django static assets under `/app/staticfiles`.  It is built in two
+stages: `uv` resolves the locked environment in a builder stage, and the
+runtime stage receives only `/app/.venv`, the source and `libgdal` (which
+brings GEOS and PROJ).  The runtime image contains neither `uv` nor the GDAL
+command-line tools, so commands run inside it call `python`, `gunicorn` and
+`celery` directly; `/app/.venv/bin` is first on `PATH`.  Earlier images have
+the same `PATH`, so the Compose files also start them during a rollback. In production,
 WhiteNoise serves that immutable asset set through the Nginx `/static/` proxy;
 the development Compose stack leaves static serving to Django's runserver.
 The backend image uses the repository root as its Docker context, with
@@ -107,12 +115,6 @@ an `X-Accel-Redirect` internal handoff to stream directly from the read-only
 GPX volume; `/storage/` and `/media/` never map directly to a public location.
 Static files are collected during the image build and served by WhiteNoise
 only when `DEBUG=False`.
-The backend caps aggregate file bytes at 90 MiB. Nginx permits complete
-multipart bodies up to 95 MiB, leaving 5 MiB for framing while staying below
-Cloudflare's standard 100 MB request-body ceiling. Backend and worker mount the dedicated
-`activity_upload_data` volume at `/app/private-uploads`; Nginx and the database
-service do not mount it. Backups include only the durable GPX volume and reject
-the legacy upload directory if it appears in an archive.
 
 The production asset path is covered by a disposable-stack smoke test. Run it
 from the repository root before releasing an image:
@@ -254,7 +256,7 @@ export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<selec
 # running its schema migration so no candidate process can start early.
 $COMPOSE pull backend worker beat
 $COMPOSE stop backend worker beat proxy
-$COMPOSE run --rm --no-deps backend uv run --locked --no-dev python backend/manage.py migrate --noinput
+$COMPOSE run --rm --no-deps backend python backend/manage.py migrate --noinput
 $COMPOSE up -d backend worker beat proxy
 
 # Do not continue until readiness and the public API respond successfully.

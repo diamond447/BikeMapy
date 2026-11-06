@@ -1,6 +1,13 @@
 import type { components } from '../api/generated/schema'
 
-export type Route = components['schemas']['Route']
+export type RouteRecord = components['schemas']['Route']
+export type RouteSummary = components['schemas']['RouteSummary']
+/**
+ * A route as the interface renders it: the list summary, completed by the
+ * detail-only fields (elevation profile, GPX link, variants) once the detail
+ * record for the selected route has loaded.
+ */
+export type Route = RouteSummary & Partial<Omit<RouteRecord, keyof RouteSummary>>
 export type SpatialRoute = components['schemas']['SpatialRoute']
 export type ViewportResponse = components['schemas']['ViewportResponse']
 export type Geometry = NonNullable<SpatialRoute['geometry']>

@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   codeql:
     name: CodeQL (${{ matrix.language }})
@@ -24,6 +28,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Initialize CodeQL
         uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
@@ -51,6 +57,7 @@ jobs:
       - name: Check out full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Scan repository history
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
@@ -63,6 +70,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -74,10 +83,16 @@ jobs:
           enable-cache: true
       - name: Export locked runtime dependencies
         run: uv export --locked --no-dev --no-emit-project --format requirements.txt > /tmp/bikemapy-requirements.txt
+      - name: Check the documented audit exceptions
+        run: python scripts/check_audit_exceptions.py validate
       - name: Audit locked runtime dependencies
         # Pin the audit tool itself so a registry update cannot silently
-        # change the assurance job.
-        run: uv tool run --from "pip-audit==2.9.0" pip-audit --strict -r /tmp/bikemapy-requirements.txt
+        # change the assurance job. Only unexpired exceptions from
+        # .github/audit-exceptions.json are ignored.
+        run: |
+          read -r -a ignores <<< "$(python scripts/check_audit_exceptions.py pip-audit-args)"
+          uv tool run --from "pip-audit==2.9.0" pip-audit --strict "${ignores[@]}" \
+            -r /tmp/bikemapy-requirements.txt
 
   frontend-audit:
     name: Frontend dependency audit
@@ -85,6 +100,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -100,4 +117,55 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Audit locked dependencies
         working-directory: frontend
-        run: pnpm audit --audit-level high
+        # pnpm exits non-zero whenever it reports a finding; the script fails
+        # on high and critical advisories without an unexpired exception and
+        # on a report that is not valid JSON, such as a registry error.
+        run: |
+          pnpm audit --json > /tmp/pnpm-audit.json || true
+          python ../scripts/check_audit_exceptions.py pnpm < /tmp/pnpm-audit.json
+
+  report-scheduled-result:
+    name: Track the scheduled result in an issue
+    # A red scheduled run nobody reads stops being a signal. Open (or update)
+    # one tracking issue when the weekly run fails and close it once a
+    # scheduled run passes again.
+    if: always() && github.event_name == 'schedule'
+    needs: [codeql, gitleaks, python-audit, frontend-audit]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      RESULTS: >-
+        codeql=${{ needs.codeql.result }}
+        gitleaks=${{ needs.gitleaks.result }}
+        python-audit=${{ needs.python-audit.result }}
+        frontend-audit=${{ needs.frontend-audit.result }}
+    steps:
+      - name: Open, update or close the tracking issue
+        run: |
+          set -euo pipefail
+          title="Scheduled security assurance is failing"
+          label="security-assurance"
+          gh label create "$label" --color B60205 \
+            --description "Scheduled security assurance run" --force >/dev/null
+          number="$(gh issue list --state open --label "$label" --search "in:title \"$title\"" \
+            --json number --jq '.[0].number // empty')"
+          failed=""
+          for result in $RESULTS; do
+            case "$result" in *=success|*=skipped) ;; *) failed="$failed $result" ;; esac
+          done
+          if [ -n "$failed" ]; then
+            body="The scheduled run failed:${failed}. Run: ${RUN_URL}
+
+          Fix the finding, or record an exception with a reason and an expiry date in .github/audit-exceptions.json."
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --body "$body"
+            else
+              gh issue create --title "$title" --label "$label" --body "$body"
+            fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --comment "The scheduled run passed again: ${RUN_URL}"
+          fi

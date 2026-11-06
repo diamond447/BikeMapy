@@ -246,11 +246,13 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             if not post_id and raw_node_id:
                 post_id = re.sub(r"^(?:post|p|comment)[-_]", "", raw_node_id)
             anchor = node.select_one("a.permalink, a[href*='#'], a[data-post-url]")
-            post_url = (
-                _absolute(url, str(anchor.get("href", "")))
-                if anchor
-                else f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
-            )
+            fallback_post_url = f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
+            post_url = _absolute(url, str(anchor.get("href", ""))) if anchor else ""
+            # Post bodies are user-controlled. A link written inside a post
+            # (for example ``javascript:...#`` or an external phishing page)
+            # must never become the public attribution URL for that post.
+            if not post_url or not _same_origin(url, post_url):
+                post_url = fallback_post_url
             author_node = node.select_one("[data-author], .author, .username, .user")
             author = _text(author_node)
             author_id = str(author_node.get("data-author-id", "")) if author_node else ""
@@ -264,6 +266,8 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             author_url = (
                 _absolute(url, str(author_url_node.get("href", ""))) if author_url_node else ""
             )
+            if author_url and not _same_origin(url, author_url):
+                author_url = ""
             time_node = node.select_one("time[datetime], time, [data-posted-at]")
             posted_value = str(time_node.get("datetime", "")) if time_node else ""
             posted_value = posted_value or (
@@ -807,6 +811,16 @@ def import_thread(
         )
         thread.save(update_fields=["title", "external_id", "locality"])
     result.threads = int(thread_created)
+    # One query answers the denylist for every link on the page, and one
+    # UPDATE at the end marks all of the page's authors as seen; re-crawling
+    # an unchanged page then writes only these freshness timestamps.
+    page_source_urls = {url for post_data in thread_data.posts for url in post_data.source_urls}
+    denied_source_urls = set(
+        SourceDenylistEntry.objects.filter(
+            source_url__in=page_source_urls, active=True
+        ).values_list("source_url", flat=True)
+    )
+    seen_author_ids: set[int] = set()
     for post_data in thread_data.posts:
         author = None
         if post_data.author:
@@ -819,10 +833,10 @@ def import_thread(
                 **lookup,
                 defaults={"username": post_data.author, "profile_url": post_data.author_url},
             )
-            author.last_seen_at = timezone.now()
             if post_data.author_url and author.profile_url != post_data.author_url:
                 author.profile_url = post_data.author_url
-            author.save(update_fields=["last_seen_at", "profile_url"])
+                author.save(update_fields=["profile_url"])
+            seen_author_ids.add(author.pk)
             result.authors += int(author_created)
         post, post_created = ForumPost.objects.get_or_create(
             url=post_data.url,
@@ -849,13 +863,15 @@ def import_thread(
                 setattr(post, name, value)
                 changed.append(name)
         if post_data.content:
-            post.content_hash = hashlib.sha256(post_data.content.encode()).hexdigest()
-            changed.append("content_hash")
+            content_hash = hashlib.sha256(post_data.content.encode()).hexdigest()
+            if post.content_hash != content_hash:
+                post.content_hash = content_hash
+                changed.append("content_hash")
         if changed:
             post.save(update_fields=changed)
         result.posts += int(post_created)
         for source_url in post_data.source_urls:
-            if SourceDenylistEntry.objects.filter(source_url=source_url, active=True).exists():
+            if source_url in denied_source_urls:
                 result.denied += 1
                 continue
             source = RouteSource.objects.select_related("route").filter(mapy_url=source_url).first()
@@ -889,6 +905,8 @@ def import_thread(
                 result.errors.append(f"Could not attach source {source_url}: {exc}")
                 if route_created and not route.sources.exists():
                     route.delete()
+    if seen_author_ids:
+        ForumAuthor.objects.filter(pk__in=seen_author_ids).update(last_seen_at=timezone.now())
     thread.last_crawled_at = timezone.now()
     thread.save(update_fields=["last_crawled_at"])
     return result

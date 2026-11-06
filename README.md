@@ -50,7 +50,7 @@ Additional accessibility and responsive evidence is available in
 
 BikeMapy is a modular monolith with a separate frontend:
 
-- **Frontend:** React 19, TypeScript, Vite, MapLibre GL JS, TanStack Query,
+- **Frontend:** React 19, TypeScript, Vite, MapLibre GL JS,
   `openapi-fetch`, and pnpm.
 - **Backend:** Python 3.13, Django 5.2, Django REST Framework, GeoDjango,
   Celery, and `django-allauth`.
@@ -125,21 +125,27 @@ and the main trust boundaries.
 - [Legal review](docs/legal-review.md) and
   [launch verification](docs/launch-verification.md) — unresolved gates and
   evidence requirements.
-- [Strava API review](docs/strava-api-review.md) — dated policy decision and
-  retention/deletion gates for the disabled private module.
-- [Reference-route source decision](docs/reference-route-sources.md) — dated
-  OSM, KČT, Via Czechia, provenance, attribution, and fallback gates for the
-  private game.
-- [Private Strava game specification](docs/game-spec.md) — a separate,
-  disabled-by-default future module that does not expand the public catalogue.
+
+## Project history
+
+Between September 2026 and October 2026 this repository also contained an
+experimental, disabled-by-default private module: Strava and provider-neutral
+player accounts, invite-only competitions, official reference-route completion
+and capture maps. It was removed from `main` to keep the project focused on
+the public route catalogue. Development of the module, including its
+specification, legal reviews and tests, continues in a separate private
+repository, as does an experimental local bike-fitting video analysis. Both
+are intended to be served next to the catalogue under `bikemapy.cz/game` and
+`bikemapy.cz/bike-fitting`. The removal itself is an ordinary, reviewable
+commit in this history.
 
 ## Project status and launch boundary
 
 Core catalogue, map browsing, API, ingestion, moderation, reporting, and
 quality automation are implemented and continuously verified on `main`. Some
 capabilities remain deliberately gated or future-facing: category filtering
-in the frontend, GPX extraction in ordinary local/preview environments, the
-private Strava module, and production deployment.
+in the frontend, GPX extraction in ordinary local/preview environments, and
+production deployment.
 
 Publishing this repository does not publish a live service or grant rights to
 third-party content. Before a production launch, the owner must complete the

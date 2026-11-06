@@ -87,16 +87,12 @@ def trigger_unexpected_exit(container: str, service: str) -> None:
         "            continue\n"
         f"        if {marker!r} in command: targets.append(int(pid))\n"
         "if not targets: raise SystemExit('service process not found')\n"
-        "os.kill(targets[0], signal.SIGKILL)"
+        "os.kill(min(targets), signal.SIGKILL)"
     )
     command = [
         "docker",
         "exec",
         container,
-        "uv",
-        "run",
-        "--locked",
-        "--no-dev",
         "python",
         "-c",
         python,
@@ -259,10 +255,6 @@ def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> Non
                 "run",
                 "--rm",
                 "backend",
-                "uv",
-                "run",
-                "--locked",
-                "--no-dev",
                 "python",
                 "backend/manage.py",
                 "migrate",
@@ -366,10 +358,6 @@ def wait_for_nested_proxy(compose: list[str], docker: str, daemon: str, image: s
                     "--network",
                     f"container:{proxy}",
                     image,
-                    "uv",
-                    "run",
-                    "--locked",
-                    "--no-dev",
                     "python",
                     "-c",
                     probe,
@@ -464,10 +452,6 @@ def main() -> None:
                     "run",
                     "--rm",
                     "backend",
-                    "uv",
-                    "run",
-                    "--locked",
-                    "--no-dev",
                     "python",
                     "backend/manage.py",
                     "migrate",

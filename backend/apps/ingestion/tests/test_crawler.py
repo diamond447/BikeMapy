@@ -7,8 +7,9 @@ from urllib.robotparser import RobotFileParser
 import httpx
 import pytest
 from django.conf import settings
-from django.db import models
+from django.db import connection, models
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.catalogue.models import (
@@ -67,6 +68,31 @@ def test_fixture_parser_contract_uses_stable_post_and_source_fields() -> None:
     assert LxmlBikeForumParser().parse_thread(FIXTURE.read_text(), THREAD_URL).title == parsed.title
 
 
+@pytest.mark.parametrize(
+    "href",
+    [
+        "javascript:alert(document.domain)//#x",
+        "https://attacker.example/phish#post-7",
+        "https://mapy.com/s/demo#route",
+        "data:text/html,<script>alert(1)</script>#x",
+    ],
+)
+def test_post_and_author_urls_from_user_content_stay_on_the_forum_origin(href: str) -> None:
+    body = f"""
+    <html><body><h1>Thread</h1>
+      <article id="post-9" data-post-id="9">
+        <a class="author" href="{href}">rider</a>
+        <div class="content">See <a href="{href}">this</a> and
+          <a href="https://mapy.com/s/demo">route</a></div>
+      </article>
+    </body></html>
+    """
+    parsed = BeautifulSoupBikeForumParser().parse(body, THREAD_URL)
+    assert parsed.posts[0].url == f"{THREAD_URL}#post-9"
+    assert parsed.posts[0].author_url == ""
+    assert parsed.posts[0].source_urls[-1] == "https://mapy.com/s/demo"
+
+
 def test_index_fixture_discovers_thread_frontier_links() -> None:
     parsed = BeautifulSoupBikeForumParser().parse(
         (FIXTURE.parent / "index.html").read_text(), "https://bikeforum.example/"
@@ -110,6 +136,25 @@ def test_sanitized_bike_forum_structure_parses_forum_threads_and_comments() -> N
     assert thread.posts[0].url.endswith("#comment-123")
     assert thread.posts[0].author == "cyklista"
     assert thread.posts[0].source_urls == ("https://mapy.com/s/sanitized-route",)
+
+
+def test_reimporting_an_unchanged_page_writes_only_freshness_timestamps() -> None:
+    parsed = BeautifulSoupBikeForumParser().parse(FIXTURE.read_text(), THREAD_URL)
+    import_thread(parsed)
+    with CaptureQueriesContext(connection) as queries:
+        import_thread(parsed)
+    updates = [query["sql"] for query in queries if query["sql"].startswith("UPDATE")]
+    assert len(updates) == 2
+    assert any('"catalogue_forumauthor"' in sql and "last_seen_at" in sql for sql in updates)
+    assert any('"catalogue_forumthread"' in sql and "last_crawled_at" in sql for sql in updates)
+    assert not any('"catalogue_forumpost"' in sql for sql in updates)
+    denylist = [
+        query["sql"] for query in queries if '"catalogue_sourcedenylistentry"' in query["sql"]
+    ]
+    # The crawler checks the page's links in one IN query; register_source
+    # keeps its own authoritative check per attached source.
+    assert len([sql for sql in denylist if " IN (" in sql]) == 1
+    assert len(denylist) == 1 + RouteSource.objects.count()
 
 
 def test_import_is_idempotent_and_keeps_source_provenance() -> None:

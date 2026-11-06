@@ -18,10 +18,6 @@ export default tseslint.config(
     },
   },
   {
-    files: ['benchmark/**/*.mjs'],
-    languageOptions: { globals: { ...globals.node } },
-  },
-  {
     files: ['src/App.tsx'],
     rules: {
       // App.tsx intentionally coordinates asynchronous map state and

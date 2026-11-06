@@ -21,15 +21,20 @@ export async function onRequest({ request, env, next }: PagesContext): Promise<R
   const routeId = routeIdFromRequest(request.url)
   if (!isRouteId(routeId)) return next()
 
+  let response: Response | null = null
   try {
-    const route = await fetchPublicRoute(
+    // Fetch the metadata while Pages serves the shell, so the API round trip
+    // overlaps the asset lookup instead of adding to the time to first byte.
+    // A metadata failure resolves to null and leaves the shell unchanged.
+    const routePromise = fetchPublicRoute(
       fetch,
       apiOrigin(env.PUBLIC_API_ORIGIN ?? env.VITE_API_URL),
       routeId,
-    )
-    if (!route) return next()
-    const response = await next()
+    ).catch(() => null)
+    response = await next()
     if (!response.ok) return response
+    const route = await routePromise
+    if (!route) return response
     const html = await response.text()
     const origin = siteOrigin(env.PUBLIC_SITE_URL ?? env.VITE_PUBLIC_SITE_URL, request.url)
     const body = renderRouteDocument(html, route, origin)
@@ -39,6 +44,7 @@ export async function onRequest({ request, env, next }: PagesContext): Promise<R
     return new Response(body, { status: response.status, headers })
   } catch {
     // A metadata outage must not prevent the application shell from loading.
-    return next()
+    // The shell response can only be returned while its body is unread.
+    return response && !response.bodyUsed ? response : next()
   }
 }

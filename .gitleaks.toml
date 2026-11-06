@@ -1,3 +1,17 @@
+# Without this block a custom configuration replaces gitleaks' built-in rule
+# set entirely, so the scan (locally and in CI) would detect nothing at all.
+[extend]
+useDefault = true
+
 [allowlist]
-description = "The synthetic control-character GPX storage-key regression fixture is not a credential."
+description = "Synthetic test fixtures that are not credentials."
 commits = ["3f43e20282f668f0e5310dc4902048b2b2858503"]
+# The detect-secrets baseline stores only SHA-1 hashes of reviewed findings.
+paths = ['''^\.secrets\.baseline$''']
+regexTarget = "line"
+regexes = [
+  # Synthetic production-mode signing key used only by settings tests.
+  '''"DJANGO_SECRET_KEY": "a9f7b3c1e5d8f0a2''',
+  # Control-character GPX storage-key regression fixtures.
+  '''original_gpx_storage_key="gpx/routes/[a-z]+\\nkey\.gpx"''',
+]

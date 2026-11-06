@@ -8,15 +8,46 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A new push to a pull request cancels its superseded run; runs on main
+  # always finish, so every merged commit has a complete result.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.areas.outputs.backend }}
+      frontend: ${{ steps.areas.outputs.frontend }}
+      e2e: ${{ steps.areas.outputs.e2e }}
+      api_contract: ${{ steps.areas.outputs.api_contract }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: areas
+        # Pull requests skip the jobs their changes cannot affect; a skipped
+        # job reports success to required checks. Pushes run everything.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci_changed_areas.py --base "$BASE_SHA" --head "$HEAD_SHA"
+
   api-contract:
     name: API contract and generated client
+    needs: changes
+    if: needs.changes.outputs.api_contract == 'true'
     runs-on: ubuntu-latest
     env:
       DJANGO_DATABASE_ENGINE: django.db.backends.sqlite3
       PYTHONPATH: backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: '3.13' }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -31,33 +62,17 @@ jobs:
       - run: uv run --locked --extra dev python scripts/check_openapi_sync.py
 
   backend:
-    name: Backend (lint, types, tests)
+    name: Backend (lint, types, SQLite-only tests)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgis/postgis:17-3.5
-        env:
-          POSTGRES_DB: bikemapy
-          POSTGRES_USER: bikemapy
-          POSTGRES_PASSWORD: bikemapy
-        ports: [5432:5432]
-        options: >-
-          --health-cmd "pg_isready -U bikemapy -d bikemapy"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-      redis:
-        image: redis:7.4-alpine
-        ports: [6379:6379]
     env:
-      POSTGRES_HOST: localhost
-      POSTGRES_DB: bikemapy
-      POSTGRES_USER: bikemapy
-      POSTGRES_PASSWORD: bikemapy
       DJANGO_DATABASE_ENGINE: django.db.backends.sqlite3
-      CELERY_BROKER_URL: redis://localhost:6379/0
-      CELERY_RESULT_BACKEND: redis://localhost:6379/0
       PYTHONPATH: backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: '3.13' }
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -66,10 +81,14 @@ jobs:
       - run: uv run --locked --extra dev ruff check backend
       - run: uv run --locked --extra dev ruff format --check backend scripts
       - run: uv run --locked --extra dev mypy backend
-      - run: uv run --locked --extra dev pytest
+      # The complete suite runs once, on PostGIS, in the integration job.
+      # Only the tests that exercise the SQLite fallbacks run here.
+      - run: uv run --locked --extra dev pytest -m sqlite --no-cov
 
   integration:
     name: Infrastructure (PostGIS and Celery/Redis)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -101,6 +120,8 @@ jobs:
       PYTHONPATH: backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: '3.13' }
       - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y gdal-bin libgdal-dev libgeos-dev
@@ -127,10 +148,14 @@ jobs:
 
   production-compose:
     name: Production Compose smoke
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: '3.13' }
       - name: Run disposable production Compose smoke
@@ -138,10 +163,14 @@ jobs:
 
   production-static-assets:
     name: Production static-assets Compose smoke
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: '3.13' }
       - name: Verify Admin CSS and JS through Nginx
@@ -149,11 +178,15 @@ jobs:
 
   frontend:
     name: Frontend (lint, types, tests, build)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run: { working-directory: frontend }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with: { version: 10.10.0 }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -172,29 +205,34 @@ jobs:
         run: python ../scripts/check_frontend_bundle.py dist --read-only --forbidden-value "bikemapy-build-secret-canary"
       - name: Verify preview bundle is read-only
         run: test -z "$(rg -o '/reports/' dist || true)"
+      - name: Cache Playwright browsers
+        if: needs.changes.outputs.e2e == 'true'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
       - name: Install Playwright Chromium
+        if: needs.changes.outputs.e2e == 'true'
         run: pnpm exec playwright install --with-deps chromium
       - name: Run browser interaction and evidence tests
+        if: needs.changes.outputs.e2e == 'true'
         run: pnpm exec playwright test
       - name: Run production preview MapLibre smoke test
+        if: needs.changes.outputs.e2e == 'true'
         run: pnpm exec playwright test --config playwright.preview.config.ts
+      - name: Upload Playwright reports
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-reports
+          path: |
+            frontend/playwright-report
+            frontend/playwright-report-preview
+          if-no-files-found: ignore
       - name: Upload issue 10 screenshots
-        if: always()
+        if: always() && needs.changes.outputs.e2e == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: issue-10-screenshots
           path: frontend/test-results/issue-10-screenshots
           if-no-files-found: warn
-
-  security:
-    name: Secret scan
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- state helpers are exported for interaction tests. */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { trackProductEvent } from './analytics'
 import { normalizePublicSiteUrl, routeUrl } from './siteMetadata'
@@ -14,7 +13,6 @@ import { RouteBrowser } from './components/RouteBrowser'
 import { RouteDetail } from './components/RouteDetail'
 import { ReportDialog } from './components/ReportDialog'
 import { MapStage } from './components/MapStage'
-import { GameAccount } from './components/GameAccount'
 import type { InteractionMode } from './components/interaction'
 import { translations } from './i18n/translations'
 import type { Language } from './i18n/types'
@@ -128,7 +126,14 @@ function App() {
     metadataLoading: selectedMetadataLoading,
     geometryLoading: selectedGeometryLoading,
   } = selectedState
-  const selectedRoute = routes.find((route) => route.id === selectedId) ?? selectedRecord
+  const listedRoute = routes.find((route) => route.id === selectedId)
+  // The list summary keeps its precedence; the detail record of the same
+  // selection adds the fields only it carries (elevation profile, GPX link,
+  // variants) and fills the panel for a route outside the loaded list.
+  const selectedRoute = useMemo(
+    () => (listedRoute ? { ...selectedRecord, ...listedRoute } : selectedRecord),
+    [listedRoute, selectedRecord],
+  )
   const report = useReport(selectedRoute, copy, REPORTS_ENABLED)
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
   const selectionVisible = Boolean(
@@ -423,7 +428,6 @@ function App() {
           </span>
           <span>BikeMapy</span>
         </a>
-        <GameAccount copy={copy} initialOpen={window.location.pathname === '/game'} />
       </header>
       <MapStage
         mapNode={mapNode}

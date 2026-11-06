@@ -26,8 +26,8 @@ service dependencies; their data is retained in named Docker volumes.
 In another terminal, apply migrations and run the worker smoke test:
 
 ```sh
-docker compose exec backend uv run --locked --no-dev python backend/manage.py migrate
-docker compose exec worker uv run --locked --no-dev python -c 'from apps.ingestion.tasks import worker_smoke; print(worker_smoke.delay().get(timeout=10))'
+docker compose exec backend python backend/manage.py migrate
+docker compose exec worker python -c 'from apps.ingestion.tasks import worker_smoke; print(worker_smoke.delay().get(timeout=10))'
 ```
 
 The task should print `worker-ready`. Stop the stack with `docker compose down`;
@@ -58,7 +58,7 @@ After the required approvals are recorded, enable the flag in the deployment
 environment and run an incremental crawl through Celery:
 
 ```sh
-docker compose exec backend uv run --locked --no-dev python -c \
+docker compose exec backend python -c \
   'from apps.ingestion.tasks import crawl_bikeforum; print(crawl_bikeforum.delay().get(timeout=120))'
 ```
 
@@ -89,7 +89,7 @@ fetch so cleanup cannot break crawling.
 Historical work must always have an explicit page bound:
 
 ```sh
-docker compose exec backend uv run --locked --no-dev python -c \
+docker compose exec backend python -c \
   'from apps.ingestion.tasks import backfill_bikeforum; print(backfill_bikeforum.delay("https://www.bike-forum.cz/forum/", max_pages=20).get(timeout=120))'
 ```
 
