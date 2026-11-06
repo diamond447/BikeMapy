@@ -162,6 +162,28 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def container_running(docker: str, container: str) -> bool:
+    result = subprocess.run(
+        [docker, "inspect", "--format", "{{.State.Running}}", container],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() == "true"
+
+
+def print_daemon_diagnostics(docker: str, daemon: str) -> None:
+    """Print why the isolated daemon is down before cleanup removes it."""
+
+    for command in (
+        [docker, "inspect", "--format", "{{json .State}}", daemon],
+        [docker, "logs", "--tail", "80", daemon],
+    ):
+        print("$", " ".join(command), flush=True)
+        subprocess.run(command, cwd=ROOT, check=False)
+
+
 def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> None:
     """Rehearse a Docker daemon restart in an isolated privileged DinD host."""
     docker = shutil.which("docker")
@@ -177,7 +199,7 @@ def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> Non
     inner_env.write_text(
         env_file.read_text()
         .replace(f"BIKEMAPY_BACKEND_IMAGE={image}", f"BIKEMAPY_BACKEND_IMAGE={daemon_image}")
-        .replace(f"BIKEMAPY_ENV_FILE={env_file}", "BIKEMAPY_ENV_FILE=/run/runtime.env")
+        .replace(f"BIKEMAPY_ENV_FILE={env_file}", "BIKEMAPY_ENV_FILE=/config/runtime.env")
         .replace(f"PROXY_PORT={proxy_port}", f"PROXY_PORT={daemon_proxy_port}"),
         encoding="utf-8",
     )
@@ -190,7 +212,7 @@ def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> Non
         "--project-name",
         project,
         "--env-file",
-        "/run/runtime.env",
+        "/config/runtime.env",
         "-f",
         "/workspace/deploy/compose.production.yml",
     ]
@@ -209,7 +231,11 @@ def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> Non
                 "--volume",
                 f"{ROOT}:/workspace:ro",
                 "--volume",
-                f"{inner_env}:/run/runtime.env:ro",
+                f"{inner_env}:/config/runtime.env:ro",
+                # A restart then starts from an empty /run, like a rebooted host,
+                # instead of meeting the pid files and sockets of the old daemon.
+                "--tmpfs",
+                "/run",
                 DIND_IMAGE,
                 "--host=unix:///var/run/docker.sock",
                 "--tls=false",
@@ -265,7 +291,7 @@ def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> Non
         print("$ docker restart", daemon, "(isolated daemon host)", flush=True)
         run([docker, "restart", daemon])
         deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and container_running(docker, daemon):
             result = subprocess.run(
                 [docker, "exec", daemon, "docker", "info"],
                 cwd=ROOT,
@@ -277,6 +303,7 @@ def run_daemon_restart_smoke(env_file: Path, image: str, proxy_port: int) -> Non
                 break
             time.sleep(2)
         else:
+            print_daemon_diagnostics(docker, daemon)
             raise RuntimeError("Isolated Docker daemon did not return after restart")
 
         for service in ("db", "redis", "backend", "worker", "beat", "proxy"):
