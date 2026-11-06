@@ -1,6 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- state helpers are exported for interaction tests. */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import 'maplibre-gl/dist/maplibre-gl.css'
 
 import { trackProductEvent } from './analytics'
 import { normalizePublicSiteUrl, routeUrl } from './siteMetadata'

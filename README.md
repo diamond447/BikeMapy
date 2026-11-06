@@ -50,7 +50,7 @@ Additional accessibility and responsive evidence is available in
 
 BikeMapy is a modular monolith with a separate frontend:
 
-- **Frontend:** React 19, TypeScript, Vite, MapLibre GL JS, TanStack Query,
+- **Frontend:** React 19, TypeScript, Vite, MapLibre GL JS,
   `openapi-fetch`, and pnpm.
 - **Backend:** Python 3.13, Django 5.2, Django REST Framework, GeoDjango,
   Celery, and `django-allauth`.

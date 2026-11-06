@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components -- map fixture helper is unit-tested. */
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import 'maplibre-gl/dist/maplibre-gl.css'
 import {
   AttributionControl,
   Map as MapLibreMap,

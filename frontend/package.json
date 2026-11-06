@@ -18,7 +18,6 @@
     "api:generate": "openapi-typescript ../openapi.yaml -o src/api/generated/schema.ts && prettier --write src/api/generated/schema.ts"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.74.4",
     "maplibre-gl": "^6.10.0",
     "openapi-fetch": "^0.14.0",
     "react": "^19.1.0",
