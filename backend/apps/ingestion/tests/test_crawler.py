@@ -728,14 +728,13 @@ def test_cache_body_retention_setting_must_be_positive() -> None:
         configured_body_retention_seconds()
 
 
-def test_cache_cleanup_is_scheduled_and_real_crawl_is_disabled_by_default() -> None:
-    from apps.ingestion.tasks import cleanup_crawl_response_cache, crawl_bikeforum
+def test_cache_cleanup_is_scheduled() -> None:
+    from apps.ingestion.tasks import cleanup_crawl_response_cache
 
     assert settings.CELERY_BEAT_SCHEDULE["cleanup-crawler-response-cache"] == {
         "task": "bikemapy.ingestion.cleanup_crawl_response_cache",
         "schedule": 3600,
     }
-    assert crawl_bikeforum()["status"] == "disabled"
 
     old = CrawlResponseCache.objects.create(
         url="https://bikeforum.example/scheduled-cleanup",

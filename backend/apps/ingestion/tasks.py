@@ -6,13 +6,12 @@ from typing import Any, cast
 
 from celery import shared_task  # type: ignore[import-untyped]
 from django.conf import settings
-from django.core.exceptions import ObjectDoesNotExist
 
 from apps.catalogue.services import process_payload_deletion, retry_payload_deletions
 
 from .cache import cleanup_expired_crawl_response_bodies
 from .crawler import run_crawl
-from .dispatch import block_extraction_attempt, extraction_gate_reason, reconcile_extraction_queue
+from .dispatch import reconcile_extraction_queue
 from .gpx import (
     GpxExtractionTaskFailure,
     cleanup_orphan_payload,
@@ -39,22 +38,6 @@ def crawl_bikeforum(
     task_id: int | None = None,
 ) -> dict[str, Any]:
     """Run a bounded crawl; PostgreSQL state makes retries resumable."""
-
-    if not all(
-        getattr(settings, setting, False)
-        for setting in (
-            "BIKEFORUM_CRAWL_ENABLED",
-            "BIKEFORUM_PROVIDER_AUTHORIZED",
-            "BIKEFORUM_OPERATOR_APPROVED",
-        )
-    ):
-        return {
-            "status": "disabled",
-            "reason": (
-                "Real-source BikeForum crawling is disabled until provider and operator "
-                "decisions are recorded"
-            ),
-        }
 
     return run_crawl(
         start_url=start_url or settings.BIKEFORUM_INCREMENTAL_URL,
@@ -113,12 +96,6 @@ def backfill_bikeforum(start_url: str, max_pages: int = 10) -> dict[str, Any]:
 def extract_gpx(source_id: int, attempt_id: int | None = None) -> dict[str, Any]:
     """Extract one source in isolation; terminal failures are persisted then raised."""
 
-    gate_reason = extraction_gate_reason()
-    if gate_reason is not None:
-        try:
-            return block_extraction_attempt(source_id, attempt_id=attempt_id, reason=gate_reason)
-        except ObjectDoesNotExist as exc:
-            raise GpxExtractionTaskFailure(gate_reason) from exc
     result = (
         run_gpx_extraction(source_id, attempt_id=attempt_id)
         if attempt_id is not None
@@ -133,12 +110,6 @@ def extract_gpx(source_id: int, attempt_id: int | None = None) -> dict[str, Any]
 def extract_gpx_route(source_id: int, attempt_id: int | None = None) -> dict[str, Any]:
     """Compatibility task name for dispatchers using the route terminology."""
 
-    gate_reason = extraction_gate_reason()
-    if gate_reason is not None:
-        try:
-            return block_extraction_attempt(source_id, attempt_id=attempt_id, reason=gate_reason)
-        except ObjectDoesNotExist as exc:
-            raise GpxExtractionTaskFailure(gate_reason) from exc
     result = (
         run_gpx_extraction(source_id, attempt_id=attempt_id)
         if attempt_id is not None

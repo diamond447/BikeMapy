@@ -136,15 +136,10 @@ def runtime_env(
         "BIKEFORUM_ALLOWED_ORIGINS": origin,
         "BIKEFORUM_INCREMENTAL_URL": f"{origin}/t/42",
         "REHEARSAL_FORUM_PORT": str(forum_port if forum_port is not None else ""),
-        # Crawling is enabled only against the local fixture forum.
-        "BIKEFORUM_CRAWL_ENABLED": str(synthetic_crawler).lower(),
-        "BIKEFORUM_PROVIDER_AUTHORIZED": str(synthetic_crawler).lower(),
-        "BIKEFORUM_OPERATOR_APPROVED": str(synthetic_crawler).lower(),
         "BIKEFORUM_DNS_CHECK": "false",
         "BIKEFORUM_CHECK_SOURCES": "false",
         "BIKEFORUM_LEASE_SECONDS": "5",
         "BIKEFORUM_PAGE_ATTEMPTS": "3",
-        "GPX_REDISTRIBUTION_APPROVED": "false",
         "GPX_INTERNAL_REDIRECT": "false",
         "REHEARSAL_BACKUP_DIR": str(rehearsal_backup_dir),
     }

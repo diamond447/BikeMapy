@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from django.conf import settings
 from django.urls import reverse
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
@@ -273,10 +272,6 @@ class RouteSerializer(RouteSummarySerializer):
 
     @extend_schema_field(serializers.URLField(allow_null=True))
     def get_gpx_download_url(self, route: Route) -> str | None:
-        """Never expose a download URL until legal redistribution is approved."""
-
-        if not getattr(settings, "GPX_REDISTRIBUTION_APPROVED", False):
-            return None
         version = route.current_approved_version
         if version is None or not version.original_gpx_storage_key:
             return None

@@ -408,7 +408,6 @@ def main() -> None:
                     f"PUBLIC_HOST={PUBLIC_HOST}",
                     "USE_X_FORWARDED_HOST=false",
                     "CORS_ALLOWED_ORIGINS=https://compose-smoke.example.invalid",
-                    "GPX_REDISTRIBUTION_APPROVED=false",
                     "GPX_INTERNAL_REDIRECT=false",
                     "BIKEFORUM_DNS_CHECK=false",
                     "BIKEFORUM_CHECK_SOURCES=false",

@@ -384,10 +384,6 @@ BIKEFORUM_ALLOWED_ORIGINS = [
 ]
 # The launch rehearsal turns this off so its fake source URLs never reach Mapy.
 BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
-# Real-source crawling stays off until the provider and the operator approve it.
-BIKEFORUM_CRAWL_ENABLED = env_bool("BIKEFORUM_CRAWL_ENABLED", False)
-BIKEFORUM_PROVIDER_AUTHORIZED = env_bool("BIKEFORUM_PROVIDER_AUTHORIZED", False)
-BIKEFORUM_OPERATOR_APPROVED = env_bool("BIKEFORUM_OPERATOR_APPROVED", False)
 BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)
 BIKEFORUM_LEASE_SECONDS = int(os.getenv("BIKEFORUM_LEASE_SECONDS", "600"))
 BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))
@@ -401,12 +397,6 @@ GPX_BACKOFF = float(os.getenv("GPX_BACKOFF", "0.5"))
 GPX_MAX_BYTES = int(os.getenv("GPX_MAX_BYTES", str(10 * 1024 * 1024)))
 GPX_MAX_POINTS = int(os.getenv("GPX_MAX_POINTS", "200000"))
 GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)
-# Public downloads and extraction are approved separately; extraction needs
-# all three of its flags.
-GPX_REDISTRIBUTION_APPROVED = env_bool("GPX_REDISTRIBUTION_APPROVED", False)
-GPX_EXTRACTION_ENABLED = env_bool("GPX_EXTRACTION_ENABLED", False)
-GPX_PROVIDER_AUTHORIZED = env_bool("GPX_PROVIDER_AUTHORIZED", False)
-GPX_LEGAL_APPROVED = env_bool("GPX_LEGAL_APPROVED", False)
 GPX_MAX_ATTEMPTS = int(os.getenv("GPX_MAX_ATTEMPTS", "3"))
 GPX_DISPATCH_TIMEOUT = int(os.getenv("GPX_DISPATCH_TIMEOUT", "900"))
 GPX_PROCESSING_TIMEOUT = int(os.getenv("GPX_PROCESSING_TIMEOUT", "1800"))

@@ -160,17 +160,10 @@ def test_detail_exposes_profile_and_keeps_review_badge_narrow(public_route: Rout
     assert payload["reviewed"] is True
 
 
-def test_gpx_download_contract_is_closed_before_legal_approval(public_route: Route) -> None:
-    with override_settings(GPX_REDISTRIBUTION_APPROVED=False):
-        response = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
-    assert response.status_code == 404
-    assert Client().get(f"/api/v1/routes/{public_route.pk}/").json()["gpx_download_url"] is None
-
-
 def test_gpx_download_uses_backend_origin_and_serves_only_existing_payload(
     public_route: Route, tmp_path: Path
 ) -> None:
-    with override_settings(GPX_REDISTRIBUTION_APPROVED=True, MEDIA_ROOT=tmp_path):
+    with override_settings(MEDIA_ROOT=tmp_path):
         payload = Client().get(f"/api/v1/routes/{public_route.pk}/").json()
         assert payload["gpx_download_url"] == (
             f"http://testserver/api/v1/routes/{public_route.pk}/gpx/"
@@ -188,11 +181,7 @@ def test_gpx_download_uses_backend_origin_and_serves_only_existing_payload(
 
 
 def test_gpx_download_can_use_internal_proxy_handoff(public_route: Route, tmp_path: Path) -> None:
-    with override_settings(
-        GPX_REDISTRIBUTION_APPROVED=True,
-        GPX_INTERNAL_REDIRECT=True,
-        MEDIA_ROOT=tmp_path,
-    ):
+    with override_settings(GPX_INTERNAL_REDIRECT=True, MEDIA_ROOT=tmp_path):
         default_storage.save("gpx/public-api-route.gpx", ContentFile(b"<gpx />"))
         response = Client().get(f"/api/v1/routes/{public_route.pk}/gpx/")
     assert response.status_code == 200

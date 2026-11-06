@@ -19,8 +19,8 @@ OpenFreeMap or OpenStreetMap.
 Source links, post URLs, author names, dates, titles and derived geometry are
 shown for attribution and discovery. Forum posts, maps, tiles, GPX files,
 names and logos are not covered by BikeMapy's MIT licence; use them only under
-their own terms or with the rights holder's permission. Public GPX downloads
-are disabled. Do not remove the map attribution.
+their own terms or with the rights holder's permission. Do not remove the map
+attribution.
 
 ## Acceptable use
 

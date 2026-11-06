@@ -635,13 +635,6 @@ def extract_gpx(
 
     from apps.catalogue.models import Route, RouteSource, SourceDenylistEntry
 
-    if attempt_id is not None:
-        from .dispatch import block_extraction_attempt, extraction_gate_reason
-
-        gate_reason = extraction_gate_reason()
-        if gate_reason is not None:
-            return block_extraction_attempt(source_id, attempt_id=attempt_id, reason=gate_reason)
-
     with transaction.atomic():
         source = RouteSource.objects.get(pk=source_id)
         route = Route.objects.select_for_update().get(pk=source.route_id)

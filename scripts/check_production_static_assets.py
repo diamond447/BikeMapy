@@ -74,7 +74,6 @@ def write_runtime_env(path: Path, image: str) -> None:
         "CELERY_BROKER_URL": "redis://redis:6379/0",
         "CELERY_RESULT_BACKEND": "redis://redis:6379/0",
         "GITHUB_OWNER_IDS": "",
-        "GPX_REDISTRIBUTION_APPROVED": "false",
         "GPX_INTERNAL_REDIRECT": "false",
     }
     path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")

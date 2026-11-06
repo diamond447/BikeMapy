@@ -97,7 +97,7 @@ restored_gpx_sha="$expected_gpx_sha"
 docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
-  -e DJANGO_DEBUG=true -e GPX_REDISTRIBUTION_APPROVED=true \
+  -e DJANGO_DEBUG=true \
   -e DJANGO_MEDIA_ROOT=/app/storage/media -v "$GPX_VOLUME:/app/storage" "$APP_IMAGE" \
   python backend/manage.py runserver 0.0.0.0:8000 --noreload >/dev/null
 application_ready=0

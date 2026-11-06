@@ -77,7 +77,7 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /** @description Serve a GPX payload only after the deployment's legal gate is enabled. */
+    /** @description Serve a route's GPX file. */
     get: operations['v1_routes_gpx_retrieve']
     put?: never
     post?: never
@@ -452,7 +452,7 @@ export interface operations {
           'application/gpx+xml': string
         }
       }
-      /** @description GPX redistribution is unavailable. */
+      /** @description GPX download is unavailable. */
       404: {
         headers: {
           [name: string]: unknown

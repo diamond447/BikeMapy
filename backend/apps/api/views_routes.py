@@ -387,16 +387,14 @@ class RouteDetailView(APIView):
             response=OpenApiTypes.BINARY,
             description="The approved GPX file.",
         ),
-        404: OpenApiResponse(description="GPX redistribution is unavailable."),
+        404: OpenApiResponse(description="GPX download is unavailable."),
     }
 )
 class RouteGpxDownloadView(APIView):
-    """Serve a GPX payload only after the deployment's legal gate is enabled."""
+    """Serve a route's GPX file."""
 
     def get(self, request: Request, route_id: UUID) -> Response:
         del request
-        if not getattr(settings, "GPX_REDISTRIBUTION_APPROVED", False):
-            return Response({"detail": "GPX redistribution is not approved."}, status=404)
         route = get_object_or_404(public_route_queryset(), pk=route_id)
         version = route.current_approved_version
         if version is None or not version.original_gpx_storage_key:

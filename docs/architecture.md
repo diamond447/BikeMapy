@@ -36,12 +36,8 @@ capped. Raw HTML is cached for 24 hours for conditional requests.
 
 GPX files are fetched from Mapy.com through `mapy-gpx-exporter` behind an
 adapter, parsed with `defusedxml`, and bounded in size and point count.
-
-Both stay off until their deployment flags are set:
-`BIKEFORUM_CRAWL_ENABLED`, `BIKEFORUM_PROVIDER_AUTHORIZED` and
-`BIKEFORUM_OPERATOR_APPROVED` for the crawler; `GPX_EXTRACTION_ENABLED`,
-`GPX_PROVIDER_AUTHORIZED` and `GPX_LEGAL_APPROVED` for GPX import. Public GPX
-downloads additionally need `GPX_REDISTRIBUTION_APPROVED`.
+Sources found by the crawler are queued for import right away, and imported
+GPX files can be downloaded from the route detail.
 
 ## Duplicates and variants
 

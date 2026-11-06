@@ -115,19 +115,14 @@ def test_launch_rehearsal_runtime_env_disables_debug(tmp_path: Path) -> None:
 
     values = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
     assert values["DJANGO_DEBUG"] == "false"
-    assert values["BIKEFORUM_CRAWL_ENABLED"] == "false"
-    assert values["BIKEFORUM_PROVIDER_AUTHORIZED"] == "false"
-    assert values["BIKEFORUM_OPERATOR_APPROVED"] == "false"
+    assert values["BIKEFORUM_ALLOWED_ORIGINS"] == "http://localhost:1"
 
 
-def test_launch_rehearsal_runtime_env_enables_only_synthetic_crawler(
+def test_launch_rehearsal_runtime_env_points_the_crawler_at_the_synthetic_forum(
     tmp_path: Path,
 ) -> None:
     env_file = tmp_path / "runtime.env"
     runtime_env(env_file, "bikemapy-rehearsal:test", forum_port=43123)
 
     values = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
-    assert values["BIKEFORUM_CRAWL_ENABLED"] == "true"
-    assert values["BIKEFORUM_PROVIDER_AUTHORIZED"] == "true"
-    assert values["BIKEFORUM_OPERATOR_APPROVED"] == "true"
     assert values["BIKEFORUM_ALLOWED_ORIGINS"] == "http://host.docker.internal:43123"

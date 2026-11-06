@@ -1,4 +1,4 @@
-"""Durable, gated dispatch of GPX extraction for discovered sources.
+"""Durable dispatch of GPX extraction for discovered sources.
 
 Each try is an :class:`~apps.ingestion.models.ExtractionAttempt`, sent to the
 broker only after its transaction commits.
@@ -27,20 +27,6 @@ from apps.catalogue.models import (
 from .models import ExtractionAttempt, ExtractionStatus
 
 logger = logging.getLogger(__name__)
-
-
-def extraction_gate_reason() -> str | None:
-    """Return the first disabled gate, or ``None``; all are off by default."""
-
-    gates = (
-        ("GPX_EXTRACTION_ENABLED", "route extraction is disabled"),
-        ("GPX_PROVIDER_AUTHORIZED", "the GPX provider is not authorized"),
-        ("GPX_LEGAL_APPROVED", "the legal extraction gate is not approved"),
-    )
-    for setting_name, reason in gates:
-        if not bool(getattr(settings, setting_name, False)):
-            return reason
-    return None
 
 
 def _max_attempts() -> int:
@@ -72,7 +58,7 @@ def _latest_attempt(source_id: int) -> ExtractionAttempt | None:
 
 
 def _provider_attempt_count(source_id: int) -> int:
-    """Count attempts that reached the provider; gate-blocked ones do not."""
+    """Count attempts that reached the provider."""
 
     return ExtractionAttempt.objects.filter(
         source_id=source_id,
@@ -142,69 +128,6 @@ def _send_attempt(attempt_id: int) -> None:
     )
 
 
-def block_extraction_attempt(
-    source_id: int, *, attempt_id: int | None, reason: str
-) -> dict[str, int | str | None]:
-    """Block a queued attempt while the gates are off; it resumes once they are on."""
-
-    with transaction.atomic():
-        route_id = RouteSource.objects.values_list("route_id", flat=True).get(pk=source_id)
-        Route.objects.select_for_update().get(pk=route_id)
-        source = RouteSource.objects.select_for_update().select_related("route").get(pk=source_id)
-        attempt = None
-        if attempt_id is not None:
-            attempt = ExtractionAttempt.objects.select_for_update().get(pk=attempt_id)
-            if attempt.source_id != source.pk:
-                raise ValueError("Extraction attempt belongs to another source")
-        else:
-            latest = _latest_attempt(source.pk)
-            if latest is not None and latest.status == ExtractionStatus.SUCCEEDED:
-                return {
-                    "status": ExtractionStatus.BLOCKED,
-                    "source_id": source_id,
-                    "attempt_id": latest.pk,
-                    "error": reason,
-                }
-            attempt = latest
-        if attempt is None:
-            attempt = ExtractionAttempt.objects.create(
-                source=source,
-                source_url=source.mapy_url,
-                status=ExtractionStatus.BLOCKED,
-                attempt_number=1,
-                diagnostics={"activation_gate": reason},
-                error=reason,
-                finished_at=timezone.now(),
-            )
-        elif attempt.status in {ExtractionStatus.QUEUED, ExtractionStatus.PROCESSING}:
-            attempt.status = ExtractionStatus.BLOCKED
-            attempt.error = reason
-            attempt.diagnostics = {**attempt.diagnostics, "activation_gate": reason}
-            attempt.finished_at = timezone.now()
-            attempt.dispatch_claim_token = ""
-            attempt.dispatch_claimed_until = None
-            attempt.save(
-                update_fields=[
-                    "status",
-                    "error",
-                    "diagnostics",
-                    "finished_at",
-                    "dispatch_claim_token",
-                    "dispatch_claimed_until",
-                ]
-            )
-        if source.processing_status in {ProcessingStatus.DISCOVERED, ProcessingStatus.PROCESSING}:
-            source.processing_status = ProcessingStatus.BLOCKED
-            source.last_error = reason
-            source.save(update_fields=["processing_status", "last_error"])
-        return {
-            "status": ExtractionStatus.BLOCKED,
-            "source_id": source_id,
-            "attempt_id": attempt.pk,
-            "error": reason,
-        }
-
-
 def dispatch_source_extraction(source_id: int, *, force: bool = False) -> ExtractionAttempt | None:
     """Queue one extraction attempt and send it after commit.
 
@@ -212,8 +135,6 @@ def dispatch_source_extraction(source_id: int, *, force: bool = False) -> Extrac
     dispatched again. ``force`` still respects the attempt limit.
     """
 
-    if extraction_gate_reason() is not None:
-        return None
     with transaction.atomic():
         source = RouteSource.objects.select_for_update().select_related("route").get(pk=source_id)
         if not _eligible(source):
@@ -256,16 +177,6 @@ def reconcile_extraction_queue(*, limit: int = 100) -> dict[str, int | str]:
     """Retry bounded pending/failed dispatches without resetting history."""
 
     limit = max(1, int(limit))
-    gate_reason = extraction_gate_reason()
-    if gate_reason is not None:
-        return {
-            "queued": 0,
-            "dispatched": 0,
-            "expired": 0,
-            "skipped": 0,
-            "blocked": gate_reason,
-        }
-
     dispatched = 0
     queued = 0
     skipped = 0

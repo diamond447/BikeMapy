@@ -52,11 +52,8 @@ After an API change, regenerate the TypeScript client with
 
 ## Crawler and GPX import
 
-Both are off by default and stay off locally: the crawler needs
-`BIKEFORUM_CRAWL_ENABLED`, `BIKEFORUM_PROVIDER_AUTHORIZED` and
-`BIKEFORUM_OPERATOR_APPROVED`, and GPX import needs `GPX_EXTRACTION_ENABLED`,
-`GPX_PROVIDER_AUTHORIZED` and `GPX_LEGAL_APPROVED`. With the flags set, a
-bounded crawl can be started by hand:
+Celery beat runs a daily incremental crawl of the real forum, and found sources
+are imported from Mapy.com. A bounded crawl can also be started by hand:
 
 ```sh
 docker compose exec backend python -c \
