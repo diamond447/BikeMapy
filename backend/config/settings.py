@@ -289,7 +289,19 @@ SPECTACULAR_SETTINGS = {
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 DJANGO_CACHE_URL = os.getenv("DJANGO_CACHE_URL", "")
-if DJANGO_CACHE_URL:
+# False in lean mode (deploy/compose.lean.yml): no Redis, worker or beat.
+BACKGROUND_JOBS_ENABLED = env_bool("BACKGROUND_JOBS_ENABLED", True)
+DATABASE_CACHE_TABLE = "bikemapy_cache"
+if not BACKGROUND_JOBS_ENABLED:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": DATABASE_CACHE_TABLE,
+            # Django's default of 300 entries would evict throttle buckets.
+            "OPTIONS": {"MAX_ENTRIES": 20_000},
+        }
+    }
+elif DJANGO_CACHE_URL:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
@@ -305,7 +317,9 @@ else:
     }
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 60 * 10
-CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
+CELERY_TASK_ALWAYS_EAGER = not BACKGROUND_JOBS_ENABLED or env_bool(
+    "CELERY_TASK_ALWAYS_EAGER", False
+)
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 CELERY_WORKER_REDIRECT_STDOUTS = True
 CELERY_BEAT_SCHEDULE = {

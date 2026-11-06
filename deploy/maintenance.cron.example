@@ -1,0 +1,4 @@
+# Lean mode only: no Celery beat, so run the scheduled tasks from host cron.
+# Minute 40 avoids the 02:15 backup window.
+40 * * * * cd /srv/bikemapy && ./deploy/compose.sh exec -T backend python backend/manage.py run_periodic_tasks >> /var/log/bikemapy-maintenance.log 2>&1
+50 3 * * * cd /srv/bikemapy && ./deploy/compose.sh exec -T backend python backend/manage.py run_periodic_tasks --with-crawl >> /var/log/bikemapy-maintenance.log 2>&1

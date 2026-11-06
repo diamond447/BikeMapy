@@ -1,0 +1,19 @@
+{% extends "admin/index.html" %}
+
+{% block content %}
+<div class="module" id="deployment-mode">
+  <table>
+    <caption>Deployment</caption>
+    <tr><th scope="row">Mode</th><td>{% if deployment.lean %}Lean{% else %}Full{% endif %}</td></tr>
+    <tr><th scope="row">Background tasks</th><td>{{ deployment.tasks }}</td></tr>
+    <tr><th scope="row">Cache</th><td>{{ deployment.cache }}</td></tr>
+    {% if deployment.lean %}
+    <tr>
+      <th scope="row">Periodic tasks last run</th>
+      <td>{{ deployment.periodic_tasks_last_run|default:"never" }}</td>
+    </tr>
+    {% endif %}
+  </table>
+</div>
+{{ block.super }}
+{% endblock %}
