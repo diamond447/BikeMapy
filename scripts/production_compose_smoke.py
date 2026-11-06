@@ -87,7 +87,7 @@ def trigger_unexpected_exit(container: str, service: str) -> None:
         "            continue\n"
         f"        if {marker!r} in command: targets.append(int(pid))\n"
         "if not targets: raise SystemExit('service process not found')\n"
-        "os.kill(targets[0], signal.SIGKILL)"
+        "os.kill(min(targets), signal.SIGKILL)"
     )
     command = [
         "docker",

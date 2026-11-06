@@ -4,6 +4,11 @@ services:
   backend:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
     restart: unless-stopped
+    # Docker's init runs as PID 1, forwards stop signals and reaps orphans.
+    # The service process is its child, so a crash of the service ends the
+    # container and the restart policy recovers it (the image runs gunicorn
+    # and celery directly, without a uv process in front of them).
+    init: true
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
@@ -52,6 +57,7 @@ services:
   worker:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
     restart: unless-stopped
+    init: true
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
@@ -77,6 +83,7 @@ services:
   beat:
     image: ${BIKEMAPY_BACKEND_IMAGE:?Select an immutable sha image before starting}
     restart: unless-stopped
+    init: true
     env_file: ${BIKEMAPY_ENV_FILE:-.env.production}
     environment:
       BIKEMAPY_DEPLOYMENT_MODE: production
