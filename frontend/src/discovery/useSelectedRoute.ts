@@ -26,7 +26,9 @@ export function useSelectedRoute(
   copy: SelectedRouteCopy,
 ): SelectedRouteState {
   const [geometry, setGeometry] = useState<SpatialRoute | null>(null)
-  const [record, setRecord] = useState<RouteRecord | null>(null)
+  // The detail record remembers the route it was requested for, so a record
+  // of the previous selection is never returned for the next one.
+  const [loaded, setLoaded] = useState<{ id: string; record: RouteRecord } | null>(null)
   const [metadataError, setMetadataError] = useState<string | null>(null)
   const [geometryError, setGeometryError] = useState<string | null>(null)
   const [metadataLoading, setMetadataLoading] = useState(false)
@@ -35,14 +37,14 @@ export function useSelectedRoute(
   useEffect(() => {
     if (!selectedId) {
       setGeometry(null)
-      setRecord(null)
+      setLoaded(null)
       setMetadataError(null)
       setGeometryError(null)
       setMetadataLoading(false)
       setGeometryLoading(false)
       return
     }
-    setRecord(null)
+    setLoaded(null)
     setMetadataError(null)
     setGeometryError(null)
     setMetadataLoading(true)
@@ -60,7 +62,7 @@ export function useSelectedRoute(
         if (!active) return
         if (error || !data) setMetadataError(copy.detailsUnavailable)
         else {
-          setRecord(data)
+          setLoaded({ id: selectedId, record: data })
           setMetadataError(null)
         }
         setMetadataLoading(false)
@@ -109,7 +111,7 @@ export function useSelectedRoute(
 
   return {
     geometry,
-    record,
+    record: loaded && loaded.id === selectedId ? loaded.record : null,
     metadataError,
     geometryError,
     metadataLoading,

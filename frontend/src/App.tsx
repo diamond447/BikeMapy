@@ -128,12 +128,14 @@ function App() {
     metadataLoading: selectedMetadataLoading,
     geometryLoading: selectedGeometryLoading,
   } = selectedState
-  // Prefer the detail record, which carries the elevation profile and GPX link;
-  // the list summary fills the panel while that record loads.
-  const selectedRoute =
-    selectedRecord?.id === selectedId
-      ? selectedRecord
-      : (routes.find((route) => route.id === selectedId) ?? null)
+  const listedRoute = routes.find((route) => route.id === selectedId)
+  // The list summary keeps its precedence; the detail record of the same
+  // selection adds the fields only it carries (elevation profile, GPX link,
+  // variants) and fills the panel for a route outside the loaded list.
+  const selectedRoute = useMemo(
+    () => (listedRoute ? { ...selectedRecord, ...listedRoute } : selectedRecord),
+    [listedRoute, selectedRecord],
+  )
   const report = useReport(selectedRoute, copy, REPORTS_ENABLED)
   const mobileSelectionActive = Boolean(selectedId && window.innerWidth <= 700)
   const selectionVisible = Boolean(
