@@ -13,13 +13,7 @@ export interface paths {
     }
     get?: never
     put?: never
-    /**
-     * @description Record one allow-listed event without retaining request identifiers.
-     *
-     *     This endpoint is CSRF-exempt because it has no authenticated session and
-     *     its only side effect is an anonymous product counter.  The dedicated
-     *     global non-IP throttle still bounds accidental or automated bursts.
-     */
+    /** @description Count one allow-listed event; CSRF-exempt because it has no session. */
     post: operations['v1_analytics_events_create']
     delete?: never
     options?: never
@@ -252,13 +246,7 @@ export interface components {
       /** Format: date-time */
       readonly updated_at: string
     }
-    /**
-     * @description Route fields rendered by the paginated list.
-     *
-     *     Elevation profiles, geometry, variants and the GPX link are detail-only:
-     *     the list renders none of them, and the profile alone made up almost all of
-     *     a 100-route page.
-     */
+    /** @description Route fields rendered by the list; the heavy ones are detail-only. */
     RouteSummary: {
       /** Format: uuid */
       readonly id: string
