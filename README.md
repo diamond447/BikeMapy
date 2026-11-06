@@ -132,10 +132,12 @@ Between September 2026 and October 2026 this repository also contained an
 experimental, disabled-by-default private module: Strava and provider-neutral
 player accounts, invite-only competitions, official reference-route completion
 and capture maps. It was removed from `main` to keep the project focused on
-the public route catalogue. The complete module, including its specification,
-legal reviews and tests, is preserved at the
-[`archive/strava-game`](https://github.com/diamond447/BikeMapy/tree/archive/strava-game)
-tag; the removal itself is an ordinary, reviewable commit in this history.
+the public route catalogue. Development of the module, including its
+specification, legal reviews and tests, continues in a separate private
+repository, as does an experimental local bike-fitting video analysis. Both
+are intended to be served next to the catalogue under `bikemapy.cz/game` and
+`bikemapy.cz/bike-fitting`. The removal itself is an ordinary, reviewable
+commit in this history.
 
 ## Project status and launch boundary
 
