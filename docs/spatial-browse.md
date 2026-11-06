@@ -39,7 +39,7 @@ After applying migrations, run the resumable, route-by-route rebuild command
 on the PostGIS worker (it is safe to rerun):
 
 ```sh
-docker compose exec backend uv run --locked --no-dev \
+docker compose exec backend \
   python backend/manage.py rebuild_spatial_products --batch-size 100
 ```
 

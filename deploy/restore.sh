@@ -146,9 +146,9 @@ $COMPOSE exec -T db pg_restore --username="$POSTGRES_USER" --clean --if-exists \
 docker run --rm -v "${GPX_VOLUME}:/data" -v "$BACKUP_DIR:/backup:ro" alpine \
   sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf "/backup/gpx-'"$BACKUP_ID"'.tar.gz" --exclude=./media/private/activity_uploads -C /data'
 echo "Migrating restored schema, then discarding transient upload references"
-$COMPOSE run --rm --no-deps backend uv run --locked --no-dev \
+$COMPOSE run --rm --no-deps backend \
   python backend/manage.py migrate --noinput
-$COMPOSE run --rm --no-deps backend uv run --locked --no-dev \
+$COMPOSE run --rm --no-deps backend \
   python backend/manage.py discard_restored_activity_uploads
 docker run --rm -v "${ACTIVITY_UPLOAD_VOLUME}:/data" alpine \
   sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +'

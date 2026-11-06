@@ -48,7 +48,7 @@ services:
       REPORT_RATE_LIMIT_HMAC_SECRET: ${REPORT_RATE_LIMIT_HMAC_SECRET:-}
       REPORT_CLIENT_IP_MODE: ${REPORT_CLIENT_IP_MODE:-direct}
       REPORT_TRUSTED_PROXY_CIDRS: ${REPORT_TRUSTED_PROXY_CIDRS:-}
-    command: uv run --locked --no-dev python backend/manage.py runserver 0.0.0.0:8000
+    command: python backend/manage.py runserver 0.0.0.0:8000
     volumes:
       - ./backend:/app/backend
       - gpx_data:/app/storage
@@ -59,7 +59,7 @@ services:
       redis: { condition: service_healthy }
     logging: *default-log-rotation
     healthcheck:
-      test: ["CMD", "uv", "run", "--locked", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live/', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live/', timeout=2)"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -78,7 +78,7 @@ services:
       REPORT_RATE_LIMIT_HMAC_SECRET: ${REPORT_RATE_LIMIT_HMAC_SECRET:-}
       REPORT_CLIENT_IP_MODE: ${REPORT_CLIENT_IP_MODE:-direct}
       REPORT_TRUSTED_PROXY_CIDRS: ${REPORT_TRUSTED_PROXY_CIDRS:-}
-    command: uv run --locked --no-dev celery -A config worker --loglevel=INFO
+    command: celery -A config worker --loglevel=INFO
     volumes:
       - ./backend:/app/backend
       - gpx_data:/app/storage
@@ -94,7 +94,7 @@ services:
     env_file:
       - path: .env
         required: false
-    command: uv run --locked --no-dev celery -A config beat --loglevel=INFO
+    command: celery -A config beat --loglevel=INFO
     volumes:
       - ./backend:/app/backend
     depends_on:

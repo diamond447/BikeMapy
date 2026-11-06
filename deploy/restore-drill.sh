@@ -87,14 +87,14 @@ docker run --rm --network "$NETWORK" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
   -e DJANGO_DEBUG=true -e DJANGO_MEDIA_ROOT=/app/storage/media \
   -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads "$APP_IMAGE" \
-  uv run --locked --no-dev python backend/manage.py migrate --noinput
+  python backend/manage.py migrate --noinput
 docker run --rm --network "$NETWORK" \
   -v "$GPX_VOLUME:/app/storage" -v "$ACTIVITY_UPLOAD_VOLUME:/app/private-uploads" \
   -e POSTGRES_DB=bikemapy -e POSTGRES_USER="$POSTGRES_USER" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
   -e DJANGO_DEBUG=true -e DJANGO_MEDIA_ROOT=/app/storage/media \
   -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads "$APP_IMAGE" \
-  uv run --locked --no-dev python backend/manage.py discard_restored_activity_uploads
+  python backend/manage.py discard_restored_activity_uploads
 docker run --rm -v "$ACTIVITY_UPLOAD_VOLUME:/data" alpine \
   sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} +'
 docker run --rm --network "$NETWORK" \
@@ -103,7 +103,7 @@ docker run --rm --network "$NETWORK" \
   -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -e POSTGRES_HOST=db \
   -e DJANGO_DEBUG=true -e DJANGO_MEDIA_ROOT=/app/storage/media \
   -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads "$APP_IMAGE" \
-  uv run --locked --no-dev python backend/manage.py shell -c \
+  python backend/manage.py shell -c \
   'from django.db.models import Q; from apps.accounts.models import ActivityUpload; assert not ActivityUpload.objects.filter(Q(content__isnull=False) | (Q(content_path__isnull=False) & ~Q(content_path="")) | Q(status__in=("queued", "processing"))).exists()'
 
 # Read every live storage reference and validate it against the restored
@@ -140,7 +140,7 @@ docker run -d --name "$APP_CONTAINER" --network "$NETWORK" \
   -e DJANGO_MEDIA_ROOT=/app/storage/media \
   -e DJANGO_ACTIVITY_UPLOAD_ROOT=/app/private-uploads \
   -v "$GPX_VOLUME:/app/storage" -v "$ACTIVITY_UPLOAD_VOLUME:/app/private-uploads" "$APP_IMAGE" \
-  uv run --locked --no-dev python backend/manage.py runserver 0.0.0.0:8000 --noreload >/dev/null
+  python backend/manage.py runserver 0.0.0.0:8000 --noreload >/dev/null
 application_ready=0
 for _ in {1..30}; do
   if docker exec "$APP_CONTAINER" python -c \

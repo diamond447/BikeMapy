@@ -18,8 +18,8 @@ services:
       - -c
       - >-
         echo 'migration preflight: checking applied schema' >&2 &&
-        uv run --locked --no-dev python backend/manage.py migrate --check --noinput &&
-        exec uv run --locked --no-dev gunicorn config.wsgi:application
+        python backend/manage.py migrate --check --noinput &&
+        exec gunicorn config.wsgi:application
         --logger-class config.gunicorn.JsonGunicornLogger --bind 0.0.0.0:8000
         --workers ${WEB_WORKERS:-3} --error-logfile -
     volumes:
@@ -41,7 +41,7 @@ services:
       # internal service hostname even though the public host is configured.
       # The request bypasses Nginx, so preserve the HTTPS scheme that the
       # trusted proxy supplies before Django's production redirect runs.
-      test: ["CMD", "uv", "run", "--locked", "--no-dev", "python", "-c", "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://backend:8000/health/ready/', headers={'X-Forwarded-Proto': 'https'}), timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://backend:8000/health/ready/', headers={'X-Forwarded-Proto': 'https'}), timeout=2)"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -64,8 +64,8 @@ services:
       - -c
       - >-
         echo 'migration preflight: checking applied schema' >&2 &&
-        uv run --locked --no-dev python backend/manage.py migrate --check --noinput &&
-        exec uv run --locked --no-dev celery -A config worker --loglevel=INFO
+        python backend/manage.py migrate --check --noinput &&
+        exec celery -A config worker --loglevel=INFO
     volumes:
       - gpx_data:/app/storage
       - activity_upload_data:/app/private-uploads
@@ -90,8 +90,8 @@ services:
       - -c
       - >-
         echo 'migration preflight: checking applied schema' >&2 &&
-        uv run --locked --no-dev python backend/manage.py migrate --check --noinput &&
-        exec uv run --locked --no-dev celery -A config beat --loglevel=INFO
+        python backend/manage.py migrate --check --noinput &&
+        exec celery -A config beat --loglevel=INFO
     depends_on:
       db:
         condition: service_healthy

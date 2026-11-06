@@ -255,10 +255,6 @@ def migrate_and_start(stack: Stack, *, worker: bool) -> int:
         "run",
         "--rm",
         "backend",
-        "uv",
-        "run",
-        "--locked",
-        "--no-dev",
         "python",
         "backend/manage.py",
         "migrate",
@@ -273,10 +269,6 @@ def migrate_and_start(stack: Stack, *, worker: bool) -> int:
 def seed_catalogue(stack: Stack) -> None:
     exec_backend(
         stack,
-        "uv",
-        "run",
-        "--locked",
-        "--no-dev",
         "python",
         "scripts/seed_rehearsal_catalogue.py",
     )
@@ -292,10 +284,6 @@ def candidate_startup_gate(images: dict[str, str]) -> dict[str, Any]:
         try:
             stack.compose("up", "-d", "--wait", "db", "redis")
             migration_command = (
-                "uv",
-                "run",
-                "--locked",
-                "--no-dev",
                 "python",
                 "backend/manage.py",
                 "migrate",
@@ -420,10 +408,6 @@ def rollback_rehearsal(images: dict[str, str], evidence: Path) -> dict[str, Any]
                 "--no-deps",
                 "--rm",
                 "backend",
-                "uv",
-                "run",
-                "--locked",
-                "--no-dev",
                 "python",
                 "backend/manage.py",
                 "migrate",
@@ -511,10 +495,6 @@ def state(stack: Stack) -> dict[str, Any]:
     )
     output = exec_backend(
         stack,
-        "uv",
-        "run",
-        "--locked",
-        "--no-dev",
         "python",
         "-c",
         code,
@@ -530,10 +510,6 @@ def dispatch(stack: Stack, url: str) -> None:
     )
     exec_backend(
         stack,
-        "uv",
-        "run",
-        "--locked",
-        "--no-dev",
         "python",
         "-c",
         code,

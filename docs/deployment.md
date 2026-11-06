@@ -28,7 +28,13 @@ deployment; do not deploy a floating tag such as `latest`. The provenance
 artifact and OCI revision label make the selected build auditable.
 
 The image contains application code, locked runtime dependencies, and the
-collected Django static assets under `/app/staticfiles`. In production,
+collected Django static assets under `/app/staticfiles`.  It is built in two
+stages: `uv` resolves the locked environment in a builder stage, and the
+runtime stage receives only `/app/.venv`, the source and `libgdal` (which
+brings GEOS and PROJ).  The runtime image contains neither `uv` nor the GDAL
+command-line tools, so commands run inside it call `python`, `gunicorn` and
+`celery` directly; `/app/.venv/bin` is first on `PATH`.  Earlier images have
+the same `PATH`, so the Compose files also start them during a rollback. In production,
 WhiteNoise serves that immutable asset set through the Nginx `/static/` proxy;
 the development Compose stack leaves static serving to Django's runserver.
 The backend image uses the repository root as its Docker context, with
@@ -256,7 +262,7 @@ export BIKEMAPY_BACKEND_IMAGE="ghcr.io/diamond447/bikemapy-backend@sha256:<selec
 # running its schema migration so no candidate process can start early.
 $COMPOSE pull backend worker beat
 $COMPOSE stop backend worker beat proxy
-$COMPOSE run --rm --no-deps backend uv run --locked --no-dev python backend/manage.py migrate --noinput
+$COMPOSE run --rm --no-deps backend python backend/manage.py migrate --noinput
 $COMPOSE up -d backend worker beat proxy
 
 # Do not continue until readiness and the public API respond successfully.
