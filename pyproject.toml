@@ -48,6 +48,7 @@ addopts = "--strict-markers --cov=backend/apps --cov=backend/config --cov-report
 markers = [
   "benchmark: opt-in representative spatial query benchmark",
   "redis: opt-in integration test requiring a running Redis cache",
+  "sqlite: runs only on the SQLite quality backend; CI runs these in the backend job",
 ]
 
 [tool.coverage.run]

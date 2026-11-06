@@ -10,10 +10,12 @@ documented in [operations.md](operations.md).
 
 ## Backend image
 
-The `Backend image` workflow builds the tested `docker/backend.Dockerfile` on
-pull requests and on pushes to `main`. Only a push to `main` or an explicitly
-started `workflow_dispatch` can publish to GitHub Container Registry. The
-published reference is commit-addressable:
+The `Backend image` workflow builds `docker/backend.Dockerfile` on pull
+requests that touch the backend, without publishing. For `main` it runs after
+the `Quality checks` workflow, including the PostGIS suite, has passed for a
+push, and builds and publishes the commit that run checked. An explicitly
+started `workflow_dispatch` can also publish. The published reference is
+commit-addressable:
 
 ```text
 ghcr.io/diamond447/bikemapy-backend:sha-<full-commit-sha>

@@ -1,14 +1,43 @@
 version: 2
 updates:
+  # Actions bumps arrive as one grouped pull request.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: pip
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+  # The uv ecosystem updates pyproject.toml and uv.lock together; the pip
+  # ecosystem only widened requirement ranges, which left the lockfile behind
+  # and failed `uv sync --locked`.
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python-development:
+        dependency-type: development
+        update-types: [minor, patch]
+      python-runtime:
+        dependency-type: production
+        update-types: [minor, patch]
+  # Minor and patch updates are grouped per dependency type; a major version
+  # still gets its own pull request.
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      frontend-development:
+        dependency-type: development
+        update-types: [minor, patch]
+      frontend-runtime:
+        dependency-type: production
+        update-types: [minor, patch]

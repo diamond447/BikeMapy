@@ -562,6 +562,7 @@ def test_restore_gpx_reference_json_framing_preserves_tabs_and_newlines(tmp_path
     assert "valid" in result.stdout
 
 
+@pytest.mark.sqlite
 @pytest.mark.django_db
 @pytest.mark.skipif(
     not settings.DATABASES["default"]["ENGINE"].endswith("sqlite3"),
@@ -634,6 +635,7 @@ def test_restore_reference_query_returns_all_rows_and_current_approved_version()
     assert representative == approved_references[0]
 
 
+@pytest.mark.sqlite
 @pytest.mark.django_db
 @pytest.mark.skipif(
     not settings.DATABASES["default"]["ENGINE"].endswith("sqlite3"),

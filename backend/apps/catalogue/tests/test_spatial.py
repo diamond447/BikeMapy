@@ -287,6 +287,7 @@ def test_viewport_and_selected_queries_are_bounded(published_route: Route) -> No
     assert result["routes"] == []
 
 
+@pytest.mark.sqlite
 @pytest.mark.skipif(
     connection.vendor == "postgresql", reason="covers the non-GIS Python bbox fallback"
 )
