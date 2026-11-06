@@ -354,7 +354,7 @@ TEMPLATES = [
 ]
 WSGI_APPLICATION = "config.wsgi.application"
 
-DATABASES = {
+DATABASES: dict[str, dict[str, Any]] = {
     "default": {
         "ENGINE": DATABASE_ENGINE,
         "NAME": os.getenv("POSTGRES_DB", "bikemapy"),
