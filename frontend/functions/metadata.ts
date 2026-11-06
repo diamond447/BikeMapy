@@ -106,8 +106,7 @@ export function renderRouteDocument(
     `<link rel="canonical" href="${escapeHtml(canonical)}" />`,
   ].join('\n    ')
   const cleanHtml = removeMetadata(html)
-  // A replacer function keeps `$&`, `$'` and similar sequences in a
-  // forum-supplied title from being expanded as replacement patterns.
+  // A replacer function, so `$&` in a forum title is not expanded.
   return cleanHtml.replace('</head>', () => `    ${tags}\n  </head>`)
 }
 

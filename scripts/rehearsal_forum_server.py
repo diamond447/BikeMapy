@@ -26,8 +26,7 @@ SECOND_PAGE = """<!doctype html><html><body>
 
 
 class Handler(BaseHTTPRequestHandler):
-    # Stay below the crawler's normal 15-second request timeout while leaving
-    # enough time for the host harness to kill the worker mid-request.
+    # Under the 15 s crawler timeout, long enough to kill the worker mid-request.
     delay_seconds = 8
 
     def do_GET(self) -> None:  # noqa: N802

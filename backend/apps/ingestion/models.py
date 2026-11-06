@@ -92,14 +92,9 @@ class CrawlCheckpoint(models.Model):
 
 
 class CrawlResponseCache(models.Model):
-    """Short-lived replay body plus durable metadata for conditional requests.
+    """A fetched page: the raw HTML expires, the caching metadata stays.
 
-    ``body`` is raw upstream HTML and is cleared by the scheduled retention
-    task. URL, redirect, status, validators, checksum, fetch time, and the
-    body-specific expiry deadline are retained as crawler metadata so a later
-    request can still use conditional HTTP semantics without retaining page
-    content. A validator refresh never extends the body deadline. Empty
-    responses have no body deadline and are excluded from expiry indexing.
+    A validator refresh never extends the body deadline.
     """
 
     url = models.URLField(max_length=1000, unique=True)
@@ -147,8 +142,7 @@ class CrawlResponseCache(models.Model):
             and "body_expires_at" not in update_fields
             and self.body_expires_at != previous_body_expiry
         ):
-            # Keep the application-level invariant intact for callers that
-            # optimize writes with update_fields while changing the body.
+            # Also save the new deadline when update_fields left it out.
             kwargs["update_fields"] = set(update_fields) | {"body_expires_at"}
         super().save(*args, **kwargs)
 
@@ -184,13 +178,7 @@ class CrawlPageWork(models.Model):
 
 
 class ExtractionAttempt(models.Model):
-    """Durable GPX work item and diagnostics for retries and review.
-
-    The source URL is copied at creation time so that an audit record remains
-    useful even when the source is subsequently unavailable.  Route sources
-    themselves are protected from deletion, but this model deliberately owns
-    only the processing history, not route content.
-    """
+    """One GPX extraction try; the source URL is copied for the audit trail."""
 
     source = models.ForeignKey(
         "catalogue.RouteSource", on_delete=models.PROTECT, related_name="extraction_attempts"

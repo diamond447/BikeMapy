@@ -1,8 +1,4 @@
-/**
- * Snap a viewport outward to the Web-Mercator tile grid one level below the
- * map zoom. Small pans inside the same tiles then produce the same request,
- * which the API cache, the browser and the CDN can reuse.
- */
+/** Snap a viewport outward to the tile grid one zoom below, so small pans reuse a URL. */
 
 export type Bounds = [west: number, south: number, east: number, north: number]
 

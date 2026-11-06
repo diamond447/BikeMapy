@@ -97,8 +97,7 @@ def _source_queryset() -> QuerySet[RouteSource]:
     return RouteSource.objects.prefetch_related("posts__thread", "posts__author").order_by("pk")
 
 
-# Version columns no list renders: the full and simplified geometries and the
-# elevation profile are by far the widest values in a route row.
+# The widest columns of a route row, which no list renders.
 _HEAVY_VERSION_FIELDS = (
     "current_approved_version__normalized_geometry",
     "current_approved_version__simplified_geometry",
@@ -107,16 +106,10 @@ _HEAVY_VERSION_FIELDS = (
 
 
 def public_route_queryset(*, detail: bool = False, geometry: bool = False) -> QuerySet[Route]:
-    """Return only published routes with a technically approved version.
+    """Return published routes with an approved version, prefetched for the API.
 
-    All relationships rendered by the public serializers are prefetched here,
-    keeping list responses bounded in query count as the catalogue grows.
-    ``detail`` adds what only the route detail renders (variants and the
-    elevation profile); otherwise the heavy version columns are deferred.
-    The geometries are loaded only with ``geometry``: the map draws the
-    selected line from the dedicated geometry endpoint.
-    Every filter here and in :func:`filter_routes` is a forward foreign key or
-    an ``EXISTS`` predicate, so no ``DISTINCT`` is needed over these rows.
+    ``detail`` adds variants and the elevation profile; geometries are loaded
+    only with ``geometry``.
     """
 
     queryset = (
@@ -182,9 +175,7 @@ def public_route_queryset(*, detail: bool = False, geometry: bool = False) -> Qu
 def _source_exists(source_filter: Q) -> Exists | Q:
     """Match routes whose direct or actively merged sources satisfy a filter.
 
-    Each path is its own correlated ``EXISTS`` so the planner can serve it from
-    the foreign-key indexes. A join through the many-to-many source tables
-    would repeat route rows and force a ``DISTINCT`` over the whole row.
+    ``EXISTS`` instead of a join, which would repeat route rows.
     """
 
     direct = RouteSource.objects.filter(source_filter, route=OuterRef("pk"))
@@ -242,17 +233,12 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
                 + SearchVector("thread_title", config="simple")
             )
             query = SearchQuery(search, search_type="websearch", config="simple")
-            # Match threads and authors once through their GIN indexes, then
-            # map them to routes with uncorrelated ``IN`` subqueries. PostgreSQL
-            # evaluates each as a hashed subplan; the former correlated
-            # ``EXISTS`` with an ``OR`` across the direct and merged source
-            # paths could not use an index and ran once per route row.
+            # Match threads and authors first, then routes through ``IN``
+            # subqueries: a correlated EXISTS with OR could not use the indexes.
             matching_threads = ForumThread.objects.annotate(
                 _text=SearchVector("title", config="simple")
                 + SearchVector("locality", config="simple")
             ).filter(
-                # ``__trigram_similar`` emits the `%` operator, allowing the
-                # GIN trigram indexes to serve typo-tolerant searches.
                 Q(_text=query)
                 | Q(title__trigram_similar=search)
                 | Q(locality__trigram_similar=search)
@@ -303,8 +289,6 @@ def filter_routes(queryset: QuerySet[Route], params: Any) -> QuerySet[Route]:
         "max_elevation": ("current_approved_version__ascent_m__lte", "elevation"),
         "min_ascent_m": ("current_approved_version__ascent_m__gte", "min_ascent_m"),
         "max_ascent_m": ("current_approved_version__ascent_m__lte", "max_ascent_m"),
-        # Explicit aliases make the contract pleasant for clients that use
-        # the model field names rather than the shorter filter names.
         "distance_min": ("current_approved_version__distance_m__gte", "distance_min"),
         "distance_max": ("current_approved_version__distance_m__lte", "distance_max"),
         "elevation_min": ("current_approved_version__ascent_m__gte", "elevation_min"),
@@ -422,9 +406,7 @@ class RouteGpxDownloadView(APIView):
         if path.is_absolute() or ".." in path.parts or not default_storage.exists(storage_key):
             return Response({"detail": "GPX download is unavailable."}, status=404)
         if getattr(settings, "GPX_INTERNAL_REDIRECT", False):
-            # Nginx authorizes this endpoint in Django, then serves the private
-            # volume through an internal location. Gunicorn does not hold a
-            # file descriptor or stream bytes for the duration of the download.
+            # Django authorizes, Nginx serves the file from an internal location.
             response = HttpResponse(status=status.HTTP_200_OK, content_type="application/gpx+xml")
             response["X-Accel-Redirect"] = "/_protected_gpx/" + quote(storage_key, safe="/")
             response["Content-Disposition"] = f'attachment; filename="{route.slug}.gpx"'
@@ -503,13 +485,7 @@ class ViewportRouteView(APIView):
 
 
 def _cacheable_response(request: Request, result: dict[str, Any]) -> Response:
-    """Let browsers and the CDN reuse a public viewport for a short time.
-
-    The frontend snaps its viewport to a tile grid, so neighbouring map
-    positions share a URL. The ETag is a digest of the payload, which keeps
-    revalidation correct across deployments and data changes; a matching
-    If-None-Match is answered with 304 and no body.
-    """
+    """Let browsers and the CDN reuse a viewport briefly; the ETag is a payload digest."""
 
     digest = hashlib.sha256(
         json.dumps(result, sort_keys=True, separators=(",", ":"), default=str).encode()

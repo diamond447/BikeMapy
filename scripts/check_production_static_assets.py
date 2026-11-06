@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test Django Admin static assets through the production proxy.
-
-The script builds the current backend image, runs the production Compose file
-with disposable PostGIS/Redis services, and requests the assets from Nginx.
-It is intentionally independent of a registry image so CI tests the image
-that was just built, including its collectstatic layer.
-"""
+"""Build the backend image and fetch Django Admin static files through Nginx."""
 
 from __future__ import annotations
 

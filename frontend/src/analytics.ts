@@ -1,9 +1,4 @@
-/** Privacy-minimal launch measurement.
- *
- * Cloudflare Web Analytics supplies aggregate visits.  The product events are
- * deliberately limited to an allow-list and contain no route, URL, session,
- * user, device, or arbitrary metadata.
- */
+/** Cloudflare Web Analytics plus three anonymous product event counters. */
 
 export type ProductEvent = 'route_detail_view' | 'gpx_download_click' | 'original_source_click'
 
@@ -24,13 +19,7 @@ export function setupCloudflareWebAnalytics(documentRef: Document = document): v
   documentRef.head.appendChild(script)
 }
 
-/**
- * Best-effort event delivery. Analytics must never affect route browsing, so
- * network failures and unavailable browser APIs are intentionally ignored.
- * `sendBeacon` also avoids holding up navigation after an external-source
- * click. URL-encoded data is a CORS-safelisted content type and contains only
- * the allow-listed event field.
- */
+/** Best effort: failures are ignored so analytics never affects browsing. */
 export function trackProductEvent(event: ProductEvent): void {
   try {
     if (typeof navigator.sendBeacon !== 'function') return

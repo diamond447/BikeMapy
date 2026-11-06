@@ -26,8 +26,7 @@ export function useSelectedRoute(
   copy: SelectedRouteCopy,
 ): SelectedRouteState {
   const [geometry, setGeometry] = useState<SpatialRoute | null>(null)
-  // The detail record remembers the route it was requested for, so a record
-  // of the previous selection is never returned for the next one.
+  // Keyed by route ID so a late response never shows for the next selection.
   const [loaded, setLoaded] = useState<{ id: string; record: RouteRecord } | null>(null)
   const [metadataError, setMetadataError] = useState<string | null>(null)
   const [geometryError, setGeometryError] = useState<string | null>(null)

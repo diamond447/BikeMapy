@@ -12,12 +12,7 @@ from .client_identity import client_ip
 
 
 class TrustedProxyClientIdentityMiddleware:
-    """Normalize client identity and remove untrusted forwarded chains.
-
-    Nginx is the only production peer that can reach Django. Once its
-    Cloudflare header has been validated, downstream code sees one canonical
-    ``REMOTE_ADDR`` and cannot accidentally consume a user-controlled prefix.
-    """
+    """Set ``REMOTE_ADDR`` from the trusted proxy header and drop forwarded chains."""
 
     def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:
         self.get_response = get_response
@@ -29,12 +24,9 @@ class TrustedProxyClientIdentityMiddleware:
 
 
 class PreviewReadOnlyMiddleware:
-    """Reject state-changing requests originating from configured previews.
+    """Reject state-changing requests from Pages preview origins.
 
-    Pages preview URLs are dynamic, so this check deliberately happens at the
-    API boundary instead of relying on a frontend feature flag. The regex is a
-    deployment setting and defaults to this project's Pages hostname; it must
-    never be broadened to all of ``pages.dev``.
+    The regex must never be broadened to all of ``pages.dev``.
     """
 
     def __init__(self, get_response: Callable[[HttpRequest], HttpResponse]) -> None:

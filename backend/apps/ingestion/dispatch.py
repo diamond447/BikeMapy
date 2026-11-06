@@ -1,11 +1,7 @@
-"""Durable, gated dispatch for discovered route sources.
+"""Durable, gated dispatch of GPX extraction for discovered sources.
 
-Source discovery and GPX extraction deliberately have different transactions.
-An :class:`~apps.ingestion.models.ExtractionAttempt` is the durable hand-off:
-it is created as ``queued`` and the broker is contacted only after its
-transaction commits.  This keeps a rolled-back crawl from advertising work
-that never became visible in the database, while retaining every extraction
-retry as a separate attempt.
+Each try is an :class:`~apps.ingestion.models.ExtractionAttempt`, sent to the
+broker only after its transaction commits.
 """
 
 from __future__ import annotations
@@ -34,12 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def extraction_gate_reason() -> str | None:
-    """Return the first disabled activation gate, or ``None`` when enabled.
-
-    The defaults are intentionally all off.  Technical readiness, provider
-    authorization, and legal approval are separate deployment decisions, so
-    enabling one can never silently activate real Mapy processing.
-    """
+    """Return the first disabled gate, or ``None``; all are off by default."""
 
     gates = (
         ("GPX_EXTRACTION_ENABLED", "route extraction is disabled"),
@@ -81,12 +72,7 @@ def _latest_attempt(source_id: int) -> ExtractionAttempt | None:
 
 
 def _provider_attempt_count(source_id: int) -> int:
-    """Count attempts that actually reached the provider boundary.
-
-    Gate-blocked rows are administrative deferrals, not provider retries. They
-    remain in the monotonic attempt history but must not exhaust the retry
-    budget when a deployment is toggled off and on again.
-    """
+    """Count attempts that reached the provider; gate-blocked ones do not."""
 
     return ExtractionAttempt.objects.filter(
         source_id=source_id,
@@ -100,12 +86,7 @@ def _provider_attempt_count(source_id: int) -> int:
 
 
 def _send_attempt(attempt_id: int) -> None:
-    """Submit one committed attempt and record broker metadata.
-
-    A broker error leaves the row queued, making it visible to the bounded
-    reconciler.  The conditional update also prevents a fast eager worker
-    from having its terminal status overwritten by the sender.
-    """
+    """Send one committed attempt; on a broker error it stays queued for retry."""
 
     with transaction.atomic():
         attempt = ExtractionAttempt.objects.select_for_update().get(pk=attempt_id)
@@ -164,12 +145,7 @@ def _send_attempt(attempt_id: int) -> None:
 def block_extraction_attempt(
     source_id: int, *, attempt_id: int | None, reason: str
 ) -> dict[str, int | str | None]:
-    """Fence queued work when execution gates are disabled.
-
-    A blocked attempt remains durable and is picked up by reconciliation once
-    the gates are enabled.  A completed source is left untouched when a
-    manually invoked task is rejected by the gate.
-    """
+    """Block a queued attempt while the gates are off; it resumes once they are on."""
 
     with transaction.atomic():
         route_id = RouteSource.objects.values_list("route_id", flat=True).get(pk=source_id)
@@ -230,11 +206,10 @@ def block_extraction_attempt(
 
 
 def dispatch_source_extraction(source_id: int, *, force: bool = False) -> ExtractionAttempt | None:
-    """Create one queued extraction attempt and dispatch it after commit.
+    """Queue one extraction attempt and send it after commit.
 
-    Repeated calls while an attempt is queued/processing return that attempt;
-    a successful source is never dispatched again.  ``force`` is reserved for
-    an operator/reconciliation action and still respects the attempt limit.
+    Returns the open attempt if there is one; a successful source is never
+    dispatched again. ``force`` still respects the attempt limit.
     """
 
     if extraction_gate_reason() is not None:
@@ -298,9 +273,7 @@ def reconcile_extraction_queue(*, limit: int = 100) -> dict[str, int | str]:
     stale_before = timezone.now() - timedelta(seconds=_dispatch_timeout())
     processing_before = timezone.now() - timedelta(seconds=_processing_timeout())
 
-    # A worker can disappear after claiming an attempt.  Convert only stale
-    # processing rows to a retryable terminal failure; a recent worker keeps
-    # its lease and is never duplicated by reconciliation.
+    # Fail attempts whose worker disappeared; recent ones keep running.
     stale_processing = ExtractionAttempt.objects.filter(
         status=ExtractionStatus.PROCESSING,
         started_at__lt=processing_before,

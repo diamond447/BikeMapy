@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Run disposable deployment rollback and crawler-resumption rehearsals.
+"""Rehearse a rollback and a crawler resumption on disposable local services.
 
-The rehearsal builds two local, content-addressed backend images, runs them
-against disposable PostGIS and Redis services, and writes non-production JSON
-evidence. It intentionally never contacts the real BikeForum or Mapy hosts.
+Never contacts the real BikeForum or Mapy hosts.
 """
 
 from __future__ import annotations
@@ -138,10 +136,7 @@ def runtime_env(
         "BIKEFORUM_ALLOWED_ORIGINS": origin,
         "BIKEFORUM_INCREMENTAL_URL": f"{origin}/t/42",
         "REHEARSAL_FORUM_PORT": str(forum_port if forum_port is not None else ""),
-        # The only enabled crawler runtime is this disposable local forum;
-        # it serves checked-in fixtures and never contacts a real provider.
-        # Keep all three production approval gates false in ordinary and
-        # rollback rehearsals, where no synthetic forum is configured.
+        # Crawling is enabled only against the local fixture forum.
         "BIKEFORUM_CRAWL_ENABLED": str(synthetic_crawler).lower(),
         "BIKEFORUM_PROVIDER_AUTHORIZED": str(synthetic_crawler).lower(),
         "BIKEFORUM_OPERATOR_APPROVED": str(synthetic_crawler).lower(),
@@ -224,8 +219,7 @@ def wait_for(url: str, *, timeout: float = 90) -> dict[str, Any]:
     last_error = ""
     while time.monotonic() < deadline:
         try:
-            # Rehearsal publishes the backend port directly instead of using
-            # Nginx, so preserve the HTTPS scheme the trusted proxy provides.
+            # No Nginx here, so send the header it would add.
             request = urllib.request.Request(url, headers={"X-Forwarded-Proto": "https"})
             with urllib.request.urlopen(request, timeout=3) as response:
                 if response.status != 200:
@@ -378,10 +372,8 @@ def rollback_rehearsal(images: dict[str, str], evidence: Path) -> dict[str, Any]
             manifest = json.loads((backup_dir / f"manifest-{backup_id}.json").read_text())
 
             failed_backup_id = f"{backup_id}-failure"
-            # Leave the previous container serving while selecting the
-            # candidate in Compose. If backup.sh accidentally used the
-            # selected environment during recovery, this check would observe
-            # the candidate image instead of the previous image.
+            # Select the candidate while the previous one still serves, to
+            # catch a recovery that restarts the wrong image.
             runtime_env(env_file, images["candidate_image"], backup_dir=backup_dir)
             previous_container_before_failure = stack.backend_container_id()
             failed_backup = run_backup(

@@ -135,12 +135,7 @@ class ViewportResponseSerializer(serializers.Serializer):
 
 
 class RouteSummarySerializer(serializers.ModelSerializer[Route]):
-    """Route fields rendered by the paginated list.
-
-    Elevation profiles, geometry, variants and the GPX link are detail-only:
-    the list renders none of them, and the profile alone made up almost all of
-    a 100-route page.
-    """
+    """Route fields rendered by the list; the heavy ones are detail-only."""
 
     title = serializers.CharField(source="effective_title", read_only=True)
     categories = serializers.SerializerMethodField()

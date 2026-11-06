@@ -1,8 +1,6 @@
 """Fail a CodeQL job for error-level or high/critical SARIF findings.
 
-CodeQL stores ``security-severity`` on the referenced driver rule rather than
-on each result.  This small gate joins results to both driver and extension
-rules so the CI policy is deterministic and testable without GitHub access.
+The severity is stored on the referenced rule, not on each result.
 """
 
 from __future__ import annotations
@@ -16,8 +14,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class _Component:
-    # ``index`` is the component-relative extension index.  The driver is
-    # addressed by omission in ReportingDescriptorReference.toolComponent.
+    # Index among the extensions; ``None`` is the driver.
     index: int | None
     name: str
     guid: str
@@ -59,8 +56,6 @@ def _component_matches(
         return components
     candidates = components
     if isinstance(reference.get("index"), int):
-        # SARIF's ToolComponentReference.index is relative to extensions; the
-        # driver has no component index and is selected by omission.
         candidates = tuple(
             item
             for item in candidates
@@ -135,9 +130,7 @@ def _resolve_rule(
 def _severity(result: dict[str, Any], rule: dict[str, Any] | None) -> float:
     properties: dict[str, Any] = {}
     properties.update(result.get("properties", {}))
-    # Supporting result properties keeps the gate compatible with SARIF
-    # producers that inline metadata, while the referenced rule remains
-    # authoritative when both contain a value.
+    # Rule properties win over the result's own.
     if rule:
         properties.update(rule.get("properties", {}))
     try:
@@ -192,8 +185,7 @@ def actionable_findings(document: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError("SARIF result must be an object")
             rule_id, rule, unresolved = _resolve_rule(run, result)
             severity = _severity(result, rule)
-            # Unknown or ambiguous rule metadata is actionable: silently
-            # treating it as low severity would make the gate fail open.
+            # An unresolved rule fails rather than counting as low severity.
             if result.get("level") == "error" or unresolved or severity >= 7:
                 finding = {
                     "ruleId": rule_id,

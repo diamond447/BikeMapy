@@ -116,9 +116,7 @@ def verify_restart_after_failure(compose: list[str], service: str, timeout: floa
         ],
         capture=True,
     )
-    # A direct `docker kill` is treated as an operator stop by the daemon and
-    # intentionally suppresses an `unless-stopped` restart. Stop the service
-    # process from inside its container to model an unexpected failure.
+    # `docker kill` counts as an operator stop and skips the restart policy.
     trigger_unexpected_exit(container, service)
     deadline = time.monotonic() + timeout
     last_state = ""

@@ -65,7 +65,7 @@ def test_fixture_parser_contract_uses_stable_post_and_source_fields() -> None:
     assert parsed.posts[0].author == "rider"
     assert parsed.posts[0].source_urls == ("https://mapy.com/s/demo",)
     assert parsed.posts[0].posted_at == datetime(2025, 4, 12, 10, tzinfo=UTC)
-    assert LxmlBikeForumParser().parse_thread(FIXTURE.read_text(), THREAD_URL).title == parsed.title
+    assert LxmlBikeForumParser().parse(FIXTURE.read_text(), THREAD_URL).title == parsed.title
 
 
 @pytest.mark.parametrize(

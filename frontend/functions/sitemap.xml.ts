@@ -61,8 +61,7 @@ async function fetchRouteUrls(fetcher: typeof fetch, api: string, site: string):
       }
       if (!payload.next || (payload.results ?? []).length < PAGE_SIZE) break
       if (page === MAX_PAGES) {
-        // Never return an apparently valid but incomplete sitemap. The caller
-        // falls back to the generated homepage-only asset instead.
+        // Better the static fallback than an incomplete sitemap.
         throw new Error('Route catalogue exceeds the sitemap capacity')
       }
     }

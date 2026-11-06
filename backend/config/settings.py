@@ -104,8 +104,7 @@ INSTALLED_APPS = [
     "apps.analytics",
 ]
 if DATABASE_ENGINE == "django.db.backends.sqlite3":
-    # Host-side smoke checks can run without native GeoDjango libraries. The
-    # Compose and production defaults still load the full PostGIS stack.
+    # Host-side checks run without the native GeoDjango libraries.
     INSTALLED_APPS.remove("django.contrib.gis")
 
 MIDDLEWARE = [
@@ -122,8 +121,6 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 if not DEBUG:
-    # Static files are served by the application only in the production image;
-    # local development keeps Django's runserver static-file behavior.
     MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "config.urls"
@@ -151,8 +148,7 @@ if GITHUB_OAUTH_CLIENT_ID and GITHUB_OAUTH_CLIENT_SECRET:
         "secret": GITHUB_OAUTH_CLIENT_SECRET,
     }
 
-# Authorization uses GitHub's immutable numeric account ID.  Keep this empty
-# by default so a deployment must explicitly opt in to owner administration.
+# Numeric GitHub account IDs, which cannot be renamed like logins.
 GITHUB_OWNER_IDS = frozenset(
     value.strip()
     for value in os.getenv("GITHUB_OWNER_IDS", "").split(",")
@@ -182,12 +178,8 @@ DATABASES: dict[str, dict[str, Any]] = {
         "PASSWORD": os.getenv("POSTGRES_PASSWORD", "bikemapy-local-only"),
         "HOST": os.getenv("POSTGRES_HOST", "db"),
         "PORT": os.getenv("POSTGRES_PORT", "5432"),
-        # Production workers reuse their connection across requests instead of
-        # paying the connect and authentication round trip on every API call.
-        # Health checks replace a connection that broke while idle, for
-        # example after a database restart. Elsewhere connections stay
-        # per-request: threaded tests would otherwise leave idle connections
-        # behind that block dropping the test database.
+        # Persistent connections only in production: idle ones left by
+        # threaded tests would block dropping the test database.
         "CONN_MAX_AGE": env_int(
             "DJANGO_CONN_MAX_AGE", 60 if DEPLOYMENT_MODE == "production" else 0
         ),
@@ -229,17 +221,11 @@ READ_ONLY_PREVIEW_ORIGIN_REGEX = os.getenv(
     "READ_ONLY_PREVIEW_ORIGIN_REGEX",
     r"\Ahttps://([a-z0-9-]+\.)+bikemapy\.pages\.dev\Z",
 )
-# GET requests from dynamic Pages previews need CORS, while the middleware
-# above rejects every state-changing request from the same origin pattern.
+# Previews may read; PreviewReadOnlyMiddleware rejects their writes.
 CORS_ALLOWED_ORIGIN_REGEXES = [READ_ONLY_PREVIEW_ORIGIN_REGEX]
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = env_bool("USE_X_FORWARDED_HOST", False)
 
-# The public edge terminates TLS and proxy_params preserves that scheme for
-# Django. Production therefore redirects any request that reaches Django
-# without the HTTPS scheme and emits a one-year HSTS policy. Secure cookies
-# must never be relaxed in production: an insecure first request must not be
-# able to establish an owner session or CSRF cookie over cleartext transport.
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 SECURE_SSL_REDIRECT = not DEBUG
@@ -282,9 +268,6 @@ validate_production_security_settings()
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
-    # The catalogue is intentionally public and read-only, but an unbounded
-    # client must not be able to consume all API capacity.  Deployments can
-    # tune these values without changing the application.
     "DEFAULT_THROTTLE_CLASSES": [
         "apps.api.throttling.ApiAnonRateThrottle",
         "apps.api.throttling.ApiUserRateThrottle",
@@ -294,8 +277,7 @@ REST_FRAMEWORK = {
         "user": os.getenv("API_USER_RATE", "600/minute"),
     },
 }
-# Analytics is deliberately protected by one coarse, non-identifying bucket;
-# unlike the generic API throttle it never derives a cache key from an IP.
+# One global bucket, so no cache key is ever derived from a client IP.
 ANALYTICS_EVENT_RATE = os.getenv("ANALYTICS_EVENT_RATE", "600/minute")
 SPECTACULAR_SETTINGS = {
     "TITLE": "BikeMapy API",
@@ -315,8 +297,6 @@ if DJANGO_CACHE_URL:
         }
     }
 else:
-    # Host-side checks intentionally remain self-contained. Compose and
-    # production should set DJANGO_CACHE_URL to the shared Redis database.
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
@@ -355,12 +335,8 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-# Health monitoring treats a daily crawl as stale after this configurable
-# window. The separate endpoint is intended for an external uptime check.
 CRAWLER_FRESHNESS_MAX_AGE = int(os.getenv("CRAWLER_FRESHNESS_MAX_AGE", str(36 * 3600)))
 
-# Anonymous report protections and privacy retention.  The secret is never
-# written to a report; only HMAC-derived cache identifiers are used.
 REPORT_TURNSTILE_SECRET_KEY = os.getenv("REPORT_TURNSTILE_SECRET_KEY", "")
 REPORT_TURNSTILE_VERIFY_URL = os.getenv(
     "REPORT_TURNSTILE_VERIFY_URL", "https://challenges.cloudflare.com/turnstile/v0/siteverify"
@@ -380,8 +356,6 @@ REPORT_DUPLICATE_WINDOW = int(os.getenv("REPORT_DUPLICATE_WINDOW", str(24 * 3600
 REPORT_EMAIL_RETENTION = int(os.getenv("REPORT_EMAIL_RETENTION", str(90 * 86400)))
 REPORT_DETAILS_RETENTION = int(os.getenv("REPORT_DETAILS_RETENTION", str(365 * 86400)))
 
-# Crawl defaults are intentionally conservative.  A deployment can tune them
-# without changing code, while the identifiable UA remains explicit.
 BIKEFORUM_USER_AGENT = os.getenv(
     "BIKEFORUM_USER_AGENT", "BikeMapyBot/1.0 (+https://github.com/diamond447/BikeMapy)"
 )
@@ -390,9 +364,7 @@ BIKEFORUM_RATE_LIMIT = float(os.getenv("BIKEFORUM_RATE_LIMIT", "2"))
 BIKEFORUM_RETRIES = int(os.getenv("BIKEFORUM_RETRIES", "2"))
 BIKEFORUM_BACKOFF = float(os.getenv("BIKEFORUM_BACKOFF", "1"))
 BIKEFORUM_CACHE_TTL = float(os.getenv("BIKEFORUM_CACHE_TTL", "3600"))
-# Raw forum HTML is retained only for short-lived replay after a crawl. The
-# URL, final URL, status, validators, checksum, and fetch time remain useful
-# crawler metadata after the scheduled cleanup clears the body.
+# Raw forum HTML can contain usernames, so it is cleared after at most a day.
 BIKEFORUM_CACHE_BODY_RETENTION_SECONDS = int(
     os.getenv("BIKEFORUM_CACHE_BODY_RETENTION_SECONDS", str(24 * 3600))
 )
@@ -404,16 +376,13 @@ if not 1 <= BIKEFORUM_CACHE_BODY_RETENTION_SECONDS <= CRAWLER_CACHE_BODY_RETENTI
     )
 BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE = int(os.getenv("BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE", "500"))
 BIKEFORUM_MAX_PAGES = int(os.getenv("BIKEFORUM_MAX_PAGES", "100"))
-# Do not let an origin serve an arbitrarily large HTML document to the parser.
 BIKEFORUM_MAX_BYTES = int(os.getenv("BIKEFORUM_MAX_BYTES", str(5 * 1024 * 1024)))
 BIKEFORUM_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")
     if origin.strip()
 ]
-# The disposable launch harness sets this false because its synthetic source
-# URLs must never trigger requests to real Mapy hosts. Production must retain
-# the default and run the bounded source availability checks.
+# The launch rehearsal turns this off so its fake source URLs never reach Mapy.
 BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
 # Real-source crawling stays off until the provider and the operator approve it.
 BIKEFORUM_CRAWL_ENABLED = env_bool("BIKEFORUM_CRAWL_ENABLED", False)
@@ -426,28 +395,22 @@ BIKEFORUM_INCREMENTAL_URL = os.getenv(
     "BIKEFORUM_INCREMENTAL_URL", "https://www.bike-forum.cz/forum/"
 )
 
-# GPX imports are bounded independently of the forum crawler.  The exporter
-# follows only same-origin Mapy redirects; DNS validation adds SSRF defence.
 GPX_TIMEOUT = float(os.getenv("GPX_TIMEOUT", "30"))
 GPX_RETRIES = int(os.getenv("GPX_RETRIES", "3"))
 GPX_BACKOFF = float(os.getenv("GPX_BACKOFF", "0.5"))
 GPX_MAX_BYTES = int(os.getenv("GPX_MAX_BYTES", str(10 * 1024 * 1024)))
 GPX_MAX_POINTS = int(os.getenv("GPX_MAX_POINTS", "200000"))
 GPX_DNS_CHECK = env_bool("GPX_DNS_CHECK", True)
-# Legal/terms review is an explicit deployment gate. Keep downloads off by
-# default even when an imported payload remains in local storage.
+# Public downloads and extraction are approved separately; extraction needs
+# all three of its flags.
 GPX_REDISTRIBUTION_APPROVED = env_bool("GPX_REDISTRIBUTION_APPROVED", False)
-# Extraction activation is deliberately independent from redistribution.  All
-# three gates must be enabled before a discovered source can reach Mapy.
 GPX_EXTRACTION_ENABLED = env_bool("GPX_EXTRACTION_ENABLED", False)
 GPX_PROVIDER_AUTHORIZED = env_bool("GPX_PROVIDER_AUTHORIZED", False)
 GPX_LEGAL_APPROVED = env_bool("GPX_LEGAL_APPROVED", False)
 GPX_MAX_ATTEMPTS = int(os.getenv("GPX_MAX_ATTEMPTS", "3"))
 GPX_DISPATCH_TIMEOUT = int(os.getenv("GPX_DISPATCH_TIMEOUT", "900"))
 GPX_PROCESSING_TIMEOUT = int(os.getenv("GPX_PROCESSING_TIMEOUT", "1800"))
-# Orphan payload cleanup is retried with bounded exponential backoff.  A
-# cleanup that remains unavailable after the limit is retained as exhausted
-# operational evidence and is never retried automatically again.
+# After the last attempt an orphan cleanup is kept as exhausted, not retried.
 GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS = int(os.getenv("GPX_ORPHAN_CLEANUP_MAX_ATTEMPTS", "5"))
 GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS = int(
     os.getenv("GPX_ORPHAN_CLEANUP_RETRY_BASE_SECONDS", "60")
@@ -456,13 +419,10 @@ GPX_ORPHAN_CLEANUP_RETRY_MAX_SECONDS = int(
     os.getenv("GPX_ORPHAN_CLEANUP_RETRY_MAX_SECONDS", "3600")
 )
 GPX_ORPHAN_CLEANUP_LEASE_SECONDS = int(os.getenv("GPX_ORPHAN_CLEANUP_LEASE_SECONDS", "900"))
-# Direct Django deployments keep the streaming fallback. The production
-# Nginx stack enables the internal X-Accel-Redirect handoff.
+# Set behind Nginx to hand downloads off with X-Accel-Redirect.
 GPX_INTERNAL_REDIRECT = env_bool("GPX_INTERNAL_REDIRECT", False)
 
-# Sentry stores events according to the project retention setting. Keep the
-# application-side contract explicit and document the required 30-day Sentry
-# project policy in the operations runbook.
+# Must match the retention configured in the Sentry project (privacy notice).
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "production")
 SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
@@ -471,29 +431,19 @@ if SENTRY_RETENTION_DAYS != 30:
     raise ValueError("SENTRY_RETENTION_DAYS must remain exactly 30 days")
 init_sentry()
 
-# Spatial duplicate detection is intentionally precision-oriented.  Keep the
-# values configurable so benchmark results can tune policy without a schema
-# change or code deployment.
 ROUTE_SIMILARITY_SAMPLE_POINTS = int(os.getenv("ROUTE_SIMILARITY_SAMPLE_POINTS", "64"))
 ROUTE_SIMILARITY_GPS_TOLERANCE_M = float(os.getenv("ROUTE_SIMILARITY_GPS_TOLERANCE_M", "30"))
 ROUTE_DUPLICATE_MAX_LENGTH_DELTA = float(os.getenv("ROUTE_DUPLICATE_MAX_LENGTH_DELTA", "0.10"))
 ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MEAN_DISTANCE_M", "25"))
 ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M = float(os.getenv("ROUTE_DUPLICATE_MAX_MAX_DISTANCE_M", "100"))
 ROUTE_VARIANT_MIN_SCORE = float(os.getenv("ROUTE_VARIANT_MIN_SCORE", "0.55"))
-# Similarity keyset-pages candidate IDs and fetches geometries in these
-# batches. The page size bounds memory, while every page is eventually scored.
 ROUTE_DEDUPLICATION_CANDIDATE_PAGE_SIZE = int(
     os.getenv("ROUTE_DEDUPLICATION_CANDIDATE_PAGE_SIZE", "500")
 )
 ROUTE_DEDUPLICATION_BATCH_SIZE = int(os.getenv("ROUTE_DEDUPLICATION_BATCH_SIZE", "100"))
 
-# Spatial browse products.  The heatmap is deliberately limited to low zooms;
-# route lines take over at closer zooms.  Every public query has an explicit
-# bound so a large viewport cannot accidentally become a catalogue dump.
 SPATIAL_BROWSE_ZOOMS = os.getenv("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14")
-# Browser and CDN lifetime of a public viewport response. The server-side
-# viewport cache is invalidated by epochs; this adds at most this many seconds
-# of staleness for a client that already holds the response.
+# Browser and CDN cache lifetime; the server-side cache is invalidated by epoch.
 SPATIAL_HTTP_MAX_AGE = env_int("SPATIAL_HTTP_MAX_AGE", 60)
 SPATIAL_HEATMAP_ZOOMS = os.getenv("SPATIAL_HEATMAP_ZOOMS", "3,4,5,6,7,8")
 SPATIAL_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_MAX_ROUTES_PER_QUERY", "500"))

@@ -1,9 +1,7 @@
-"""Conservative spatial similarity detection for route versions.
+"""Spatial similarity detection for route versions.
 
-The scorer deliberately operates on plain GeoJSON-like coordinates.  This
-keeps the quality suite usable with SQLite while using the same algorithm for
-the PostGIS deployment.  Coordinates are resampled by travelled distance,
-which makes the comparison tolerant of GPX point density and small GPS noise.
+Routes are compared as plain coordinates resampled by travelled distance, so
+GPX point density and small GPS noise do not matter.
 """
 
 from __future__ import annotations
@@ -38,13 +36,7 @@ def _setting(name: str, default: Any) -> Any:
 
 @dataclass(frozen=True)
 class SimilarityConfig:
-    """Tunable, precision-oriented duplicate policy.
-
-    ``duplicate_max_length_delta`` is intentionally 0.10 by default: routes
-    with a meaningful extension or shortcut remain visible variants.  The
-    distance thresholds are measured in metres after distance-based
-    resampling, rather than depending on the number of GPX points.
-    """
+    """Duplicate and variant thresholds; distances are in metres."""
 
     sample_points: int = 64
     gps_tolerance_m: float = 30.0
@@ -94,15 +86,7 @@ class SimilarityResult:
 
 @dataclass(frozen=True)
 class SimilarityScanReport:
-    """Bounded-scan telemetry for one similarity search.
-
-    ``candidate_count`` is the number of IDs admitted by the indexed query;
-    ``compared_count`` counts only candidates successfully passed to the
-    scorer. Malformed geometries can therefore be candidates without being
-    comparisons. No more than
-    ``candidate_page_size`` IDs and ``batch_size`` geometries are loaded at a
-    time.
-    """
+    """Counters for one similarity search; malformed candidates are not compared."""
 
     candidate_count: int
     compared_count: int
@@ -300,8 +284,7 @@ def compare_geometries(
     mean, maximum, offset, reversed_direction = _best_alignment(sample_a, sample_b, loop=loop)
     longest = max(length_a, length_b, 1.0)
     length_delta = abs(length_a - length_b) / longest
-    # A wider scoring window keeps visibly related variants linkable while
-    # the absolute duplicate gates below remain strict.
+    # The score is lenient so variants link; the duplicate gates stay strict.
     distance_score = math.exp(-mean / max(policy.gps_tolerance_m * 4, 0.001))
     length_score = max(0.0, 1.0 - length_delta)
     score = max(0.0, min(1.0, distance_score * length_score))
@@ -396,7 +379,7 @@ def link_similarity(
             "evidence": result.evidence,
         },
     )
-    # An explicit moderation decision owns the relationship classification.
+    # Never override a moderator's decision.
     if (
         not created
         and not ModerationDecision.objects.filter(
@@ -419,13 +402,7 @@ def link_similarity(
 def _candidate_spatial_filter(
     queryset: Any, version: RouteVersion, policy: SimilarityConfig
 ) -> Any:
-    """Apply the PostGIS GiST pre-filter without changing the Python scorer.
-
-    A candidate that can pass the variant score must have at least one point
-    within this conservative envelope.  The envelope is deliberately wider
-    than the duplicate maximum so meaningful variants are not lost.  SQLite
-    has no geometry operator, so its bounded ID scan remains the safe fallback.
-    """
+    """Keep candidates within the distance any variant could have (PostGIS only)."""
 
     if connection.vendor != "postgresql":
         return queryset
@@ -437,8 +414,6 @@ def _candidate_spatial_filter(
         -4 * policy.gps_tolerance_m * math.log(max(policy.variant_min_score, 0.001)),
     )
     latitude_delta = radius_m / 111_132.0
-    # Longitude degrees represent less distance away from the equator.  Use
-    # the smallest cosine over the route and clamp it near the poles.
     cosine = max(0.1, min(math.cos(math.radians(point[1])) for point in points))
     longitude_delta = min(180.0, radius_m / (111_132.0 * cosine))
     west = max(-180.0, min(point[0] for point in points) - longitude_delta)
@@ -460,8 +435,7 @@ def _candidate_length_filter(queryset: Any, version: RouteVersion, policy: Simil
 
     if version.distance_m is None:
         return queryset
-    # Variants can be longer than duplicates.  The score's length component
-    # can still reach variant_min_score, so retain that whole safe range.
+    # Variants may differ in length more than duplicates.
     maximum_delta = max(policy.duplicate_max_length_delta, 1.0 - policy.variant_min_score)
     length = float(version.distance_m)
     if length <= 0:
@@ -490,21 +464,16 @@ def similar_versions_with_report(
     collect_telemetry: bool = False,
     result_limit: int | None = None,
 ) -> tuple[list[tuple[RouteVersion, SimilarityResult]], SimilarityScanReport]:
-    """Find matches through a bounded, indexed candidate scan.
+    """Find matches, loading candidates in keyset pages and geometry batches.
 
-    Candidate IDs are selected before any geometry column is fetched.  Only
-    one configured batch of versions is materialized at a time, and the
-    page boundaries are keyset-based, so no eligible ID is silently dropped.
-    Full-population counts and query plans are opt-in benchmark telemetry;
-    ordinary imports only pay for the bounded scan itself.
+    ``collect_telemetry`` adds population counts and query plans for benchmarks.
     """
 
     policy = config or SimilarityConfig.from_settings()
     started = perf_counter()
     page_size = max(1, policy.candidate_page_size)
     batch_size = max(1, min(policy.batch_size, page_size))
-    # A route's approved pointer is authoritative.  Historical versions are
-    # considered only for routes that have not selected an approved version.
+    # Compare a route's approved version, or its whole history if none is approved.
     current = Q(source__route__current_approved_version_id=F("pk"))
     unapproved_history = Q(source__route__current_approved_version__isnull=True)
     valid_versions = (
@@ -628,8 +597,3 @@ def classify_version(
         return None, None
     candidate, result = matches[0]
     return link_similarity(version, candidate, result, actor=actor), result
-
-
-# Descriptive aliases make this boundary convenient for workers and callers.
-score_geometries = compare_geometries
-detect_similar_routes = similar_versions

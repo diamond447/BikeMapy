@@ -131,8 +131,7 @@ def _audit_metadata(
 def _refresh_spatial_products(route: Route, version: RouteVersion | None = None) -> None:
     """Update derived browse products inside the lifecycle transaction."""
 
-    # Import lazily: spatial imports the catalogue models and must remain an
-    # optional quality-suite dependency when GDAL is unavailable.
+    # Lazy import: spatial needs GDAL, which tests without PostGIS lack.
     from .spatial import generate_browse_geometries, refresh_route_heatmap
 
     selected = version or route.current_approved_version
@@ -563,8 +562,7 @@ def approve_version(
 ) -> Route:
     """Make a technically valid version the route's public approved version.
 
-    Lock acquisition is deliberately ordered route, source, then version to
-    match the ingestion and lifecycle services and avoid lock-order cycles.
+    Locks route, source, then version, in the same order as the other services.
     """
 
     version_ref = RouteVersion.objects.get(pk=version.pk)
@@ -622,13 +620,6 @@ def approve_version(
     return route
 
 
-# Explicit names used by moderation callers when switching between historical
-# immutable versions.  The same transactional guard as initial publication is
-# intentionally reused.
-select_approved_version = approve_version
-select_route_version = approve_version
-
-
 @transaction.atomic
 def review_route(
     route: Route,
@@ -639,12 +630,7 @@ def review_route(
     source_context: bool = False,
     content_suitability: bool = False,
 ) -> Route:
-    """Record review evidence independently of publication.
-
-    The public badge requires all three explicit checks. A timestamp alone is
-    intentionally not enough, preserving the distinction between review and a
-    safety, passability, or legal-access claim.
-    """
+    """Record review checks; the public badge needs all three."""
 
     if not reason.strip():
         raise ValidationError("A review reason is required.")
@@ -743,9 +729,7 @@ def restore_route(
     before = _route_state(route)
     was_soft_deleted = route.lifecycle == RouteLifecycle.SOFT_DELETED
     if not route.current_approved_version_id:
-        # Automatic duplicate quarantine happens before publication, so an
-        # explicit restore must be able to approve its valid retained version
-        # without a second non-transactional import round trip.
+        # A route quarantined as a duplicate on import was never approved.
         candidate = (
             RouteVersion.objects.select_for_update()
             .filter(source__route=route, technical_status=ProcessingStatus.VALID)
@@ -805,8 +789,7 @@ def restore_denylist_entry(
     if not route_source_id:
         raise ValidationError("Only denylist entries associated with a route can be restored.")
     route_id = RouteSource.objects.values_list("route_id", flat=True).get(pk=route_source_id)
-    # Lifecycle lock order is route, then entry. Resolve foreign keys before
-    # acquiring either lock so restoration cannot deadlock with route actions.
+    # Lock the route before the entry, like the other lifecycle actions.
     route = Route.objects.select_for_update().get(pk=route_id)
     entry = SourceDenylistEntry.objects.select_for_update().get(pk=entry.pk)
     if not entry.active:
@@ -1052,12 +1035,6 @@ def quarantine_suspected_duplicate(
     return quarantine_route(route, reason=reason, actor=actor, metadata=metadata)
 
 
-# Short aliases used by task dispatchers and moderation adapters.
-merge_sources = merge_route_sources
-keep_both = keep_both_routes
-quarantine_duplicate = quarantine_suspected_duplicate
-
-
 @transaction.atomic
 def mark_source_unavailable(
     source: RouteSource, *, error: str = "", actor: Any = None, reason: str | None = None
@@ -1168,12 +1145,7 @@ def _mark_payload_deletion_failed(request_id: int, error: str) -> PayloadDeletio
 def process_payload_deletion(
     request: PayloadDeletionRequest | int,
 ) -> PayloadDeletionRequest:
-    """Process one deletion request with retry-safe storage and DB finalization.
-
-    The external delete happens after the attempt is durably recorded. Missing
-    storage is treated as success; the request is completed only after the
-    version key and removal audit metadata are committed atomically.
-    """
+    """Delete one payload; a missing file counts as deleted, so retries are safe."""
 
     request_id = request.pk if isinstance(request, PayloadDeletionRequest) else request
     with transaction.atomic():

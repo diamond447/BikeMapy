@@ -180,7 +180,3 @@ def retry_payload_deletions_task(limit: int = 100) -> dict[str, Any]:
         "processed": len(requests),
         "completed": sum(request.status == "completed" for request in requests),
     }
-
-
-# A concise entry point is useful to dispatch from admin/management commands.
-extract_route = extract_gpx_route

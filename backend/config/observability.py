@@ -1,8 +1,4 @@
-"""Privacy-conscious logging and error-monitoring helpers.
-
-The application deliberately keeps diagnostics useful without turning request
-logs or error events into a second store of report contents and client data.
-"""
+"""Logging and Sentry helpers that keep request and report data out."""
 
 from __future__ import annotations
 
@@ -22,11 +18,8 @@ _SECRET_PATTERN = re.compile(
     r"(?i)(\b(?:authorization|cookie|password|secret|token|api[_-]?key)\s*[:=]\s*)"
     r"(?:Bearer\s+)?[^,\s]+"
 )
-# Sentry serializes arbitrary values in several event sections.  Keep only
-# fields that are useful for diagnosing an application failure and whose
-# values do not contain request/report content.  In particular, do not rely
-# on key-based redaction for these sections: exception values, frame context,
-# breadcrumb fields, and custom contexts are all user-controlled strings.
+# Sentry events are filtered by allow-list: exception values, frames,
+# breadcrumbs and contexts can all contain user input.
 _EVENT_LEVELS = frozenset({"debug", "info", "warning", "error", "fatal"})
 _EVENT_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z", re.IGNORECASE)
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}\Z")
@@ -222,8 +215,7 @@ class JsonFormatter(logging.Formatter):
         if task_name:
             payload["task"] = _scrub_text(str(task_name))
         if record.exc_info:
-            # Exception text can contain request data. Keep the event useful
-            # for triage while leaving the complete traceback to Sentry.
+            # Log only the exception type; its message can contain request data.
             exception_type = record.exc_info[0]
             if exception_type is not None:
                 payload["exception"] = exception_type.__name__
@@ -240,14 +232,7 @@ class PrivacyLogFilter(logging.Filter):
 
 
 def scrub_event(event: Event | dict[str, Any], hint: Hint | None = None) -> Event:
-    """Keep only privacy-safe Sentry event metadata and diagnostic structure.
-
-    Report text and contact data can enter an event through exception values,
-    traceback locals, breadcrumbs, or custom contexts.  Those structures are
-    therefore copied using explicit allow-lists instead of recursively
-    retaining arbitrary values. Top-level metadata is also type-validated;
-    logger names and other arbitrary diagnostic strings are never retained.
-    """
+    """Copy only allow-listed, validated fields of a Sentry error event."""
 
     del hint
     cleaned = _scrub_event_metadata(event)
@@ -271,13 +256,7 @@ def scrub_event(event: Event | dict[str, Any], hint: Hint | None = None) -> Even
 
 
 def scrub_transaction(event: Event | dict[str, Any], hint: Hint | None = None) -> Event:
-    """Keep only privacy-safe metadata for Sentry transaction events.
-
-    Transactions use a separate SDK callback and can contain report data in
-    their name, span data, tags, measurements, or arbitrary extras.  Keep the
-    event identity/timing and the same validated trace/breadcrumb metadata;
-    drop the transaction payload itself and all other user-controlled fields.
-    """
+    """Keep only the identity, timing and trace metadata of a Sentry transaction."""
 
     del hint
     cleaned = _scrub_event_metadata(event, transaction=True)

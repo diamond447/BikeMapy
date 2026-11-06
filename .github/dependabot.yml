@@ -10,9 +10,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-  # The uv ecosystem updates pyproject.toml and uv.lock together; the pip
-  # ecosystem only widened requirement ranges, which left the lockfile behind
-  # and failed `uv sync --locked`.
+  # uv, not pip: it updates uv.lock together with pyproject.toml.
   - package-ecosystem: uv
     directory: /
     schedule:
