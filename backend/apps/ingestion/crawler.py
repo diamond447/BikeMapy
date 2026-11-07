@@ -6,6 +6,8 @@ page is committed on its own, so a stopped worker resumes where it left off.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import ipaddress
 import re
@@ -123,20 +125,87 @@ def _absolute(base: str, href: str) -> str:
     return urljoin(base, href) if href else ""
 
 
+def _is_mapy_host(hostname: str | None) -> bool:
+    """mapy.cz and mapy.com, also www. or a language subdomain (sk., en.), as the GPX import."""
+
+    host = (hostname or "").lower().rstrip(".")
+    if host in {"mapy.com", "mapy.cz"}:
+        return True
+    parts = host.split(".")
+    return (
+        len(parts) == 3
+        and parts[1] == "mapy"
+        and parts[2] in {"com", "cz"}
+        and (parts[0] == "www" or (len(parts[0]) == 2 and parts[0].isalpha()))
+    )
+
+
 def _source_url(url: str) -> bool:
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
     return (
         parsed.scheme in {"http", "https"}
-        and parsed.hostname is not None
-        and (parsed.hostname.lower() == "mapy.com" or parsed.hostname.lower() == "mapy.cz")
+        and "@" not in parsed.netloc
+        and port in {None, 80, 443}
+        and _is_mapy_host(parsed.hostname)
     )
 
 
 def _canonical_source_url(url: str) -> str:
-    """Fragments identify a forum post, not a distinct Mapy source."""
+    """One form per Mapy source: HTTPS, no port, no fragment (it names a forum post)."""
 
     parsed = urlparse(url)
-    return urlunparse(parsed._replace(fragment=""))
+    return urlunparse(
+        parsed._replace(scheme="https", netloc=(parsed.hostname or "").lower(), fragment="")
+    )
+
+
+# mtbiker.cz wraps every external link as /external-click/<kind>/<id>/<base64url target>/<hash>.
+# robots.txt disallows fetching that path, so the target is read from the link itself.
+_EXTERNAL_CLICK = re.compile(r"^/external-click/[^/]+/[0-9]+/([A-Za-z0-9_-]+)")
+# A Mapy link written as plain text, with or without a scheme.
+_TEXT_MAPY_URL = re.compile(
+    r"(?:https?://)?(?:[a-z]{2,3}\.)?mapy\.(?:cz|com)/[^\s<>\"'()\[\]{}]+", re.IGNORECASE
+)
+
+
+def _unwrap_external_link(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    host = (parsed.hostname or "").lower()
+    match = _EXTERNAL_CLICK.match(parsed.path)
+    if not match or not (host == "mtbiker.cz" or host.endswith(".mtbiker.cz")):
+        return url
+    encoded = match.group(1)
+    try:
+        target = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return url
+    return target if target.startswith(("http://", "https://")) else url
+
+
+def _post_source_urls(base: str, node: Any) -> tuple[str, ...]:
+    """Mapy links of one post: linked (also through mtbiker's wrapper) or written as text."""
+
+    links: list[str] = []
+    for anchor in node.select("a[href]"):
+        link = _unwrap_external_link(_absolute(base, str(anchor.get("href", ""))))
+        if _source_url(link):
+            links.append(_canonical_source_url(link))
+    for text in node.find_all(string=True):
+        if text.find_parent("a") is not None:
+            continue
+        for match in _TEXT_MAPY_URL.findall(str(text)):
+            link = match if match.lower().startswith("http") else f"https://{match}"
+            link = link.rstrip(".,;:!?…")
+            if _source_url(link):
+                links.append(_canonical_source_url(link))
+    return tuple(dict.fromkeys(links))
 
 
 def _effective_port(parsed: Any) -> int:
@@ -162,6 +231,18 @@ FORUM_RESERVED_SLUGS = frozenset(
 FORUM_TIMEZONE = ZoneInfo("Europe/Prague")
 
 
+# mtbiker.cz, where Bike-Forum moved many threads: /forum/<category>/<slug>--<id>[/page-<n>]
+_MTBIKER_THREAD_PATH = re.compile(r"/forum/[^/]+/[^/]+--([0-9]+)(?:/page-[0-9]+)?")
+
+
+def _is_mtbiker(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "mtbiker.cz" or host.endswith(".mtbiker.cz")
+
+
 def _is_thread_url(url: str) -> bool:
     """Recognize known thread paths without treating ``/forum/`` or its actions as one."""
 
@@ -169,11 +250,54 @@ def _is_thread_url(url: str) -> bool:
         path = urlparse(url).path.rstrip("/")
     except ValueError:
         return False
+    if _is_mtbiker(url):
+        return bool(_MTBIKER_THREAD_PATH.fullmatch(path))
     forum_thread = re.fullmatch(r"/forum/([^/]+)", path)
     return bool(
         re.search(r"/(?:thread|t)/[^/?#]+$", path)
         or (forum_thread and forum_thread.group(1) not in FORUM_RESERVED_SLUGS)
     )
+
+
+def _mtbiker_thread_url(url: str) -> str:
+    """The thread's first page: no /page-<n>, query or fragment, so every page maps to it."""
+
+    parsed = urlparse(url)
+    path = re.sub(r"/page-[0-9]+/?$", "", parsed.path)
+    return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+
+_MTBIKER_RELATIVE_DAYS = {"dnes": 0, "včera": 1, "předevčírem": 2}
+
+
+def _mtbiker_posted_at(value: str, now: datetime | None = None) -> datetime | None:
+    """Parse "13. 7. 2022 o 20:58" and "Dnes/Včera/Předevčírem o 8:19" (Czech local time)."""
+
+    value = " ".join(value.split())
+    match = re.fullmatch(
+        r"([0-9]{1,2})\.\s*([0-9]{1,2})\.\s*([0-9]{4})\s+o\s+([0-9]{1,2}):([0-9]{2})", value
+    )
+    try:
+        if match:
+            day, month, year, hour, minute = (int(part) for part in match.groups())
+            return datetime(year, month, day, hour, minute, tzinfo=FORUM_TIMEZONE)
+        match = re.fullmatch(r"(\w+)\s+o\s+([0-9]{1,2}):([0-9]{2})", value)
+        if match and match.group(1).lower() in _MTBIKER_RELATIVE_DAYS:
+            local_now = (now or timezone.now()).astimezone(FORUM_TIMEZONE)
+            day_value = local_now.date() - timedelta(
+                days=_MTBIKER_RELATIVE_DAYS[match.group(1).lower()]
+            )
+            return datetime(
+                day_value.year,
+                day_value.month,
+                day_value.day,
+                int(match.group(2)),
+                int(match.group(3)),
+                tzinfo=FORUM_TIMEZONE,
+            )
+    except ValueError:
+        return None
+    return None
 
 
 def _is_listing_url(url: str) -> bool:
@@ -245,6 +369,8 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
 
     def parse(self, body: str, url: str) -> ParsedThread:
         soup = BeautifulSoup(body, "lxml")
+        if _is_mtbiker(url):
+            return self._parse_mtbiker(soup, url)
         title_node = soup.select_one("h1, span.title, .thread-title, [data-thread-title]")
         title = _text(title_node) or _text(soup.title)
         if not title:
@@ -305,12 +431,7 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
                 "[data-post-content], .post-content, .post-text, .content, .message, .comment-text"
             )
             content = _text(content_node or node)
-            links = tuple(
-                link
-                for link in (_absolute(url, str(a.get("href", ""))) for a in node.select("a[href]"))
-                if _source_url(link)
-            )
-            links = tuple(dict.fromkeys(_canonical_source_url(link) for link in links))
+            links = _post_source_urls(url, node)
             posts.append(
                 ParsedPost(
                     url=post_url,
@@ -372,6 +493,65 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             page_kind=(
                 PageKind.THREAD if posts or thread_node or _is_thread_url(url) else PageKind.LISTING
             ),
+        )
+
+    def _parse_mtbiker(self, soup: Any, url: str) -> ParsedThread:
+        """A thread Bike-Forum moved to mtbiker.cz: posts and the next page, nothing else."""
+
+        thread_url = _mtbiker_thread_url(url)
+        title = _text(soup.select_one("h1")) or _text(soup.title)
+        if not title:
+            raise CrawlError(f"No thread title found in {url}")
+        match = _MTBIKER_THREAD_PATH.fullmatch(urlparse(thread_url).path.rstrip("/"))
+        external_id = f"mtbiker:{match.group(1)}" if match else ""
+        posts: list[ParsedPost] = []
+        for node in soup.select("div.forum-comments-item[data-id]"):
+            post_id = str(node.get("data-id", ""))
+            post_url = _absolute(url, str(node.get("data-url", "")))
+            if not post_url or not _same_origin(url, post_url):
+                post_url = f"{thread_url}#post{post_id}"
+            author_node = node.select_one("a.link-user")
+            author_url = _absolute(url, str(author_node.get("href", ""))) if author_node else ""
+            if author_url and not _same_origin(url, author_url):
+                author_url = ""
+            content_node = node.select_one(".js-comment-content-wrap") or node.select_one(
+                ".forum-comments-item-body"
+            )
+            posts.append(
+                ParsedPost(
+                    url=post_url,
+                    external_id=post_id,
+                    author=_text(author_node),
+                    author_external_id=str(author_node.get("data-id", "")) if author_node else "",
+                    author_url=author_url,
+                    posted_at=_mtbiker_posted_at(
+                        _text(node.select_one(".forum-comments-item-date"))
+                    ),
+                    content=_text(content_node),
+                    source_urls=_post_source_urls(url, content_node or node),
+                )
+            )
+        next_node = next(
+            (
+                anchor
+                for anchor in soup.select(".forum-pagination a[href]")
+                if _text(anchor) == "Další strana"
+            ),
+            None,
+        )
+        next_url = ""
+        if next_node is not None:
+            candidate = _absolute(url, str(next_node.get("href", ""))).split("#", 1)[0]
+            candidate = candidate.removesuffix("?")
+            if _same_origin(url, candidate) and _is_thread_url(candidate):
+                next_url = candidate
+        return ParsedThread(
+            url=thread_url,
+            title=title,
+            external_id=external_id,
+            posts=tuple(posts),
+            next_url=next_url,
+            page_kind=PageKind.THREAD,
         )
 
 
@@ -445,6 +625,7 @@ class HttpxPageFetcher(PageFetcher):
         cache_ttl: float | None = None,
         max_bytes: int | None = None,
         client: httpx.Client | None = None,
+        host_rate_limits: dict[str, float] | None = None,
     ) -> None:
         self.user_agent = user_agent or getattr(
             settings,
@@ -478,7 +659,13 @@ class HttpxPageFetcher(PageFetcher):
                 else getattr(settings, "BIKEFORUM_MAX_BYTES", 10 * 1024 * 1024)
             ),
         )
-        self._last_request = 0.0
+        # Slower pacing for some hosts (mtbiker.cz throttles), on top of rate_limit.
+        self.host_rate_limits = dict(
+            host_rate_limits
+            if host_rate_limits is not None
+            else getattr(settings, "BIKEFORUM_HOST_RATE_LIMITS", {})
+        )
+        self._last_request: dict[str, float] = {}
         self._robots: dict[str, RobotFileParser | None] = {}
         self._client = client or httpx.Client(follow_redirects=False, timeout=self.timeout)
         self._owns_client = client is None
@@ -493,11 +680,23 @@ class HttpxPageFetcher(PageFetcher):
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def _wait(self) -> None:
-        delay = self.rate_limit - (time.monotonic() - self._last_request)
+    def _wait(self, url: str) -> None:
+        host = (urlparse(url).hostname or "").lower()
+        interval = max(self.rate_limit, float(self.host_rate_limits.get(host, 0)))
+        delay = interval - (time.monotonic() - self._last_request.get(host, 0.0))
         if delay > 0:
             time.sleep(delay)
-        self._last_request = time.monotonic()
+        self._last_request[host] = time.monotonic()
+
+    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+        """Exponential backoff, or the server's Retry-After when it asks for longer."""
+
+        delay = float(min(self.backoff * (2**attempt), 30))
+        retry_after = response.headers.get("retry-after", "").strip()
+        if retry_after.isdigit():
+            limit = float(getattr(settings, "BIKEFORUM_RETRY_AFTER_MAX", 120))
+            delay = max(delay, min(float(retry_after), limit))
+        return delay
 
     def _robots_for(self, url: str) -> RobotFileParser | None:
         parsed = urlparse(url)
@@ -506,7 +705,7 @@ class HttpxPageFetcher(PageFetcher):
             return self._robots[origin]
         robots_url = f"{origin}/robots.txt"
         try:
-            self._wait()
+            self._wait(robots_url)
             response = _bounded_http_response(
                 self._client,
                 robots_url,
@@ -611,13 +810,12 @@ class HttpxPageFetcher(PageFetcher):
         if cached and cached.last_modified:
             headers["If-Modified-Since"] = cached.last_modified
         current = url
-        origin = _configured_origin(url)[0]
         for _redirect in range(4):
             for attempt in range(self.retries + 1):
                 try:
                     # Check DNS again before every attempt; it can change.
                     self._validate_url(current)
-                    self._wait()
+                    self._wait(current)
                     response = _bounded_http_response(
                         self._client,
                         current,
@@ -646,19 +844,19 @@ class HttpxPageFetcher(PageFetcher):
                         raise CrawlError("BikeForum returned 304 without a retained response body")
                     if response.status_code in {408, 425, 429} or response.status_code >= 500:
                         if attempt < self.retries:
-                            time.sleep(min(self.backoff * (2**attempt), 30))
+                            time.sleep(self._retry_delay(response, attempt))
                             continue
                     if response.is_error:
                         raise CrawlError(f"HTTP {response.status_code} for {current}")
                     location = response.headers.get("location")
                     if location and response.status_code in {301, 302, 303, 307, 308}:
                         target = urljoin(current, location)
+                        # Another configured origin is fine (Bike-Forum moves threads to
+                        # mtbiker.cz); its robots.txt and DNS are checked like the first.
                         try:
-                            target_origin = _configured_origin(target)
+                            _configured_origin(target)
                         except CrawlError as exc:
                             raise CrawlError(f"Unsafe redirect from {current} to {target}") from exc
-                        if target_origin[0] != origin:
-                            raise CrawlError(f"Unsafe redirect from {current} to {target}")
                         self._allowed(target)
                         current = target
                         break
@@ -755,7 +953,7 @@ class HttpxSourceChecker(SourceChecker):
             return SourceCheckResult(False, error="unsafe or non-canonical Mapy URL")
         if (
             parsed.scheme != "https"
-            or parsed.hostname not in {"mapy.com", "mapy.cz"}
+            or not _is_mapy_host(parsed.hostname)
             or "@" in parsed.netloc
             or parsed.port is not None
         ):
