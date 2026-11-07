@@ -60,6 +60,7 @@ services:
         echo 'migration preflight: checking applied schema' >&2 &&
         python backend/manage.py migrate --check --noinput &&
         exec celery -A config worker --loglevel=INFO
+        --concurrency ${CELERY_WORKER_CONCURRENCY:-2}
     volumes:
       - gpx_data:/app/storage
     depends_on:
@@ -131,7 +132,8 @@ services:
     entrypoint: ["/bin/sh", "/usr/local/bin/nginx-json-entrypoint.sh"]
     command: ["nginx", "-g", "daemon off;"]
     ports:
-      - "127.0.0.1:${PROXY_PORT:-8080}:80"
+      # PROXY_BIND: a LAN address when the tunnel runs on another host; firewall it.
+      - "${PROXY_BIND:-127.0.0.1}:${PROXY_PORT:-8080}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./proxy_params:/etc/nginx/proxy_params:ro

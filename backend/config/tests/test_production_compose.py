@@ -201,3 +201,50 @@ def test_compose_wrapper_adds_the_lean_override_only_when_enabled(
     assert args[-2:] == ["config", "--services"]
     assert any(arg.endswith("compose.production.yml") for arg in args)
     assert any(arg.endswith("compose.lean.yml") for arg in args) is lean
+
+
+@pytest.mark.parametrize(
+    ("bind", "expected"), [(None, "127.0.0.1"), ("10.10.0.107", "10.10.0.107")]
+)
+def test_production_compose_binds_proxy_and_bounds_worker_concurrency(
+    tmp_path: Path, bind: str | None, expected: str
+) -> None:
+    """Nginx stays on loopback unless PROXY_BIND names an address; the worker never
+    forks one process per host CPU."""
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker is required to render the production Compose model")
+
+    root = Path(__file__).parents[3]
+    example = (root / "deploy" / ".env.production.example").read_text()
+    example = example.replace("PROXY_BIND=127.0.0.1\n", f"PROXY_BIND={bind}\n" if bind else "")
+    env_file = tmp_path / ".env.production"
+    env_file.write_text(f"BIKEMAPY_ENV_FILE={env_file}\n{example}")
+    environment = {key: value for key, value in os.environ.items() if key != "PROXY_BIND"}
+
+    result = subprocess.run(
+        [
+            docker,
+            "compose",
+            "--project-directory",
+            str(root),
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(root / "deploy" / "compose.production.yml"),
+            "config",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    services = json.loads(result.stdout)["services"]
+    (port,) = services["proxy"]["ports"]
+    assert port["host_ip"] == expected
+    assert port["published"] == "8080"
+    assert "--concurrency 2" in services["worker"]["command"][-1]
