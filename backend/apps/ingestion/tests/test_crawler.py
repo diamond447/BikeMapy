@@ -1,3 +1,4 @@
+import gzip
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -474,6 +475,33 @@ def test_http_fetcher_obeys_robots_and_reuses_cache() -> None:
         robots.return_value.parse(["User-agent: *", "Disallow: /t/"])
         with pytest.raises(RobotsDenied):
             fetcher.fetch(THREAD_URL)
+    with pytest.raises(RobotsDenied):
+        fetcher.fetch("https://bikeforum.example/private")
+    client.close()
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"], BIKEFORUM_DNS_CHECK=False
+)
+def test_http_fetcher_reads_gzip_encoded_robots_and_pages() -> None:
+    """A compressed robots.txt must not read as unreadable (and so disallow everything)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b"User-agent: *\nDisallow: /private\n"
+            if request.url.path == "/robots.txt"
+            else FIXTURE.read_bytes()
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Encoding": "gzip", "Content-Type": "text/html; charset=utf-8"},
+            content=gzip.compress(body),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0)
+    page = fetcher.fetch(THREAD_URL)
+    assert page.body == FIXTURE.read_text()
     with pytest.raises(RobotsDenied):
         fetcher.fetch("https://bikeforum.example/private")
     client.close()
