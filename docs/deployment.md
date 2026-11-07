@@ -158,6 +158,16 @@ redacted; Docker rotates them at 10 MiB (14 files in production). Sentry is
 optional (`SENTRY_DSN`); events are stripped of request, user and local
 variable data, and the project retention must be set to 30 days.
 
+## Upgrading a host to the proxy address pool
+
+Releases from November 2026 give the `proxy` network a dynamic address range
+(`172.30.0.128/25`), so one-off `run --rm backend` containers no longer collide
+with the backend. Compose recreates the network on the next `up`, but
+reattaches the running proxy without its fixed address. Once, after that
+`up`, run `$COMPOSE up -d --force-recreate proxy` and check that
+`docker inspect` shows the proxy at `172.30.0.2` on `bikemapy_proxy`: Django
+trusts the client IP only from that address.
+
 ## Upgrading a host that ran the game
 
 `accounts.0030` drops the retired game tables. After it has run:
