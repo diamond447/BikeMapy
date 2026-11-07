@@ -19,6 +19,7 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
 from urllib.robotparser import RobotFileParser
+from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
@@ -101,6 +102,8 @@ class ParsedThread:
     posts: tuple[ParsedPost, ...] = ()
     next_url: str = ""
     thread_urls: tuple[str, ...] = ()
+    # Further listing pages to walk, such as the forum's category pages.
+    listing_urls: tuple[str, ...] = ()
     page_kind: PageKind = PageKind.THREAD
 
 
@@ -152,14 +155,35 @@ def _same_origin(base: str, target: str) -> bool:
         return False
 
 
+# Single-segment /forum/<x> paths that are forum pages or actions, not threads.
+FORUM_RESERVED_SLUGS = frozenset(
+    {"kategorie", "prehled", "pridat-tema", "pridat-prispevek", "nahlasit-prispevek", "tema"}
+)
+FORUM_TIMEZONE = ZoneInfo("Europe/Prague")
+
+
 def _is_thread_url(url: str) -> bool:
-    """Recognize known thread paths without treating ``/forum/`` as one."""
+    """Recognize known thread paths without treating ``/forum/`` or its actions as one."""
 
     try:
         path = urlparse(url).path.rstrip("/")
     except ValueError:
         return False
-    return bool(re.search(r"/(?:thread|t)/[^/?#]+$", path) or re.fullmatch(r"/forum/[^/]+", path))
+    forum_thread = re.fullmatch(r"/forum/([^/]+)", path)
+    return bool(
+        re.search(r"/(?:thread|t)/[^/?#]+$", path)
+        or (forum_thread and forum_thread.group(1) not in FORUM_RESERVED_SLUGS)
+    )
+
+
+def _is_listing_url(url: str) -> bool:
+    """Recognize Bike-Forum category pages, which list the threads of one category."""
+
+    try:
+        path = urlparse(url).path.rstrip("/")
+    except ValueError:
+        return False
+    return bool(re.fullmatch(r"/forum/kategorie/[^/]+", path))
 
 
 def _configured_origin(url: str) -> tuple[str, str, int | None]:
@@ -206,7 +230,13 @@ def _posted_at(value: str) -> datetime | None:
         try:
             parsed = parsedate_to_datetime(value)
         except (TypeError, ValueError, IndexError):
-            return None
+            try:
+                # Bike-Forum shows "23.8.2017 12:30" in Czech local time.
+                return datetime.strptime(value.strip(), "%d.%m.%Y %H:%M").replace(
+                    tzinfo=FORUM_TIMEZONE
+                )
+            except ValueError:
+                return None
     return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
 
 
@@ -231,16 +261,27 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             post_id = str(node.get("data-post-id", ""))
             raw_node_id = str(node.get("id", ""))
             if not post_id and raw_node_id:
-                post_id = re.sub(r"^(?:post|p|comment)[-_]", "", raw_node_id)
-            anchor = node.select_one("a.permalink, a[href*='#'], a[data-post-url]")
+                post_id = re.sub(r"^(?:post|comment|p)[-_]?(?=[0-9])", "", raw_node_id)
+            # Not any "#" link: Bike-Forum's first one jumps to the post being replied to.
+            anchor = node.select_one("a.permalink, a[data-post-url]")
             fallback_post_url = f"{url}#{raw_node_id or f'post-{post_id or index + 1}'}"
             post_url = _absolute(url, str(anchor.get("href", ""))) if anchor else ""
             # A link written inside a post must not become its attribution URL.
             if not post_url or not _same_origin(url, post_url):
                 post_url = fallback_post_url
-            author_node = node.select_one("[data-author], .author, .username, .user")
+            author_node = node.select_one(
+                "[data-author], .author, .username, .user, a.userTooltips, "
+                ".post-user-bar a[href*='/profil/u/']"
+            )
             author = _text(author_node)
-            author_id = str(author_node.get("data-author-id", "")) if author_node else ""
+            author_id = (
+                str(
+                    author_node.get("data-author-id", "")
+                    or author_node.get("data-username-canonical", "")
+                )
+                if author_node
+                else ""
+            )
             author_url_node = (
                 author_node
                 if author_node and author_node.name == "a" and author_node.get("href")
@@ -253,13 +294,15 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             )
             if author_url and not _same_origin(url, author_url):
                 author_url = ""
-            time_node = node.select_one("time[datetime], time, [data-posted-at]")
+            time_node = node.select_one("time[datetime], time, [data-posted-at], .post-date")
             posted_value = str(time_node.get("datetime", "")) if time_node else ""
             posted_value = posted_value or (
                 str(time_node.get("data-posted-at", "")) if time_node else ""
             )
+            if not posted_value and time_node is not None and time_node.name != "time":
+                posted_value = _text(time_node)
             content_node = node.select_one(
-                "[data-post-content], .post-content, .content, .message, .comment-text"
+                "[data-post-content], .post-content, .post-text, .content, .message, .comment-text"
             )
             content = _text(content_node or node)
             links = tuple(
@@ -280,14 +323,21 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
                     source_urls=tuple(dict.fromkeys(links)),
                 )
             )
-        next_node = soup.select_one("a[rel='next'], .pagination a.next, a.next")
+        next_node = soup.select_one("a[rel='next'], .pagination a.next, a.next") or next(
+            (
+                anchor
+                for anchor in soup.select(".pagination a[href]")
+                if _text(anchor) in {"Další", "»", "›"}
+            ),
+            None,
+        )
         next_url = _absolute(url, str(next_node.get("href", ""))) if next_node else ""
         thread_links = tuple(
             _absolute(url, str(anchor.get("href", ""))).split("#", 1)[0]
             for anchor in soup.select(
                 "a.thread-link, a[data-thread-link], a[href*='/thread/'], "
                 "a[href*='/t/'], li.clearfix span.title a[href*='/forum/'], "
-                "li.clearfix a[href*='/forum/']"
+                "li.clearfix a[href*='/forum/'], td a[href*='/forum/']"
             )
             if _absolute(url, str(anchor.get("href", "")))
         )
@@ -299,6 +349,17 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             and urlparse(link).path.rstrip("/") != current_path
             and _is_thread_url(link)
         )
+        listing_links = tuple(
+            link
+            for link in (
+                _absolute(url, str(anchor.get("href", ""))).split("#", 1)[0]
+                for anchor in soup.select("a[href*='/forum/kategorie/']")
+            )
+            if link
+            and _same_origin(url, link)
+            and _is_listing_url(link)
+            and urlparse(link).path.rstrip("/") != current_path
+        )
         return ParsedThread(
             url=url,
             title=title,
@@ -307,6 +368,7 @@ class BeautifulSoupBikeForumParser(BikeForumParser):
             posts=tuple(posts),
             next_url=next_url,
             thread_urls=tuple(dict.fromkeys(thread_links)),
+            listing_urls=tuple(dict.fromkeys(listing_links)),
             page_kind=(
                 PageKind.THREAD if posts or thread_node or _is_thread_url(url) else PageKind.LISTING
             ),
@@ -413,7 +475,7 @@ class HttpxPageFetcher(PageFetcher):
             int(
                 max_bytes
                 if max_bytes is not None
-                else getattr(settings, "BIKEFORUM_MAX_BYTES", 5 * 1024 * 1024)
+                else getattr(settings, "BIKEFORUM_MAX_BYTES", 10 * 1024 * 1024)
             ),
         )
         self._last_request = 0.0
@@ -1185,8 +1247,16 @@ def run_crawl(
                         ]
                     )
                     task = CrawlTask.objects.select_for_update().get(pk=task.pk)
-                    discovered = list(parsed.thread_urls) + (
-                        [parsed.next_url] if parsed.next_url else []
+                    # Only a backfill walks the categories; the incremental crawl stays on
+                    # its listing (recently active threads) and that listing's pages.
+                    discovered = (
+                        list(parsed.thread_urls)
+                        + (
+                            list(parsed.listing_urls)
+                            if task.kind == CrawlTask.Kind.BACKFILL
+                            else []
+                        )
+                        + ([parsed.next_url] if parsed.next_url else [])
                     )
                     _enqueue(task, discovered)
                     next_work = (

@@ -52,12 +52,14 @@ After an API change, regenerate the TypeScript client with
 
 ## Crawler and GPX import
 
-Celery beat runs a daily incremental crawl of the real forum, and found sources
-are imported from Mapy.com. A bounded crawl can also be started by hand:
+Celery beat runs a daily incremental crawl of the real forum, starting from its
+recently active threads (`/forum/prehled/aktualni`), and found sources are
+imported from Mapy.com. A backfill from `/forum` walks every category page and
+thread; each call is bounded and the next one resumes:
 
 ```sh
 docker compose exec backend python -c \
-  'from apps.ingestion.tasks import backfill_bikeforum; print(backfill_bikeforum.delay("https://www.bike-forum.cz/forum/", max_pages=20).get(timeout=120))'
+  'from apps.ingestion.tasks import backfill_bikeforum; print(backfill_bikeforum.delay("https://www.bike-forum.cz/forum", max_pages=20).get(timeout=120))'
 ```
 
 Keep the default two-second request interval unless the forum owner agrees to

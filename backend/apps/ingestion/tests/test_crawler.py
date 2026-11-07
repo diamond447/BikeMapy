@@ -54,6 +54,10 @@ FIXTURE = Path(__file__).parent / "fixtures" / "thread.html"
 THREAD_URL = "https://bikeforum.example/t/42"
 REAL_INDEX_FIXTURE = Path(__file__).parent / "fixtures" / "bike_forum_index.html"
 REAL_THREAD_FIXTURE = Path(__file__).parent / "fixtures" / "bike_forum_thread.html"
+FORUM_2026 = {
+    name: (Path(__file__).parent / "fixtures" / f"bike_forum_2026_{name}.html").read_text()
+    for name in ("index", "category", "thread")
+}
 
 
 def test_fixture_parser_contract_uses_stable_post_and_source_fields() -> None:
@@ -67,6 +71,99 @@ def test_fixture_parser_contract_uses_stable_post_and_source_fields() -> None:
     assert parsed.posts[0].source_urls == ("https://mapy.com/s/demo",)
     assert parsed.posts[0].posted_at == datetime(2025, 4, 12, 10, tzinfo=UTC)
     assert LxmlBikeForumParser().parse(FIXTURE.read_text(), THREAD_URL).title == parsed.title
+
+
+def test_2026_forum_index_lists_categories_not_actions() -> None:
+    index = BeautifulSoupBikeForumParser().parse(
+        FORUM_2026["index"], "https://www.bike-forum.cz/forum"
+    )
+    assert index.page_kind == PageKind.LISTING
+    assert index.thread_urls == ()
+    assert index.listing_urls == (
+        "https://www.bike-forum.cz/forum/kategorie/cestovani",
+        "https://www.bike-forum.cz/forum/kategorie/gps",
+    )
+
+
+def test_2026_forum_category_lists_threads_and_the_next_page() -> None:
+    category = BeautifulSoupBikeForumParser().parse(
+        FORUM_2026["category"], "https://www.bike-forum.cz/forum/kategorie/cestovani"
+    )
+    assert category.page_kind == PageKind.LISTING
+    assert category.thread_urls == (
+        "https://www.bike-forum.cz/forum/okruh-kolem-prehrady",
+        "https://www.bike-forum.cz/forum/hrebenovka-na-gravelu.html",
+    )
+    assert category.next_url == "https://www.bike-forum.cz/forum/kategorie/cestovani?strana=2"
+    assert category.listing_urls == ("https://www.bike-forum.cz/forum/kategorie/gps",)
+
+
+def test_2026_forum_thread_posts_have_their_own_ids_authors_dates_and_text() -> None:
+    url = "https://www.bike-forum.cz/forum/okruh-kolem-prehrady"
+    thread = BeautifulSoupBikeForumParser().parse(FORUM_2026["thread"], url)
+    assert thread.page_kind == PageKind.THREAD
+    assert thread.title == "Okruh kolem přehrady"
+    assert thread.external_id == "okruh-kolem-prehrady"
+    first, reply = thread.posts
+    assert first.external_id == "1001"
+    assert first.url == f"{url}#comment1001"
+    assert first.author == "cyklista"
+    assert first.author_external_id == "cyklista"
+    assert first.author_url == "https://www.bike-forum.cz/profil/u/cyklista"
+    assert first.posted_at == datetime(2017, 8, 23, 10, 30, tzinfo=UTC)
+    assert first.content == "Trasa vede kolem přehrady: mapa"
+    assert first.source_urls == ("https://mapy.com/s/sanitized-route",)
+    # The reply links to the post it answers; that link is not its own URL.
+    assert reply.url == f"{url}#comment1002"
+    assert reply.posted_at == datetime(2018, 1, 2, 8, 5, tzinfo=UTC)
+    assert reply.source_urls == ()
+
+
+@override_settings(BIKEFORUM_DNS_CHECK=False)
+def test_2026_forum_crawl_walks_categories_and_imports_threads() -> None:
+    forum = "https://www.bike-forum.cz/forum"
+    empty_listing = "<html><head><title>GPS</title></head><body><h1>GPS</h1></body></html>"
+    pages = {
+        forum: FORUM_2026["index"],
+        f"{forum}/kategorie/cestovani": FORUM_2026["category"],
+        f"{forum}/kategorie/gps": empty_listing,
+        f"{forum}/kategorie/cestovani?strana=2": empty_listing,
+        f"{forum}/okruh-kolem-prehrady": FORUM_2026["thread"],
+        f"{forum}/hrebenovka-na-gravelu.html": FORUM_2026["thread"].replace(
+            "comment100", "comment200"
+        ),
+    }
+    fetcher = FakeFetcher(pages)
+    result = run_crawl(
+        start_url=forum,
+        max_pages=10,
+        fetcher=fetcher,
+        source_checker=NoopSourceChecker(),
+        kind=CrawlTask.Kind.BACKFILL,
+        stream="forum-2026",
+    )
+    assert result["errors"] == []
+    assert result["frontier_remaining"] is False
+    assert set(fetcher.urls) == set(pages)
+    assert result["threads"] == 2
+    assert ForumThread.objects.count() == 2
+    assert ForumPost.objects.count() == 4
+    assert RouteSource.objects.count() == 1
+
+
+@override_settings(BIKEFORUM_DNS_CHECK=False)
+def test_2026_incremental_crawl_does_not_walk_categories() -> None:
+    forum = "https://www.bike-forum.cz/forum"
+    fetcher = FakeFetcher({forum: FORUM_2026["index"]})
+    result = run_crawl(
+        start_url=forum,
+        max_pages=1,
+        fetcher=fetcher,
+        source_checker=NoopSourceChecker(),
+        stream="incremental-2026",
+    )
+    assert result["frontier_remaining"] is False
+    assert not CrawlPageWork.objects.filter(url__contains="/kategorie/").exists()
 
 
 @pytest.mark.parametrize(

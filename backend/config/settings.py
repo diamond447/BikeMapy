@@ -390,7 +390,8 @@ if not 1 <= BIKEFORUM_CACHE_BODY_RETENTION_SECONDS <= CRAWLER_CACHE_BODY_RETENTI
     )
 BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE = int(os.getenv("BIKEFORUM_CACHE_CLEANUP_BATCH_SIZE", "500"))
 BIKEFORUM_MAX_PAGES = int(os.getenv("BIKEFORUM_MAX_PAGES", "100"))
-BIKEFORUM_MAX_BYTES = int(os.getenv("BIKEFORUM_MAX_BYTES", str(5 * 1024 * 1024)))
+# Bike-Forum serves a whole thread on one page; long ones pass 5 MiB.
+BIKEFORUM_MAX_BYTES = int(os.getenv("BIKEFORUM_MAX_BYTES", str(10 * 1024 * 1024)))
 BIKEFORUM_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")
@@ -402,7 +403,7 @@ BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)
 BIKEFORUM_LEASE_SECONDS = int(os.getenv("BIKEFORUM_LEASE_SECONDS", "600"))
 BIKEFORUM_PAGE_ATTEMPTS = int(os.getenv("BIKEFORUM_PAGE_ATTEMPTS", "3"))
 BIKEFORUM_INCREMENTAL_URL = os.getenv(
-    "BIKEFORUM_INCREMENTAL_URL", "https://www.bike-forum.cz/forum/"
+    "BIKEFORUM_INCREMENTAL_URL", "https://www.bike-forum.cz/forum/prehled/aktualni"
 )
 
 GPX_TIMEOUT = float(os.getenv("GPX_TIMEOUT", "30"))
