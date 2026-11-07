@@ -47,6 +47,12 @@ API hostname to Nginx on `127.0.0.1:8080`, Nginx proxies to Django, and
 Django enforces HTTPS, HSTS and secure cookies using the forwarded scheme.
 Do not expose the Nginx listener directly.
 
+When `cloudflared` and its reverse proxy run on another host, set
+`PROXY_BIND` to this host's LAN address and allow only that host to reach
+`PROXY_PORT`. Docker publishes ports past the `INPUT` chain, so the rule
+belongs in `DOCKER-USER`. The front proxy must pass Cloudflare's
+`CF-Connecting-IP` through unchanged and send `X-Forwarded-Proto: https`.
+
 Create `deploy/.env.production` from `.env.example` (`chmod 600`) and
 replace every placeholder. Production refuses to start
 with a weak or default `DJANGO_SECRET_KEY`, with `DJANGO_DEBUG` unset or
@@ -57,7 +63,9 @@ Nginx address: `REPORT_TRUSTED_PROXY_CIDRS=172.30.0.2/32`.
 
 The production Compose file needs Docker Compose 2.17 or newer. All services
 use `restart: unless-stopped`; the backend, worker and beat run under
-Docker's init and check `migrate --check` before starting.
+Docker's init and check `migrate --check` before starting. The worker forks
+`CELERY_WORKER_CONCURRENCY` processes (default 2), and gunicorn runs
+`WEB_WORKERS` (default 3).
 
 ## Release
 
@@ -104,7 +112,8 @@ simultaneous reports can slightly exceed the report limit. There is no beat:
 install [`maintenance.cron.example`](../deploy/maintenance.cron.example), which
 runs `manage.py run_periodic_tasks` hourly and with `--with-crawl` once a day.
 Use the full topology for heavy ingestion, because a crawl then runs inside
-the cron process.
+the cron process. Leave out the `--with-crawl` line to serve the catalogue
+without crawling; `/health/crawler/` then fails after 36 hours.
 
 Switching a running host to lean mode: stop and remove `worker`, `beat` and
 `redis` first, since Compose leaves running containers of services that became
