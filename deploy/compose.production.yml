@@ -22,10 +22,10 @@ services:
         --workers ${WEB_WORKERS:-3} --error-logfile -
     volumes:
       - gpx_data:/app/storage
+    # No fixed address: `run --rm` starts more containers from this service.
     networks:
       default: {}
-      proxy:
-        ipv4_address: 172.30.0.3
+      proxy: {}
     depends_on:
       db:
         condition: service_healthy
