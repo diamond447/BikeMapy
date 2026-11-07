@@ -61,6 +61,16 @@ def test_production_compose_readiness_and_proxy_survive_public_host_change(
         )
     assert services["proxy"]["depends_on"]["backend"]["restart"] is True
 
+    # Only the proxy has a fixed address (the trusted proxy CIDR); a fixed backend
+    # address would make `run --rm backend` fail while the backend is up.
+    assert services["proxy"]["networks"]["proxy"]["ipv4_address"] == "172.30.0.2"
+    assert not (backend["networks"]["proxy"] or {}).get("ipv4_address")
+    (pool,) = model["networks"]["proxy"]["ipam"]["config"]
+    assert pool == {
+        "subnet": "172.30.0.0/24",
+        "gateway": "172.30.0.1",
+        "ip_range": "172.30.0.128/25",
+    }
     assert backend["environment"]["DJANGO_DEBUG"] == "false"
     assert backend["environment"]["DJANGO_ALLOWED_HOSTS"] == f"{public_host},backend"
     assert "http://backend:8000/health/ready/" in backend["healthcheck"]["test"][-1]

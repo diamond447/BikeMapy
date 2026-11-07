@@ -22,10 +22,10 @@ services:
         --workers ${WEB_WORKERS:-3} --error-logfile -
     volumes:
       - gpx_data:/app/storage
+    # No fixed address: `run --rm` starts more containers from this service.
     networks:
       default: {}
-      proxy:
-        ipv4_address: 172.30.0.3
+      proxy: {}
     depends_on:
       db:
         condition: service_healthy
@@ -158,3 +158,7 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+          # Dynamic addresses (backend, one-off `run` containers) come from the upper
+          # half, so the proxy's fixed 172.30.0.2 is always free.
+          ip_range: 172.30.0.128/25
