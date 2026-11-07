@@ -394,9 +394,22 @@ BIKEFORUM_MAX_PAGES = int(os.getenv("BIKEFORUM_MAX_PAGES", "100"))
 BIKEFORUM_MAX_BYTES = int(os.getenv("BIKEFORUM_MAX_BYTES", str(10 * 1024 * 1024)))
 BIKEFORUM_ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.getenv("BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz").split(",")
+    for origin in os.getenv(
+        "BIKEFORUM_ALLOWED_ORIGINS", "https://www.bike-forum.cz,https://www.mtbiker.cz"
+    ).split(",")
     if origin.strip()
 ]
+# Seconds between requests per host where rate_limit is too fast: "host=seconds,...".
+# mtbiker.cz (where Bike-Forum moved many threads) answers 429 to a faster crawl.
+BIKEFORUM_HOST_RATE_LIMITS = {
+    host.strip().lower(): float(seconds)
+    for host, _, seconds in (
+        item.partition("=")
+        for item in os.getenv("BIKEFORUM_HOST_RATE_LIMITS", "www.mtbiker.cz=5").split(",")
+        if item.strip()
+    )
+}
+BIKEFORUM_RETRY_AFTER_MAX = float(os.getenv("BIKEFORUM_RETRY_AFTER_MAX", "120"))
 # The launch rehearsal turns this off so its fake source URLs never reach Mapy.
 BIKEFORUM_CHECK_SOURCES = env_bool("BIKEFORUM_CHECK_SOURCES", True)
 BIKEFORUM_DNS_CHECK = env_bool("BIKEFORUM_DNS_CHECK", True)

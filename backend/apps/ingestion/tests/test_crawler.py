@@ -58,6 +58,8 @@ FORUM_2026 = {
     name: (Path(__file__).parent / "fixtures" / f"bike_forum_2026_{name}.html").read_text()
     for name in ("index", "category", "thread")
 }
+MTBIKER_THREAD = (Path(__file__).parent / "fixtures" / "mtbiker_2026_thread.html").read_text()
+MTBIKER_URL = "https://www.mtbiker.cz/forum/mtb-akce-vyjezdy/okruh-kolem-prehrady--50001"
 
 
 def test_fixture_parser_contract_uses_stable_post_and_source_fields() -> None:
@@ -164,6 +166,84 @@ def test_2026_incremental_crawl_does_not_walk_categories() -> None:
     )
     assert result["frontier_remaining"] is False
     assert not CrawlPageWork.objects.filter(url__contains="/kategorie/").exists()
+
+
+def test_mtbiker_thread_page_maps_to_its_thread_and_reads_wrapped_mapy_links() -> None:
+    now = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
+    with patch("apps.ingestion.crawler.timezone.now", return_value=now):
+        thread = BeautifulSoupBikeForumParser().parse(
+            MTBIKER_THREAD, f"{MTBIKER_URL}/page-2?imfrom=bfcz"
+        )
+    assert thread.page_kind == PageKind.THREAD
+    assert thread.url == MTBIKER_URL
+    assert thread.external_id == "mtbiker:50001"
+    assert thread.title == "Okruh kolem přehrady"
+    assert thread.next_url == f"{MTBIKER_URL}/page-3"
+    # Links to other topics on mtbiker.cz are not followed.
+    assert thread.thread_urls == ()
+    assert thread.listing_urls == ()
+    first, reply = thread.posts
+    assert first.external_id == "2600001"
+    assert first.url == f"{MTBIKER_URL}/p2600001"
+    assert first.author == "cyklista"
+    assert first.author_external_id == "1200001"
+    assert first.author_url == "https://www.mtbiker.cz/bikeri/cyklista"
+    assert first.posted_at == datetime(2022, 7, 13, 18, 58, tzinfo=UTC)
+    assert first.source_urls == (
+        "https://mapy.cz/s/sanitized-route",
+        "https://www.mapy.cz/turisticka?planovani-trasy&x=16.01&y=49.62",
+    )
+    assert reply.posted_at == datetime(2026, 11, 6, 9, 40, tzinfo=UTC)
+    assert reply.source_urls == ()
+
+
+@pytest.mark.parametrize(
+    ("url", "accepted"),
+    [
+        ("https://mapy.cz/s/abc", True),
+        ("http://www.mapy.cz/turisticka?planovani-trasy", True),
+        ("https://sk.mapy.cz/turisticka?x=1", True),
+        ("https://en.mapy.com/s/abc", True),
+        ("https://mapy.cz.evil.example/s/abc", False),
+        ("https://notmapy.cz/s/abc", False),
+        ("https://www.sub.mapy.cz/s/abc", False),
+        ("https://user@mapy.cz/s/abc", False),
+        ("ftp://mapy.cz/s/abc", False),
+    ],
+)
+def test_mapy_source_hosts_match_what_the_gpx_import_accepts(url: str, accepted: bool) -> None:
+    parsed = BeautifulSoupBikeForumParser().parse(
+        f'<html><body><h1>T</h1><div class="post" id="comment1"><div class="post-text">'
+        f'<a href="{url}">trasa</a></div></div></body></html>',
+        "https://www.bike-forum.cz/forum/okruh",
+    )
+    assert bool(parsed.posts[0].source_urls) is accepted
+
+
+def test_http_fetcher_follows_a_redirect_to_another_allowed_origin() -> None:
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /external-click/\n")
+        if request.url.host == "www.bike-forum.cz":
+            return httpx.Response(301, headers={"Location": f"{MTBIKER_URL}?imfrom=bfcz"})
+        return httpx.Response(200, text=MTBIKER_THREAD)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, host_rate_limits={})
+    with override_settings(
+        BIKEFORUM_ALLOWED_ORIGINS=["https://www.bike-forum.cz", "https://www.mtbiker.cz"],
+        BIKEFORUM_DNS_CHECK=False,
+    ):
+        page = fetcher.fetch("https://www.bike-forum.cz/forum/okruh-kolem-prehrady")
+    assert page.url == f"{MTBIKER_URL}?imfrom=bfcz"
+    # The target's own robots.txt is read before its page.
+    assert requested.index("https://www.mtbiker.cz/robots.txt") < requested.index(
+        f"{MTBIKER_URL}?imfrom=bfcz"
+    )
+    client.close()
 
 
 @pytest.mark.parametrize(
@@ -1012,11 +1092,52 @@ def test_http_fetcher_paces_requests() -> None:
     fetcher = HttpxPageFetcher(client=httpx.Client(), rate_limit=2)
     with patch("apps.ingestion.crawler.time.monotonic", side_effect=[0.0, 0.0, 2.0, 2.0]) as clock:
         with patch("apps.ingestion.crawler.time.sleep") as sleep:
-            fetcher._wait()
-            fetcher._wait()
+            fetcher._wait(THREAD_URL)
+            fetcher._wait(THREAD_URL)
     assert sleep.call_args_list[0].args[0] == 2
     assert clock.call_count == 4
     fetcher.close()
+
+
+def test_http_fetcher_paces_each_host_and_slower_where_configured() -> None:
+    fetcher = HttpxPageFetcher(
+        client=httpx.Client(), rate_limit=2, host_rate_limits={"www.mtbiker.cz": 5}
+    )
+    with patch("apps.ingestion.crawler.time.monotonic", return_value=100.0):
+        with patch("apps.ingestion.crawler.time.sleep") as sleep:
+            fetcher._wait("https://www.bike-forum.cz/forum")
+            fetcher._wait("https://www.mtbiker.cz/forum/a/b--1")
+            fetcher._wait("https://www.mtbiker.cz/forum/a/b--1/page-2")
+    # First request per host: no wait; the second mtbiker.cz request waits its 5 s.
+    assert [call.args[0] for call in sleep.call_args_list] == [5.0]
+    fetcher.close()
+
+
+def test_http_fetcher_waits_for_retry_after_on_429() -> None:
+    responses = iter(
+        [
+            httpx.Response(429, headers={"Retry-After": "11"}, text="Too many requests."),
+            httpx.Response(200, text=FIXTURE.read_text()),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404)
+        return next(responses)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+    fetcher = HttpxPageFetcher(client=client, rate_limit=0, retries=2, backoff=1)
+    with (
+        override_settings(
+            BIKEFORUM_ALLOWED_ORIGINS=["https://bikeforum.example"], BIKEFORUM_DNS_CHECK=False
+        ),
+        patch("apps.ingestion.crawler.time.sleep") as sleep,
+    ):
+        page = fetcher.fetch(THREAD_URL)
+    assert page.status_code == 200
+    assert 11.0 in [call.args[0] for call in sleep.call_args_list]
+    client.close()
 
 
 def test_source_checker_rejects_noncanonical_urls_and_response_policy() -> None:
@@ -1105,3 +1226,58 @@ def test_source_checker_stops_consuming_an_oversized_stream() -> None:
     assert result.error == "source response too large"
     assert consumed == [b"12", b"34"]
     checker.close()
+
+
+class RedirectingFetcher(FakeFetcher):
+    """Return a page under the URL it redirected to, as HttpxPageFetcher does."""
+
+    def __init__(self, pages: dict[str, str], redirects: dict[str, str]) -> None:
+        super().__init__(pages)
+        self.redirects = redirects
+
+    def fetch(self, url: str) -> FetchedPage:
+        self.urls.append(url)
+        final = self.redirects.get(url, url)
+        return FetchedPage(final, self.pages[final])
+
+
+@override_settings(
+    BIKEFORUM_ALLOWED_ORIGINS=["https://www.bike-forum.cz", "https://www.mtbiker.cz"],
+    BIKEFORUM_DNS_CHECK=False,
+)
+def test_backfill_follows_threads_moved_to_mtbiker_through_all_their_pages() -> None:
+    category = "https://www.bike-forum.cz/forum/kategorie/cestovani"
+    moved = "https://www.bike-forum.cz/forum/okruh-kolem-prehrady"
+    last_page = (
+        MTBIKER_THREAD.replace("Další strana", "Předchozí strana")
+        .replace("2600001", "2600011")
+        .replace("2600002", "2600012")
+    )
+    pages = {
+        category: FORUM_2026["category"].replace(
+            "/forum/hrebenovka-na-gravelu.html", "/forum/okruh-kolem-prehrady"
+        ),
+        f"{category}?strana=2": "<html><head><title>x</title></head><body><h1>x</h1></body></html>",
+        f"{MTBIKER_URL}?imfrom=bfcz": MTBIKER_THREAD,
+        f"{MTBIKER_URL}/page-3": last_page,
+        "https://www.bike-forum.cz/forum/kategorie/gps": "<html><head><title>g</title></head>",
+    }
+    fetcher = RedirectingFetcher(pages, {moved: f"{MTBIKER_URL}?imfrom=bfcz"})
+    result = run_crawl(
+        start_url=category,
+        max_pages=10,
+        fetcher=fetcher,
+        source_checker=NoopSourceChecker(),
+        kind=CrawlTask.Kind.BACKFILL,
+        stream="moved-threads",
+    )
+    assert result["errors"] == []
+    assert result["frontier_remaining"] is False
+    assert f"{MTBIKER_URL}/page-3" in fetcher.urls
+    thread = ForumThread.objects.get(external_id="mtbiker:50001")
+    assert thread.url == MTBIKER_URL
+    assert ForumPost.objects.filter(thread=thread).count() == 4
+    assert set(RouteSource.objects.values_list("mapy_url", flat=True)) == {
+        "https://mapy.cz/s/sanitized-route",
+        "https://www.mapy.cz/turisticka?planovani-trasy&x=16.01&y=49.62",
+    }

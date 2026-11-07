@@ -30,7 +30,14 @@ a denylist entry so the source is not re-imported.
 
 The crawler fetches public BikeForum pages through Celery, pacing requests,
 honouring `robots.txt`, and resuming from leased work items and checkpoints
-stored in PostgreSQL. Only the configured origins are fetched, every redirect
+stored in PostgreSQL. BikeForum has moved part of its threads to mtbiker.cz and
+redirects to them; the crawler follows those redirects (mtbiker.cz is a
+configured origin with its own `robots.txt` and a 5-second interval,
+`BIKEFORUM_HOST_RATE_LIMITS`), walks every page of a moved thread, and does not
+crawl the rest of mtbiker.cz. Mapy links are read from links on any Mapy host
+the GPX import accepts (`mapy.cz`, `mapy.com`, `www.` and language subdomains),
+from mtbiker.cz's `/external-click/` wrapper without fetching it, and from
+links written as plain text. A `429` waits for `Retry-After`. Only the configured origins are fetched, every redirect
 and DNS answer is checked for private addresses, and responses are size
 capped. Raw HTML is cached for 24 hours for conditional requests.
 
