@@ -1161,18 +1161,33 @@ def test_source_checker_rejects_empty_userinfo() -> None:
     checker.close()
 
 
-def test_source_checker_rejects_redirects_and_oversized_payloads() -> None:
+def test_source_checker_follows_mapy_redirects_only_and_rejects_oversized_payloads() -> None:
+    requested: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("redirect"):
-            return httpx.Response(302, headers={"Location": "https://mapy.com/s/other"})
-        return httpx.Response(200, content=b"too long", headers={"content-type": "text/html"})
+        requested.append(str(request.url))
+        if request.url.path == "/s/short":
+            # Mapy short links redirect to the full map URL.
+            return httpx.Response(301, headers={"Location": "/cs/turisticka?x=16.0&y=49.6"})
+        if request.url.path == "/s/away":
+            return httpx.Response(302, headers={"Location": "https://evil.example/map"})
+        if request.url.path == "/s/loop":
+            return httpx.Response(302, headers={"Location": "/s/loop"})
+        if request.url.path == "/s/big":
+            return httpx.Response(200, content=b"too long", headers={"content-type": "text/html"})
+        return httpx.Response(200, content=b"ok", headers={"content-type": "text/html"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
     checker = HttpxSourceChecker(client=client, rate_limit=0, max_bytes=3)
     public = [(0, 0, 0, "", ("93.184.216.34", 443))]
     with patch("apps.ingestion.crawler.socket.getaddrinfo", return_value=public):
-        assert checker.check("https://mapy.com/s/demo").error == "source response too large"
-        assert checker.check("https://mapy.com/s/redirect").available is False
+        assert checker.check("https://mapy.com/s/big").error == "source response too large"
+        assert checker.check("https://mapy.com/s/short").available is True
+        assert "https://mapy.com/cs/turisticka?x=16.0&y=49.6" in requested
+        away = checker.check("https://mapy.com/s/away")
+        assert away.available is False
+        assert "https://evil.example/map" not in requested
+        assert checker.check("https://mapy.com/s/loop").error == "too many redirects"
     checker.close()
 
 

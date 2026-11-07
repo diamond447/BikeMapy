@@ -946,7 +946,22 @@ class HttpxSourceChecker(SourceChecker):
         self._client = client or httpx.Client(follow_redirects=False, timeout=self.timeout)
         self._owns_client = client is None
 
+    MAX_REDIRECTS = 5
+
     def check(self, url: str) -> SourceCheckResult:
+        """Follow redirects that stay on Mapy hosts (short /s/ links redirect to the map)."""
+
+        current = url
+        for _hop in range(self.MAX_REDIRECTS + 1):
+            outcome = self._check_once(current)
+            if isinstance(outcome, SourceCheckResult):
+                return outcome
+            current = outcome
+        return SourceCheckResult(False, error="too many redirects")
+
+    def _check_once(self, url: str) -> SourceCheckResult | str:
+        """One URL: its result, or the redirect target to check next."""
+
         try:
             parsed = urlparse(url)
         except ValueError:
@@ -990,6 +1005,10 @@ class HttpxSourceChecker(SourceChecker):
                     },
                 ) as response:
                     last_status = response.status_code
+                    location = response.headers.get("location")
+                    if location and response.status_code in {301, 302, 303, 307, 308}:
+                        # The next hop is validated (Mapy host, HTTPS, public DNS) like this one.
+                        return str(urljoin(url, location))
                     if response.status_code >= 500 or response.status_code in {408, 425, 429}:
                         if attempt < self.retries:
                             time.sleep(min(self.backoff * 2**attempt, 30))
