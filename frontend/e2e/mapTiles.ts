@@ -6,9 +6,12 @@ const EMPTY_TILE = Buffer.from(
   'base64',
 )
 
-/** Serve the OpenStreetMap basemap tiles locally: tests never load the real tile server. */
+/** Serve the basemap and overlay tiles locally: tests never load the real tile servers. */
 export async function mockMapTiles(page: Page) {
   await page.route('https://tile.openstreetmap.org/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'image/png', body: EMPTY_TILE }),
+  )
+  await page.route('https://tile.waymarkedtrails.org/**', (route) =>
     route.fulfill({ status: 200, contentType: 'image/png', body: EMPTY_TILE }),
   )
 }

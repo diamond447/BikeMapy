@@ -231,6 +231,10 @@ describe('BikeMapy route discovery', () => {
       'href',
       'https://www.openstreetmap.org/copyright',
     )
+    expect(screen.getByRole('link', { name: 'Waymarked Trails' })).toHaveAttribute(
+      'href',
+      'https://cycling.waymarkedtrails.org/',
+    )
   })
 
   it('renders a route, selects it, and requests the full geometry', async () => {

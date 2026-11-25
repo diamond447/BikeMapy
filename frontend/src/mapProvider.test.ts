@@ -6,6 +6,7 @@ describe('map provider', () => {
   it('uses clickable official attribution links by default', () => {
     expect(MAP_PROVIDER.attribution).toContain('href="https://www.openstreetmap.org/copyright"')
     expect(MAP_PROVIDER.attribution).toContain('OpenStreetMap contributors')
+    expect(MAP_PROVIDER.attribution).toContain('href="https://cycling.waymarkedtrails.org/"')
     expect(MAP_PROVIDER.attribution).not.toContain('openfreemap')
   })
 
@@ -20,7 +21,21 @@ describe('map provider', () => {
           tileSize: 256,
         },
       },
-      layers: [{ type: 'raster', source: 'osm' }],
+    })
+  })
+
+  it('draws the Waymarked Trails cycle routes over the basemap', () => {
+    expect(MAP_PROVIDER.style).toMatchObject({
+      sources: {
+        cycling: {
+          type: 'raster',
+          tiles: ['https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png'],
+        },
+      },
+      layers: [
+        { id: 'osm-standard', source: 'osm' },
+        { id: 'cycle-routes', source: 'cycling' },
+      ],
     })
   })
 })
