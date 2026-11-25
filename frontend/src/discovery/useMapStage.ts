@@ -156,7 +156,7 @@ export function useMapStage({
             paint: {
               'line-color': '#315d52',
               'line-width': ['interpolate', ['linear'], ['zoom'], 7, 1.8, 14, 3.4],
-              'line-opacity': 0.72,
+              'line-opacity': 0.85,
             },
           })
           mapInstance.addLayer({

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { mockMapTiles } from './mapTiles'
 
 const routeId = '77777777-7777-4777-8777-777777777777'
 const pointCount = 200_000
@@ -17,17 +18,7 @@ const json = (body: unknown) => ({
 })
 
 async function installFixtures(page: Page) {
-  await page.route('**/styles/liberty*', (route) =>
-    route.fulfill(
-      json({
-        version: 8,
-        sources: {},
-        layers: [
-          { id: 'background', type: 'background', paint: { 'background-color': '#ceddce' } },
-        ],
-      }),
-    ),
-  )
+  await mockMapTiles(page)
   await page.route('**/api/v1/routes/**', (route) => {
     const pathname = new URL(route.request().url()).pathname
     if (pathname.endsWith('/viewport/'))

@@ -12,7 +12,7 @@ checked the catalogue entry; it says nothing about safety, condition, legal
 access or suitability.
 
 BikeMapy is not affiliated with Mapy.com, Seznam.cz, Bike-forum.cz, MTBIKER,
-OpenFreeMap or OpenStreetMap.
+OpenStreetMap or Waymarked Trails.
 
 ## Third-party content
 

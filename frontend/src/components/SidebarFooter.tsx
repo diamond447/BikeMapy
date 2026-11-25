@@ -38,12 +38,12 @@ export function SidebarFooter({
       </nav>
       <span className="app-footer-attribution">
         {copy.mapAttribution}:{' '}
-        <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">
-          OpenFreeMap
-        </a>{' '}
-        ·{' '}
         <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
           OpenStreetMap contributors
+        </a>{' '}
+        ·{' '}
+        <a href="https://cycling.waymarkedtrails.org/" target="_blank" rel="noreferrer">
+          Waymarked Trails
         </a>
       </span>
     </footer>
