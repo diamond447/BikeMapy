@@ -383,6 +383,43 @@ def test_pinned_transport_raises_when_no_address_is_reachable() -> None:
     transport.close()
 
 
+def test_guarded_client_makes_a_relative_redirect_absolute_for_the_exporter() -> None:
+    from mapy_gpx_exporter.resolver import resolve_short_link  # type: ignore[import-untyped]
+
+    # Mapy.com answers some short links with a path-only Location.
+    relative = (
+        "/en/turisticka?planovani-trasy&rc=9mR.HxU17l9mw.Hx8m7L&rs=regi&rs=regi&ri=14&ri=14"
+        "&mrp=%7B%22c%22%3A132%2C%22dt%22%3A%22%22%2C%22d%22%3Atrue%7D&xc=%5B%5D"
+        "&x=11.3817622&y=48.5563849&z=7"
+    )
+    redirect = httpx.Response(302, headers={"location": relative})
+    guarded = _GuardedHttpClient(timeout=1, max_bytes=10_000)
+    with (
+        patch("apps.ingestion.gpx._public_addresses", return_value=("77.75.77.222",)),
+        patch.object(httpx.HTTPTransport, "handle_request", return_value=redirect),
+    ):
+        response = guarded.get("https://mapy.cz/s/12Llo")
+        route = resolve_short_link(guarded, "https://mapy.cz/s/12Llo")
+    guarded.close()
+    assert response.headers["location"] == "https://mapy.cz" + relative
+    assert route.rc == "9mR.HxU17l9mw.Hx8m7L"
+
+
+def test_guarded_client_keeps_an_absolute_redirect_and_ignores_location_elsewhere() -> None:
+    absolute = httpx.Response(301, headers={"location": "https://mapy.com/s/12Llo"})
+    not_redirect = httpx.Response(200, headers={"location": "/somewhere"}, content=b"ok")
+    guarded = _GuardedHttpClient(timeout=1, max_bytes=10_000)
+    with (
+        patch("apps.ingestion.gpx._public_addresses", return_value=("77.75.77.222",)),
+        patch.object(httpx.HTTPTransport, "handle_request", side_effect=[absolute, not_redirect]),
+    ):
+        assert guarded.get("https://mapy.cz/s/12Llo").headers["location"] == (
+            "https://mapy.com/s/12Llo"
+        )
+        assert guarded.get("https://mapy.com/s/12Llo").headers["location"] == "/somewhere"
+    guarded.close()
+
+
 def test_pinned_transport_uses_distinct_pools_for_logical_hosts_sharing_ip() -> None:
     transport = PinnedMapyTransport(max_bytes=100)
     response = httpx.Response(200, content=b"ok")
