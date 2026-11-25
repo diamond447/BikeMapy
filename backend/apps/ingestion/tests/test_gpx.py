@@ -339,6 +339,50 @@ def test_pinned_transport_supports_validated_ipv6_answers() -> None:
     transport.close()
 
 
+def test_pinned_transport_prefers_ipv4_and_falls_back_to_the_next_address() -> None:
+    transport = PinnedMapyTransport(max_bytes=100)
+    response = httpx.Response(200, content=b"ok")
+    unreachable = httpx.ConnectError("[Errno 101] Network is unreachable")
+    with (
+        patch("apps.ingestion.gpx.validate_gpx_url"),
+        # Sorted as text, as _public_addresses returns them: the IPv6 answer comes first.
+        patch(
+            "apps.ingestion.gpx._public_addresses",
+            return_value=("2a02:598:2::1222", "77.75.77.222", "77.75.79.222"),
+        ),
+        patch.object(
+            httpx.HTTPTransport, "handle_request", side_effect=[unreachable, response]
+        ) as handle,
+    ):
+        assert transport.handle_request(httpx.Request("GET", "https://mapy.cz/s/test")) is response
+    tried = [call.args[0].url.host for call in handle.call_args_list]
+    assert tried == ["77.75.77.222", "77.75.79.222"]
+    transport.close()
+
+
+def test_pinned_transport_raises_when_no_address_is_reachable() -> None:
+    transport = PinnedMapyTransport(max_bytes=100)
+    with (
+        patch("apps.ingestion.gpx.validate_gpx_url"),
+        patch(
+            "apps.ingestion.gpx._public_addresses",
+            return_value=("2a02:598:2::1222", "77.75.77.222"),
+        ),
+        patch.object(
+            httpx.HTTPTransport,
+            "handle_request",
+            side_effect=httpx.ConnectError("[Errno 101] Network is unreachable"),
+        ) as handle,
+        pytest.raises(httpx.ConnectError),
+    ):
+        transport.handle_request(httpx.Request("GET", "https://mapy.cz/s/test"))
+    assert [call.args[0].url.host for call in handle.call_args_list] == [
+        "77.75.77.222",
+        "2a02:598:2::1222",
+    ]
+    transport.close()
+
+
 def test_pinned_transport_uses_distinct_pools_for_logical_hosts_sharing_ip() -> None:
     transport = PinnedMapyTransport(max_bytes=100)
     response = httpx.Response(200, content=b"ok")
