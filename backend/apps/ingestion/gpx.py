@@ -315,24 +315,31 @@ class PinnedMapyTransport(httpx.BaseTransport):
         original_host = request.url.host
         validate_gpx_url(str(request.url))
         addresses = _public_addresses(original_host, request.url.port or 443)
-        # Connect to the checked address so DNS cannot change in between.
-        pinned_url = request.url.copy_with(host=addresses[0])
         headers = request.headers.copy()
         headers["host"] = original_host
-        pinned_request = httpx.Request(
-            request.method,
-            pinned_url,
-            headers=headers,
-            content=request.content,
-            extensions={**request.extensions, "sni_hostname": original_host},
-        )
-        transport_key = (original_host, addresses[0])
-        transport = self._transports.get(transport_key)
-        if transport is None:
-            transport = httpx.HTTPTransport(trust_env=False, retries=0)
-            self._transports[transport_key] = transport
-        response = transport.handle_request(pinned_request)
-        return response
+        # Connect only to the checked addresses, so DNS cannot change in between. IPv4
+        # first, and the next address when one cannot be reached: a host without IPv6
+        # (or without IPv4) still gets through, as socket.create_connection would.
+        last_error: httpx.ConnectError | None = None
+        for address in sorted(addresses, key=lambda item: ":" in item):
+            pinned_request = httpx.Request(
+                request.method,
+                request.url.copy_with(host=address),
+                headers=headers,
+                content=request.content,
+                extensions={**request.extensions, "sni_hostname": original_host},
+            )
+            transport_key = (original_host, address)
+            transport = self._transports.get(transport_key)
+            if transport is None:
+                transport = httpx.HTTPTransport(trust_env=False, retries=0)
+                self._transports[transport_key] = transport
+            try:
+                return transport.handle_request(pinned_request)
+            except httpx.ConnectError as exc:
+                last_error = exc
+        assert last_error is not None  # _public_addresses never returns an empty tuple
+        raise last_error
 
     def close(self) -> None:
         for transport in self._transports.values():
