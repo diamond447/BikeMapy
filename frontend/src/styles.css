@@ -149,9 +149,6 @@ a {
   position: absolute;
   width: 100%;
 }
-.map-canvas .maplibregl-canvas {
-  filter: saturate(0.68) sepia(0.08);
-}
 .map-vignette {
   background: radial-gradient(circle at 54% 47%, transparent 35%, rgba(26, 55, 45, 0.13) 100%);
   inset: 0;
@@ -1081,10 +1078,6 @@ h1 {
 
 .map-stage {
   background: #ceddce;
-}
-
-.map-canvas .maplibregl-canvas {
-  filter: saturate(0.58) sepia(0.04) contrast(0.98);
 }
 
 .map-vignette {
