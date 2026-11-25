@@ -25,7 +25,7 @@ function preconnect(url: string) {
 }
 
 preconnect(apiBaseUrl)
-preconnect(MAP_PROVIDER.style)
+preconnect(MAP_PROVIDER.origin)
 // Start downloading the map library now; the map effect reuses the request.
 loadMapLibre().catch(() => undefined)
 
