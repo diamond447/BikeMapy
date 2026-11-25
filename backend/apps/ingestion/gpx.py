@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import PurePosixPath
 from typing import Any, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from uuid import uuid4
 from xml.etree.ElementTree import Element
 
@@ -247,6 +247,9 @@ class MapyGpxExporterAdapter:
         ) from last_error
 
 
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+
+
 class _GuardedHttpClient:
     """``httpx.Client`` stand-in that validates every URL and caps response size.
 
@@ -289,9 +292,16 @@ class _GuardedHttpClient:
                         f"GPX response exceeds the {self.max_bytes}-byte limit"
                     )
                 chunks.append(chunk)
+            headers = response.headers.copy()
+            location = headers.get("location")
+            if location and response.status_code in _REDIRECT_STATUS_CODES:
+                # Mapy.com answers some short links with a path-only Location
+                # (/en/turisticka?...), which the exporter rejects; hand it the
+                # absolute URL. The next request validates it like any other.
+                headers["location"] = urljoin(str(url), location)
             bounded = httpx.Response(
                 response.status_code,
-                headers=response.headers,
+                headers=headers,
                 content=b"".join(chunks),
                 # Report the hostname, not the pinned IP the transport used.
                 request=httpx.Request(
