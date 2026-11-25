@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
+import { mockMapTiles } from './mapTiles'
 
 const routeData = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -30,17 +31,7 @@ const json = (body: unknown) => ({
 })
 
 async function installFixtures(page: Page, requests: string[], abortedRequests: string[]) {
-  await page.route('**/styles/liberty*', (route) =>
-    route.fulfill(
-      json({
-        version: 8,
-        sources: {},
-        layers: [
-          { id: 'background', type: 'background', paint: { 'background-color': '#ceddce' } },
-        ],
-      }),
-    ),
-  )
+  await mockMapTiles(page)
   type HeldRequest = {
     release: () => void
     cancellationCandidate: boolean

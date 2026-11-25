@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
+import { mockMapTiles } from './mapTiles'
 
 const route = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -25,17 +26,7 @@ const route = {
 }
 
 async function installFixtures(page: Page) {
-  await page.route('**/styles/liberty*', (request) =>
-    request.fulfill({
-      json: {
-        version: 8,
-        sources: {},
-        layers: [
-          { id: 'background', type: 'background', paint: { 'background-color': '#c0d5ca' } },
-        ],
-      },
-    }),
-  )
+  await mockMapTiles(page)
   await page.route('**/api/v1/routes/**', async (request) => {
     const url = request.request().url()
     if (url.includes('/geometry/'))

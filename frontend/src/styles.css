@@ -1697,9 +1697,10 @@ h1 {
   z-index: auto;
 }
 
+/* 8px keeps the attribution link 24px from the links above it (WCAG 2.5.8 target size). */
 .app-footer > * {
   display: block;
-  margin: 0 0 5px;
+  margin: 0 0 8px;
 }
 
 .app-footer nav {
