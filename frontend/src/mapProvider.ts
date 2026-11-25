@@ -7,7 +7,8 @@ const CYCLING_TILE_ORIGIN = 'https://tile.waymarkedtrails.org'
 
 /**
  * The OpenStreetMap standard map (OSM Carto) as raster tiles from the OpenStreetMap
- * Foundation, with Waymarked Trails' transparent overlay of signed cycle routes on top.
+ * Foundation, with Waymarked Trails' transparent overlay of signed cycle routes on top,
+ * muted so it stays distinct from the app's routes.
  * Both ask for visible attribution and no bulk downloads; the OSMF policy also asks for a
  * Referer, which the attribution control and the Referrer-Policy provide. The app draws
  * only lines and fills over it, so the style needs no glyphs or sprites.
@@ -30,7 +31,14 @@ const OSM_STANDARD_STYLE: StyleSpecification = {
   },
   layers: [
     { id: 'osm-standard', type: 'raster', source: 'osm' },
-    { id: 'cycle-routes', type: 'raster', source: 'cycling', paint: { 'raster-opacity': 0.8 } },
+    {
+      id: 'cycle-routes',
+      type: 'raster',
+      source: 'cycling',
+      // Muted and translucent, route numbers included, so the signed cycle routes read as
+      // background and never pass for BikeMapy's own routes drawn above them.
+      paint: { 'raster-opacity': 0.55, 'raster-saturation': -0.6, 'raster-brightness-min': 0.15 },
+    },
   ],
 }
 

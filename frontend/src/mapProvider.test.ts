@@ -34,7 +34,11 @@ describe('map provider', () => {
       },
       layers: [
         { id: 'osm-standard', source: 'osm' },
-        { id: 'cycle-routes', source: 'cycling' },
+        {
+          id: 'cycle-routes',
+          source: 'cycling',
+          paint: { 'raster-opacity': 0.55, 'raster-saturation': -0.6 },
+        },
       ],
     })
   })
