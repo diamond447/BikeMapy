@@ -1,0 +1,27 @@
+{% extends "admin/login.html" %}
+
+{% comment %}
+Only the owner's GitHub sign-in opens this admin (apps.accounts.authorization.is_owner),
+so the page offers GitHub instead of Django's username and password form. The form posts
+to allauth's provider login, which starts the OAuth flow; allauth refuses a plain GET.
+{% endcomment %}
+
+{% block content %}
+<div id="content-main">
+
+{% if user.is_authenticated %}
+<p class="errornote">
+  You are signed in as {{ username }}, but only the owner's GitHub account can open the
+  administration. Sign in with GitHub to continue.
+</p>
+{% endif %}
+
+<form action="{% url 'github_login' %}" method="post" id="github-login-form">{% csrf_token %}
+  {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+  <div class="submit-row">
+    <input type="submit" value="Sign in with GitHub">
+  </div>
+</form>
+
+</div>
+{% endblock %}
