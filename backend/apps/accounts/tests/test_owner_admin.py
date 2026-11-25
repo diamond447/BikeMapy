@@ -146,3 +146,40 @@ def test_admin_duplicate_action_validates_target_and_audits() -> None:
     assert decision.actor_id == user.pk
     assert decision.metadata["before"]["lifecycle"] == "published"
     assert decision.metadata["after"]["lifecycle"] == "quarantined"
+
+
+@override_settings(
+    SOCIALACCOUNT_PROVIDERS={
+        "github": {"SCOPE": ["read:user"], "APP": {"client_id": "test-id", "secret": "test"}}
+    }
+)
+def test_admin_login_offers_github_sign_in_instead_of_a_password_form() -> None:
+    client = Client()
+    response = client.get("/admin/login/?next=/admin/catalogue/route/")
+
+    assert response.status_code == 200
+    page = response.content.decode()
+    assert 'action="/accounts/github/login/"' in page
+    assert 'name="next" value="/admin/catalogue/route/"' in page
+    assert 'name="password"' not in page
+
+    started = client.post("/accounts/github/login/", {"next": "/admin/catalogue/route/"})
+    assert started.status_code == 302
+    assert started["Location"].startswith("https://github.com/login/oauth/authorize?")
+    assert client.session["socialaccount_states"]
+
+
+def test_owner_can_list_routes_with_their_workflow_links() -> None:
+    with override_settings(GITHUB_OWNER_IDS=frozenset({"12345"})):
+        user = _user(github_id="12345")
+        published = Route.objects.create(lifecycle="published")
+        Route.objects.create(lifecycle="quarantined", quarantine_reason="test")
+        client = Client()
+        client.force_login(user)
+        _mark_github_session(client)
+        response = client.get("/admin/catalogue/route/")
+    assert response.status_code == 200
+    page = response.content.decode()
+    assert f'/admin/catalogue/route/{published.pk}/metadata/">Metadata</a> | <a' in page
+    assert ">Remove</a>" in page
+    assert ">Restore</a>" in page
