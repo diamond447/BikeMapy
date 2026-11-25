@@ -16,8 +16,9 @@ and original-source clicks. If enabled, Cloudflare Web Analytics measures
 visits without cookies or fingerprinting; Cloudflare states that it keeps raw
 beacon data for seven days.
 
-Map tiles and styles are loaded from OpenFreeMap and fonts from Google Fonts,
-so those providers receive your IP address under their own terms.
+Map tiles are loaded from the OpenStreetMap Foundation (`tile.openstreetmap.org`)
+and Waymarked Trails (`tile.waymarkedtrails.org`, cycle routes), and fonts from
+Google Fonts, so those providers receive your IP address under their own terms.
 
 ## Route and source data
 

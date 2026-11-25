@@ -149,9 +149,6 @@ a {
   position: absolute;
   width: 100%;
 }
-.map-canvas .maplibregl-canvas {
-  filter: saturate(0.68) sepia(0.08);
-}
 .map-vignette {
   background: radial-gradient(circle at 54% 47%, transparent 35%, rgba(26, 55, 45, 0.13) 100%);
   inset: 0;
@@ -1083,10 +1080,6 @@ h1 {
   background: #ceddce;
 }
 
-.map-canvas .maplibregl-canvas {
-  filter: saturate(0.58) sepia(0.04) contrast(0.98);
-}
-
 .map-vignette {
   background: linear-gradient(
     90deg,
@@ -1697,9 +1690,10 @@ h1 {
   z-index: auto;
 }
 
+/* 8px keeps the attribution link 24px from the links above it (WCAG 2.5.8 target size). */
 .app-footer > * {
   display: block;
-  margin: 0 0 5px;
+  margin: 0 0 8px;
 }
 
 .app-footer nav {

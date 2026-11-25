@@ -226,13 +226,14 @@ describe('BikeMapy route discovery', () => {
     expect(
       screen.getByText(/independent project; no affiliation with mapy\.com/i),
     ).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'OpenFreeMap' })).toHaveAttribute(
-      'href',
-      'https://openfreemap.org/',
-    )
+    expect(screen.queryByRole('link', { name: 'OpenFreeMap' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'OpenStreetMap contributors' })).toHaveAttribute(
       'href',
       'https://www.openstreetmap.org/copyright',
+    )
+    expect(screen.getByRole('link', { name: 'Waymarked Trails' })).toHaveAttribute(
+      'href',
+      'https://cycling.waymarkedtrails.org/',
     )
   })
 

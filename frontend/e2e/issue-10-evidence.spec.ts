@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { mockMapTiles } from './mapTiles'
 
 const routeGeometry = {
   type: 'LineString',
@@ -79,23 +80,7 @@ const json = (body: unknown) => ({
 })
 
 async function installEvidenceFixtures(page: Page) {
-  await page.route('**/styles/liberty*', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        version: 8,
-        sources: {},
-        layers: [
-          {
-            id: 'evidence-background',
-            type: 'background',
-            paint: { 'background-color': '#c0d5ca' },
-          },
-        ],
-      }),
-    }),
-  )
+  await mockMapTiles(page)
   await page.route('**/api/v1/routes/**', async (route) => {
     const url = new URL(route.request().url())
     const geometryMatch = url.pathname.match(/\/routes\/([^/]+)\/geometry\/$/)
