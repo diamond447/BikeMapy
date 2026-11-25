@@ -10,7 +10,7 @@ from django.core.exceptions import ValidationError
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
 
 from apps.accounts.admin import owner_admin_site
 from apps.ingestion.models import OrphanPayloadCleanup
@@ -124,7 +124,7 @@ class RouteAdmin(OwnerModelAdmin):
                     ),
                 )
             )
-        return format_html(" | ".join(str(link) for link in links))
+        return format_html_join(" | ", "{}", ((link,) for link in links))
 
     def get_urls(self):  # type: ignore[no-untyped-def]
         return [
