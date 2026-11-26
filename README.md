@@ -34,7 +34,26 @@ BikeMapy finds those links, imports each route's GPX and puts every route on one
 map. Every route keeps its geometry, its source post and author, and a link back
 to the original discussion.
 
-<!-- SCREENSHOTS -->
+<p align="center">
+  <a href="https://bikemapy.cz/?lat=49.19&lng=16.62&z=9.6">
+    <img src="docs/screenshots/map-desktop.jpg" alt="BikeMapy on desktop: 340 routes around Brno over the OpenStreetMap map, with the route list in the sidebar" width="100%">
+  </a>
+</p>
+
+<table>
+  <tr>
+    <td width="68%" valign="top">
+      <img src="docs/screenshots/route-detail-desktop.jpg" alt="Route detail: a 95 km loop in Česká Kanada with distance, climb, elevation profile, its BikeForum source and a GPX download">
+    </td>
+    <td width="32%" valign="top">
+      <img src="docs/screenshots/map-mobile.jpg" alt="BikeMapy on a phone: routes around Brno with the route list collapsed">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Route detail with the elevation profile, the source post and a GPX download</sub></td>
+    <td align="center"><sub>The same map on a phone</sub></td>
+  </tr>
+</table>
 
 ## ✨ Highlights
 
