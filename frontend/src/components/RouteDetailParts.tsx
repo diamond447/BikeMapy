@@ -12,6 +12,14 @@ export function formatMetric(value: string | null | undefined, suffix: string): 
   return `${Math.round(number)} ${suffix}`
 }
 
+/** Distances read best in kilometres, as in the route list (42.0 km, not 42000 m). */
+export function formatDistance(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const metres = Number(value)
+  if (!Number.isFinite(metres)) return '—'
+  return `${(metres / 1000).toFixed(1)} km`
+}
+
 export function hasMetric(value: string | null | undefined): value is string {
   return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
 }
@@ -36,12 +44,17 @@ export function ElevationProfile({ points, copy }: { points: ElevationPoint[]; c
       return `${x.toFixed(2)},${y.toFixed(2)}`
     })
     .join(' ')
-  const formatDistance = (value: number) => `${(value / 1000).toFixed(1)} km`
   const formatElevation = (value: number) => `${Math.round(value)} m`
   return (
     <figure className="elevation-profile" aria-labelledby="elevation-profile-title">
       <figcaption id="elevation-profile-title">{copy.elevationProfile}</figcaption>
-      <svg viewBox="0 0 100 100" role="img" aria-labelledby="elevation-profile-title">
+      {/* Stretch the 100x100 drawing to the wide, low box instead of a centred square. */}
+      <svg
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        role="img"
+        aria-labelledby="elevation-profile-title"
+      >
         <polyline points={coordinates} />
       </svg>
       <ol aria-label={copy.elevationProfile}>
