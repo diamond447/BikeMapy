@@ -6,6 +6,7 @@ import type { Copy, Language } from '../i18n/types'
 import {
   ElevationProfile,
   RouteSources,
+  formatDistance,
   formatMetric,
   hasMetric,
   routeStatus,
@@ -129,7 +130,7 @@ export function RouteDetail({
               {hasMetric(selectedRoute.distance_m) && (
                 <div>
                   <dt>{copy.distance}</dt>
-                  <dd>{formatMetric(selectedRoute.distance_m, 'm')}</dd>
+                  <dd>{formatDistance(selectedRoute.distance_m)}</dd>
                 </div>
               )}
               {hasMetric(selectedRoute.ascent_m) && (

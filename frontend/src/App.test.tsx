@@ -1171,6 +1171,13 @@ describe('BikeMapy route discovery', () => {
     expect(text.indexOf('Elevation profile')).toBeLessThan(text.indexOf('BikeForum sources'))
     expect(text.indexOf('BikeForum sources')).toBeLessThan(text.indexOf('Share route'))
     expect(text.indexOf('Share route')).toBeLessThan(text.indexOf('Report a problem'))
+    // Kilometres, as in the route list, and a profile stretched to the full width.
+    expect(text).toContain('42.0 km')
+    expect(text).not.toContain('42000 m')
+    expect(section?.querySelector('.elevation-profile svg')).toHaveAttribute(
+      'preserveAspectRatio',
+      'none',
+    )
   })
 
   it('switches and persists Czech copy while updating route metadata', async () => {
