@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="frontend/public/og-image.png" alt="BikeMapy: cycling routes with a source" width="720">
-
 # BikeMapy
 
 **A map-first atlas of cycling routes shared on Czech cycling forums, each with its source.**
