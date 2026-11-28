@@ -168,7 +168,9 @@ export function useMapStage({
             source: ROUTE_SOURCE,
             layout: { 'line-join': 'round', 'line-cap': 'round' },
             paint: {
-              'line-color': '#315d52',
+              // Dark blue stands out on the green and beige OSM map and stays apart
+              // from the red selected route and the yellow hover.
+              'line-color': '#1f3a93',
               'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.1, 9, 1.8, 14, 3.4],
               'line-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.5, 9, 0.75, 12, 0.85],
             },
