@@ -143,7 +143,9 @@ def test_viewport_above_the_highest_browse_zoom_serves_that_line_once(
         assert any("DISTINCT ON" in query["sql"] for query in queries)
 
 
-@override_settings(SPATIAL_BROWSE_ZOOMS="12", SPATIAL_HEATMAP_ZOOMS="5,6")
+@override_settings(
+    SPATIAL_BROWSE_ZOOMS="12", SPATIAL_HEATMAP_ZOOMS="5,6", SPATIAL_ROUTE_LINES_MIN_ZOOM=7
+)
 def test_heatmap_counts_distinct_routes_crossing_cells(published_route: Route) -> None:
     refresh_route_heatmap(published_route)
     assert RouteHeatmapMembership.objects.filter(route=published_route).exists()
@@ -151,6 +153,27 @@ def test_heatmap_counts_distinct_routes_crossing_cells(published_route: Route) -
     result = query_viewport(west=15.9, south=48.9, east=16.3, north=49.1, zoom=6)
     assert result["mode"] == "heatmap"
     assert any(item["count"] == 1 for item in result["cells"])
+
+
+@override_settings(SPATIAL_HEATMAP_ZOOMS="3,4,5,6,7,8")
+def test_zoomed_out_viewport_serves_route_lines_from_the_configured_zoom(
+    published_route: Route,
+) -> None:
+    version = published_route.current_approved_version
+    assert version is not None
+    generate_browse_geometries(version)
+    refresh_route_heatmap(published_route)
+
+    def mode_at(zoom: int) -> dict[str, Any]:
+        return query_viewport(west=12.0, south=48.5, east=19.0, north=51.1, zoom=zoom)
+
+    lines = mode_at(6)
+    assert lines["mode"] == "routes"
+    assert [route["id"] for route in lines["routes"]] == [str(published_route.pk)]
+    assert lines["routes"][0]["geometry"]
+    assert mode_at(5)["mode"] == "heatmap"
+    with override_settings(SPATIAL_ROUTE_LINES_MIN_ZOOM=9):
+        assert mode_at(8)["mode"] == "heatmap"
 
 
 @override_settings(SPATIAL_HEATMAP_ZOOMS="5")
@@ -389,7 +412,7 @@ def test_query_limits_are_rejected_or_clamped(published_route: Route) -> None:
     with pytest.raises(ValidationError):
         SpatialQueryLimits(max_routes=-1)
     limits = SpatialQueryLimits(max_routes=50_000, max_cells=50_000)
-    assert limits.max_routes == 500
+    assert limits.max_routes == 2000
     assert limits.max_cells == 10_000
 
 

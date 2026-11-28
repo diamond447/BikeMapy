@@ -448,7 +448,7 @@ class ViewportRouteView(APIView):
         if raw_zoom is None:
             raise ParseError("zoom is required")
         zoom = _int(raw_zoom, "zoom")
-        max_routes = _int(request.query_params.get("limit", "500"), "limit")
+        max_routes = _int(request.query_params.get("limit", "2000"), "limit")
         max_cells = _int(request.query_params.get("cell_limit", "10000"), "cell_limit")
         try:
             filter_names = (

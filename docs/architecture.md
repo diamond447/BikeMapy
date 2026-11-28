@@ -75,9 +75,16 @@ Two derived products are rebuilt from the approved versions:
   Web Mercator pixel. A viewport reads the closest stored zoom at or below
   its own.
 - `RouteHeatmapCell`: a tile grid with the number of distinct routes per cell,
-  used up to the highest `SPATIAL_HEATMAP_ZOOMS` value (default 8).
+  served below `SPATIAL_ROUTE_LINES_MIN_ZOOM` (default 6), at most up to the
+  highest `SPATIAL_HEATMAP_ZOOMS` value (default 8).
 
-Viewport responses are bounded (500 routes, 10,000 cells, 90° span), cached
+From `SPATIAL_ROUTE_LINES_MIN_ZOOM` on, a viewport answers with route lines:
+with about a thousand routes the whole country fits in one response, and the
+frontend draws them thin and translucent when zoomed out, so busy areas darken
+where routes overlap. Raise the setting if the catalogue grows past the route
+limit of one response.
+
+Viewport responses are bounded (2,000 routes, 10,000 cells, 90° span), cached
 for 60 seconds with epoch-based invalidation, and sent with
 `Cache-Control: public, max-age=60` and an `ETag`. The frontend snaps
 viewports to the tile grid so nearby positions share a URL. After a bulk
