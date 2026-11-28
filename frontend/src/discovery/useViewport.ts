@@ -63,7 +63,7 @@ export function useViewport(
       east,
       north,
       zoom: Math.round(view.zoom),
-      limit: 500,
+      limit: 2000,
       cell_limit: 10000,
       ...Object.fromEntries(Object.entries(debouncedFilters.filters).filter(([, value]) => value)),
     }

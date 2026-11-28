@@ -528,11 +528,11 @@ def _normalize_cache_param(value: Any) -> str:
 
 @dataclass(frozen=True)
 class SpatialQueryLimits:
-    max_routes: int = 500
+    max_routes: int = 2000
     max_cells: int = 10_000
 
     def __post_init__(self) -> None:
-        hard_routes = int(_setting("SPATIAL_HARD_MAX_ROUTES_PER_QUERY", 500))
+        hard_routes = int(_setting("SPATIAL_HARD_MAX_ROUTES_PER_QUERY", 2000))
         hard_cells = int(_setting("SPATIAL_HARD_MAX_CELLS_PER_QUERY", 10_000))
         if self.max_routes < 0 or self.max_cells < 0:
             raise ValidationError("query limits cannot be negative")
@@ -606,10 +606,16 @@ def _viewport_cache_key(
     return "bikemapy:spatial:viewport:" + hashlib.sha256(raw_key.encode()).hexdigest()
 
 
+def route_lines_min_zoom() -> int:
+    """Lowest zoom served as route lines rather than heatmap cells."""
+
+    return int(_setting("SPATIAL_ROUTE_LINES_MIN_ZOOM", 6))
+
+
 def _heatmap_data_zoom(zoom: int) -> int | None:
     """Return the stored heatmap zoom serving ``zoom``, or ``None`` for route lines."""
 
-    if zoom > heatmap_max_zoom():
+    if zoom > heatmap_max_zoom() or zoom >= route_lines_min_zoom():
         return None
     return next(item for item in heatmap_zooms() if item >= zoom)
 
@@ -831,7 +837,7 @@ def query_viewport(
     if not 0 <= zoom <= 22:
         raise ValidationError("zoom must be between 0 and 22")
     limits = limits or SpatialQueryLimits(
-        max_routes=int(_setting("SPATIAL_MAX_ROUTES_PER_QUERY", 500)),
+        max_routes=int(_setting("SPATIAL_MAX_ROUTES_PER_QUERY", 2000)),
         max_cells=int(_setting("SPATIAL_MAX_CELLS_PER_QUERY", 10_000)),
     )
     bounds = (west, south, east, north)

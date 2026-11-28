@@ -57,7 +57,7 @@ to the original discussion.
 
 | | |
 |---|---|
-| 🗺️ **Map first** | MapLibre map over the OpenStreetMap standard map, with signed cycle routes from Waymarked Trails. A heatmap at low zooms, simplified route lines above. |
+| 🗺️ **Map first** | MapLibre map over the OpenStreetMap standard map, with signed cycle routes from Waymarked Trails. Every route as a thin line, darker where many overlap; a heatmap only when zoomed far out. |
 | 🔎 **Search and filter** | Search by place, author or route, filter by distance and climb, and share any view: the state lives in the URL. |
 | 🧭 **Route detail** | Distance, ascent, elevation profile, loop or point-to-point, GPX download and the forum posts the route came from. |
 | 🕸️ **Forum crawler** | A resumable, rate-limited crawler for Bike-Forum.cz that follows threads moved to MTBIKER and reads every Mapy link. It respects robots.txt. |

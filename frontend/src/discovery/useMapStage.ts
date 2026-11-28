@@ -149,14 +149,28 @@ export function useMapStage({
             type: 'geojson',
             data: { type: 'FeatureCollection', features: [] },
           })
+          // Zoomed out, every route is a thin translucent line: where many overlap the
+          // map darkens, which shows the busy areas without heatmap cells.
+          mapInstance.addLayer({
+            id: 'browse-routes-halo',
+            type: 'line',
+            source: ROUTE_SOURCE,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: {
+              'line-color': '#fff8e6',
+              'line-width': ['interpolate', ['linear'], ['zoom'], 6, 2.6, 9, 3.6, 14, 5.8],
+              'line-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.3, 10, 0.5],
+            },
+          })
           mapInstance.addLayer({
             id: 'browse-routes',
             type: 'line',
             source: ROUTE_SOURCE,
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
             paint: {
               'line-color': '#315d52',
-              'line-width': ['interpolate', ['linear'], ['zoom'], 7, 1.8, 14, 3.4],
-              'line-opacity': 0.85,
+              'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.1, 9, 1.8, 14, 3.4],
+              'line-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.5, 9, 0.75, 12, 0.85],
             },
           })
           mapInstance.addLayer({
@@ -306,12 +320,9 @@ export function useMapStage({
         'visibility',
         data.mode === 'heatmap' ? 'visible' : 'none',
       )
-    if (map.getLayer('browse-routes'))
-      map.setLayoutProperty(
-        'browse-routes',
-        'visibility',
-        data.mode === 'routes' ? 'visible' : 'none',
-      )
+    for (const layer of ['browse-routes-halo', 'browse-routes'])
+      if (map.getLayer(layer))
+        map.setLayoutProperty(layer, 'visibility', data.mode === 'routes' ? 'visible' : 'none')
     if (map.getLayer('hovered-route') && typeof map.setFilter === 'function')
       map.setFilter('hovered-route', ['==', ['get', 'routeId'], hoveredRouteId ?? ''])
     // mapNode is a stable DOM ref owned by the composition layer.

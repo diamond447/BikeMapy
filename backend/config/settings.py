@@ -464,9 +464,12 @@ SPATIAL_BROWSE_ZOOMS = os.getenv("SPATIAL_BROWSE_ZOOMS", "6,8,10,12,14")
 # Browser and CDN cache lifetime; the server-side cache is invalidated by epoch.
 SPATIAL_HTTP_MAX_AGE = env_int("SPATIAL_HTTP_MAX_AGE", 60)
 SPATIAL_HEATMAP_ZOOMS = os.getenv("SPATIAL_HEATMAP_ZOOMS", "3,4,5,6,7,8")
-SPATIAL_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_MAX_ROUTES_PER_QUERY", "500"))
+# From this zoom the viewport serves every route as a simplified line instead of heatmap
+# cells; with a catalogue of about a thousand routes the whole country fits in one answer.
+SPATIAL_ROUTE_LINES_MIN_ZOOM = int(os.getenv("SPATIAL_ROUTE_LINES_MIN_ZOOM", "6"))
+SPATIAL_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_MAX_ROUTES_PER_QUERY", "2000"))
 SPATIAL_MAX_CELLS_PER_QUERY = int(os.getenv("SPATIAL_MAX_CELLS_PER_QUERY", "10000"))
-SPATIAL_HARD_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_HARD_MAX_ROUTES_PER_QUERY", "500"))
+SPATIAL_HARD_MAX_ROUTES_PER_QUERY = int(os.getenv("SPATIAL_HARD_MAX_ROUTES_PER_QUERY", "2000"))
 SPATIAL_HARD_MAX_CELLS_PER_QUERY = int(os.getenv("SPATIAL_HARD_MAX_CELLS_PER_QUERY", "10000"))
 SPATIAL_MAX_CANDIDATE_SCAN = int(os.getenv("SPATIAL_MAX_CANDIDATE_SCAN", "5000"))
 SPATIAL_MAX_HEATMAP_CANDIDATE_CELLS = int(
